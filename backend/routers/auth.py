@@ -64,7 +64,7 @@ async def get_current_user(
     user = _get_user(user_id)
     if not user:
         raise HTTPException(status_code=401, detail="User not found")
-    if user.status != UserStatus.ACTIVE.value:
+    if user.get("status") != UserStatus.ACTIVE.value:
         raise HTTPException(status_code=403, detail="User is inactive")
     return user
 
@@ -74,28 +74,28 @@ async def login(req: LoginRequest):
     """Authenticate user and return JWT token."""
     user = user_store.first(username=req.username)
 
-    if not user or not _verify_password(req.password, user.password_hash):
+    if not user or not _verify_password(req.password, user.get("password_hash", "")):
         raise HTTPException(
             status_code=status.HTTP_401_UNAUTHORIZED,
             detail="Invalid username or password",
         )
 
-    if user.status != UserStatus.ACTIVE.value:
+    if user.get("status") != UserStatus.ACTIVE.value:
         raise HTTPException(status_code=403, detail="User is inactive")
 
-    token = _create_token(user.id)
+    token = _create_token(user["id"])
 
     return LoginResponse(
         access_token=token,
         token_type="bearer",
         expires_in=settings.ACCESS_TOKEN_EXPIRE_MINUTES * 60,
         user=UserResponse(
-            id=user.id,
-            username=user.username,
-            real_name=user.real_name,
-            role=UserRole(user.role),
-            status=UserStatus(user.status),
-            created_at=user.created_at,
+            id=user["id"],
+            username=user["username"],
+            real_name=user.get("real_name"),
+            role=UserRole(user["role"]),
+            status=UserStatus(user["status"]),
+            created_at=user["created_at"],
         ),
     )
 
@@ -112,7 +112,7 @@ async def get_me(current_user: dict = Depends(get_current_user)):
     return UserResponse(
         id=current_user["id"],
         username=current_user["username"],
-        real_name=current_user["real_name"],
+        real_name=current_user.get("real_name"),
         role=UserRole(current_user["role"]),
         status=UserStatus(current_user["status"]),
         created_at=current_user["created_at"],
@@ -137,10 +137,10 @@ async def register(req: UserCreate):
     )
 
     return UserResponse(
-        id=user.id,
-        username=user.username,
-        real_name=user.real_name,
-        role=UserRole(user.role),
-        status=UserStatus(user.status),
-        created_at=user.created_at,
+        id=user["id"],
+        username=user["username"],
+        real_name=user.get("real_name"),
+        role=UserRole(user["role"]),
+        status=UserStatus(user["status"]),
+        created_at=user["created_at"],
     )

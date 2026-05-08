@@ -43,7 +43,7 @@ async def import_invoices(
     Supported formats: .xls, .xlsx, .csv
     """
     # Verify enterprise exists
-    enterprise = enterprise_store.get_by_id(dict, str(enterprise_id))
+    enterprise = enterprise_store.get_by_id(str(enterprise_id))
     if not enterprise:
         raise HTTPException(status_code=404, detail="Enterprise not found")
 
@@ -59,7 +59,6 @@ async def import_invoices(
     # Create import batch
     batch_id = str(uuid.uuid4())
     batch = import_batch_store.create(
-        dict,
         id=batch_id,
         enterprise_id=str(enterprise_id),
         import_type="INVOICE",
@@ -75,12 +74,11 @@ async def import_invoices(
         batch['total_rows'] = len(invoices)
         batch['processed_rows'] = 0
         batch['status'] = ImportStatus.PROCESSING
-        import_batch_store.update(dict, batch_id, **batch)
+        import_batch_store.update(batch_id, **batch)
 
         # Insert invoices
         for item in invoices:
             invoice_store.create(
-                dict,
                 id=str(uuid.uuid4()),
                 enterprise_id=str(enterprise_id),
                 invoice_number=item["invoice_number"],
@@ -99,10 +97,10 @@ async def import_invoices(
             batch['processed_rows'] += 1
 
         batch['status'] = ImportStatus.COMPLETED
-        import_batch_store.update(dict, batch_id, **batch)
+        import_batch_store.update(batch_id, **batch)
 
     except Exception as e:
-        import_batch_store.update(dict, batch_id, status=ImportStatus.FAILED, error_message=str(e))
+        import_batch_store.update(batch_id, status=ImportStatus.FAILED, error_message=str(e))
 
     return ImportJobResponse(
         id=uuid.UUID(batch['id']),
@@ -129,7 +127,7 @@ async def import_bank_statements(
     Returns job_id for tracking AI parsing status.
     """
     # Verify enterprise
-    enterprise = enterprise_store.get_by_id(dict, str(enterprise_id))
+    enterprise = enterprise_store.get_by_id(str(enterprise_id))
     if not enterprise:
         raise HTTPException(status_code=404, detail="Enterprise not found")
 
@@ -145,7 +143,6 @@ async def import_bank_statements(
     # Create import batch
     batch_id = str(uuid.uuid4())
     batch = import_batch_store.create(
-        dict,
         id=batch_id,
         enterprise_id=str(enterprise_id),
         import_type="BANK_STATEMENT",
@@ -158,7 +155,7 @@ async def import_bank_statements(
     if ext in ("xls", "xlsx", "csv"):
         # Direct parse for Excel/CSV
         batch['status'] = ImportStatus.PROCESSING
-        import_batch_store.update(dict, batch_id, **batch)
+        import_batch_store.update(batch_id, **batch)
         try:
             raw_text = await _parse_excel_or_csv(file, filename)
             # Store raw text for now - AI parse will happen on confirm
@@ -168,14 +165,14 @@ async def import_bank_statements(
             batch['total_rows'] = len(transactions)
             batch['processed_rows'] = len(transactions)
             batch['status'] = ImportStatus.COMPLETED
-            import_batch_store.update(dict, batch_id, **batch)
+            import_batch_store.update(batch_id, **batch)
         except Exception as e:
-            import_batch_store.update(dict, batch_id, status=ImportStatus.FAILED, error_message=str(e))
+            import_batch_store.update(batch_id, status=ImportStatus.FAILED, error_message=str(e))
     else:
         # PDF - just store, AI parse triggered separately
         batch['status'] = ImportStatus.PENDING
         batch['total_rows'] = 0
-        import_batch_store.update(dict, batch_id, **batch)
+        import_batch_store.update(batch_id, **batch)
 
     return BankStatementParseResponse(
         job_id=uuid.UUID(batch_id),
@@ -186,7 +183,7 @@ async def import_bank_statements(
 @router.get("/jobs/{job_id}", response_model=ImportJobResponse)
 async def get_import_job(job_id: uuid.UUID):
     """Get import job status."""
-    batch = import_batch_store.get_by_id(dict, str(job_id))
+    batch = import_batch_store.get_by_id(str(job_id))
     if not batch:
         raise HTTPException(status_code=404, detail="Import job not found")
 

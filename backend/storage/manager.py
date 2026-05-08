@@ -38,30 +38,34 @@ class JSONStore:
     def _now(self) -> str:
         return datetime.utcnow().isoformat()
 
-    def create(self, model: Type[T], **kwargs) -> T:
-        data = kwargs
+    def create(self, **kwargs) -> dict:
+        """Create a record. Returns the created dict (NOT a model)."""
+        data = dict(kwargs)
         data['id'] = data.get('id', str(uuid.uuid4()))
         data['created_at'] = data.get('created_at', self._now())
         data['updated_at'] = data.get('updated_at', self._now())
         records = self._load()
         records.append(data)
         self._save(records)
-        return model(**data)
+        return data
 
-    def get_by_id(self, model: Type[T], record_id: str) -> Optional[T]:
+    def get_by_id(self, record_id: str) -> Optional[dict]:
+        """Get a record by ID. Returns dict or None."""
         for record in self._load():
             if record.get('id') == record_id:
-                return model(**record)
+                return record
         return None
 
-    def get_all(self, model: Type[T]) -> List[T]:
-        return [model(**r) for r in self._load()]
+    def get_all(self) -> List[dict]:
+        """Get all records. Returns list of dicts."""
+        return self._load()
 
     def filter(
-        self, model: Type[T], limit: Optional[int] = None,
+        self, limit: Optional[int] = None,
         offset: int = 0, order_by: Optional[str] = None,
         order_desc: bool = True, **filters
-    ) -> List[T]:
+    ) -> List[dict]:
+        """Filter records by fields. Returns list of dicts."""
         records = self._load()
         filtered = []
         for record in records:
@@ -73,16 +77,17 @@ class JSONStore:
             filtered = filtered[offset:]
         if limit:
             filtered = filtered[:limit]
-        return [model(**r) for r in filtered]
+        return filtered
 
-    def update(self, model: Type[T], record_id: str, **updates) -> Optional[T]:
+    def update(self, record_id: str, **updates) -> Optional[dict]:
+        """Update a record. Returns updated dict or None."""
         records = self._load()
         for i, record in enumerate(records):
             if record.get('id') == record_id:
                 updates['updated_at'] = self._now()
                 record.update(updates)
                 self._save(records)
-                return model(**record)
+                return record
         return None
 
     def delete(self, record_id: str) -> bool:
@@ -97,13 +102,14 @@ class JSONStore:
     def count(self, **filters) -> int:
         if not filters:
             return len(self._load())
-        return len(self.filter(object, **filters))
+        return len(self.filter(**filters))
 
     def exists(self, **filters) -> bool:
         return self.count(**filters) > 0
 
-    def first(self, model: Type[T], **filters) -> Optional[T]:
-        results = self.filter(model, limit=1, **filters)
+    def first(self, **filters) -> Optional[dict]:
+        """Get first matching record. Returns dict or None."""
+        results = self.filter(limit=1, **filters)
         return results[0] if results else None
 
 

@@ -44,12 +44,12 @@ async def parse_bank_statement(req: BankStatementParseRequest):
     Returns job_id for tracking. Results stored as PENDING for human confirmation.
     """
     # Verify enterprise
-    enterprise = enterprise_store.get_by_id(dict, str(req.enterprise_id))
+    enterprise = enterprise_store.get_by_id(str(req.enterprise_id))
     if not enterprise:
         raise HTTPException(status_code=404, detail="Enterprise not found")
 
     # Get import batch
-    batch = import_batch_store.get_by_id(dict, str(req.file_id))
+    batch = import_batch_store.get_by_id(str(req.file_id))
     if not batch or batch.get('enterprise_id') != str(req.enterprise_id):
         raise HTTPException(status_code=404, detail="Import batch not found")
 
@@ -58,8 +58,8 @@ async def parse_bank_statement(req: BankStatementParseRequest):
         return BankStatementParseResponse(job_id=req.file_id, status="COMPLETED")
 
     # Mark as processing
-    import_batch_store.update(dict, str(req.file_id), status=ImportStatus.PROCESSING)
-    batch = import_batch_store.get_by_id(dict, str(req.file_id))
+    import_batch_store.update(str(req.file_id), status=ImportStatus.PROCESSING)
+    batch = import_batch_store.get_by_id(str(req.file_id))
 
     try:
         # Read file and parse with AI
@@ -75,7 +75,6 @@ async def parse_bank_statement(req: BankStatementParseRequest):
         # Store parsed transactions as PENDING (awaiting confirmation)
         for tx_data in transactions:
             bank_transaction_store.create(
-                dict,
                 id=str(uuid_lib.uuid4()),
                 enterprise_id=str(req.enterprise_id),
                 transaction_date=tx_data.get("transaction_date", date.today().isoformat()),
@@ -88,10 +87,10 @@ async def parse_bank_statement(req: BankStatementParseRequest):
                 import_batch_id=str(req.file_id),
             )
 
-        import_batch_store.update(dict, str(req.file_id), **batch)
+        import_batch_store.update(str(req.file_id), **batch)
 
     except Exception as e:
-        import_batch_store.update(dict, str(req.file_id), status=ImportStatus.FAILED, error_message=str(e))
+        import_batch_store.update(str(req.file_id), status=ImportStatus.FAILED, error_message=str(e))
 
     return BankStatementParseResponse(job_id=req.file_id, status=ImportStatus.COMPLETED)
 
@@ -103,13 +102,12 @@ async def confirm_bank_statement(req: BankStatementConfirmRequest):
     User can edit/delete rows before confirming.
     """
     # Verify enterprise
-    enterprise = enterprise_store.get_by_id(dict, str(req.enterprise_id))
+    enterprise = enterprise_store.get_by_id(str(req.enterprise_id))
     if not enterprise:
         raise HTTPException(status_code=404, detail="Enterprise not found")
 
     # Get existing pending transactions for this batch
     existing_txs = bank_transaction_store.filter(
-        dict,
         import_batch_id=str(req.import_batch_id),
         enterprise_id=str(req.enterprise_id)
     )
@@ -128,7 +126,7 @@ async def confirm_bank_statement(req: BankStatementConfirmRequest):
 
     # Mark all pending as confirmed
     for tx in existing_txs:
-        bank_transaction_store.update(dict, tx['id'], status="CONFIRMED")
+        bank_transaction_store.update(tx['id'], status="CONFIRMED")
 
     return {
         "confirmed": confirmed_count,
@@ -142,15 +140,13 @@ async def preview_bank_statement(batch_id: uuid_lib.UUID, enterprise_id: uuid_li
     """
     Get parsed bank statement preview (before confirmation).
     """
-    batch = import_batch_store.get_by_id(dict, str(batch_id))
+    batch = import_batch_store.get_by_id(str(batch_id))
     if not batch:
         raise HTTPException(status_code=404, detail="Import batch not found")
 
     transactions = bank_transaction_store.filter(
-        dict,
         import_batch_id=str(batch_id),
         enterprise_id=str(enterprise_id),
-        order_by="transaction_date",
     )
 
     parsed = [
@@ -189,21 +185,18 @@ async def match_transactions(req: MatchRequest):
     Returns candidates sorted by confidence for user confirmation.
     """
     # Verify enterprise
-    enterprise = enterprise_store.get_by_id(dict, str(req.enterprise_id))
+    enterprise = enterprise_store.get_by_id(str(req.enterprise_id))
     if not enterprise:
         raise HTTPException(status_code=404, detail="Enterprise not found")
 
     # Get confirmed bank transactions
     transactions = bank_transaction_store.filter(
-        dict,
         enterprise_id=str(req.enterprise_id),
         status="CONFIRMED",
-        order_by="transaction_date",
     )
 
     # Get pending invoices
     invoices = invoice_store.filter(
-        dict,
         enterprise_id=str(req.enterprise_id),
         status="PENDING",
     )
@@ -281,14 +274,14 @@ async def confirm_matches(req: MatchConfirmRequest):
     User can accept, reject, or modify match pairs.
     """
     # Verify enterprise
-    enterprise = enterprise_store.get_by_id(dict, str(req.enterprise_id))
+    enterprise = enterprise_store.get_by_id(str(req.enterprise_id))
     if not enterprise:
         raise HTTPException(status_code=404, detail="Enterprise not found")
 
     updated = 0
     for match in req.matches:
         # Get transaction
-        tx = bank_transaction_store.get_by_id(dict, str(match.transaction_id))
+        tx = bank_transaction_store.get_by_id(str(match.transaction_id))
         if not tx:
             continue
 
@@ -296,23 +289,23 @@ async def confirm_matches(req: MatchConfirmRequest):
             # Link transaction to invoice
             tx['matched_invoice_id'] = str(match.invoice_id)
             tx['status'] = "CONFIRMED"
-            bank_transaction_store.update(dict, str(match.transaction_id), **tx)
+            bank_transaction_store.update(str(match.transaction_id), **tx)
 
             # Update invoice status
-            inv = invoice_store.get_by_id(dict, str(match.invoice_id))
+            inv = invoice_store.get_by_id(str(match.invoice_id))
             if inv:
-                invoice_store.update(dict, str(match.invoice_id), status="MATCHED")
+                invoice_store.update(str(match.invoice_id), status="MATCHED")
         else:
             # Unmatch
             if tx.get('matched_invoice_id'):
                 old_inv_id = tx['matched_invoice_id']
                 tx['matched_invoice_id'] = None
-                bank_transaction_store.update(dict, str(match.transaction_id), **tx)
+                bank_transaction_store.update(str(match.transaction_id), **tx)
 
                 # Restore invoice status
-                inv = invoice_store.get_by_id(dict, old_inv_id)
+                inv = invoice_store.get_by_id(old_inv_id)
                 if inv:
-                    invoice_store.update(dict, old_inv_id, status="PENDING")
+                    invoice_store.update(old_inv_id, status="PENDING")
 
         updated += 1
 

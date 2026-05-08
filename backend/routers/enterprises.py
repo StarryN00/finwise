@@ -7,7 +7,7 @@ from typing import Optional
 
 from fastapi import APIRouter, HTTPException, Query
 
-from backend.storage.manager import enterprise_store, health_report_store
+from backend.storage.manager import enterprise_store, health_report_store, invoice_store, bank_transaction_store
 from backend.schemas.enterprise import (
     EnterpriseCreate, EnterpriseUpdate, EnterpriseResponse,
     EnterpriseListResponse, EnterpriseListItem, EnterpriseStatus
@@ -38,7 +38,7 @@ async def list_enterprises(
     """List enterprises with pagination, filtering, and sorting."""
     filters = {}
     if search:
-        filters["name"] = search  # Simple exact match; ilike handled below
+        filters["name"] = search
     if status:
         filters["status"] = status
     if source:
@@ -50,13 +50,13 @@ async def list_enterprises(
 
     # Apply search filter (ilike for name)
     if search:
-        all_enterprises = [e for e in all_enterprises if search.lower() in e.name.lower()]
+        all_enterprises = [e for e in all_enterprises if search.lower() in e.get("name", "").lower()]
 
     # Apply status/source filters
     if status:
-        all_enterprises = [e for e in all_enterprises if e.status == status]
+        all_enterprises = [e for e in all_enterprises if e.get("status") == status]
     if source:
-        all_enterprises = [e for e in all_enterprises if e.source == source]
+        all_enterprises = [e for e in all_enterprises if e.get("source") == source]
 
     total = len(all_enterprises)
 
@@ -66,15 +66,15 @@ async def list_enterprises(
 
     items = []
     for ent in enterprises:
-        report = _get_latest_report(str(ent.id))
+        report = _get_latest_report(str(ent.get("id")))
         items.append(EnterpriseListItem(
-            id=str(ent.id),
-            name=ent.name,
-            industry=ent.industry,
-            financing_score=report.financing_score if report else None,
-            last_analysis_date=report.analysis_date if report else None,
-            status=EnterpriseStatus(ent.status),
-            source=ent.source,
+            id=str(ent.get("id")),
+            name=ent.get("name"),
+            industry=ent.get("industry"),
+            financing_score=report.get("financing_score") if report else None,
+            last_analysis_date=report.get("analysis_date") if report else None,
+            status=EnterpriseStatus(ent.get("status", "ACTIVE")),
+            source=ent.get("source", "DIRECT"),
         ))
 
     return EnterpriseListResponse(
@@ -111,18 +111,18 @@ async def create_enterprise(req: EnterpriseCreate):
 
     enterprise = enterprise_store.create(**data)
     return EnterpriseResponse(
-        id=enterprise.id,
-        name=enterprise.name,
-        tax_number=enterprise.tax_number,
-        taxpayer_type=enterprise.taxpayer_type,
-        industry=enterprise.industry,
-        province=enterprise.province,
-        city=enterprise.city,
-        source=enterprise.source,
-        status=EnterpriseStatus(enterprise.status),
-        channel_id=enterprise.channel_id,
-        created_at=enterprise.created_at,
-        updated_at=enterprise.updated_at,
+        id=enterprise["id"],
+        name=enterprise["name"],
+        tax_number=enterprise["tax_number"],
+        taxpayer_type=enterprise["taxpayer_type"],
+        industry=enterprise["industry"],
+        province=enterprise["province"],
+        city=enterprise["city"],
+        source=enterprise["source"],
+        status=EnterpriseStatus(enterprise["status"]),
+        channel_id=enterprise["channel_id"],
+        created_at=enterprise["created_at"],
+        updated_at=enterprise["updated_at"],
     )
 
 
@@ -133,22 +133,20 @@ async def get_enterprise(enterprise_id: str):
     if not enterprise:
         raise HTTPException(status_code=404, detail="Enterprise not found")
 
-    report = _get_latest_report(enterprise_id)
-
     return EnterpriseResponse(
-        id=enterprise.id,
-        name=enterprise.name,
-        tax_number=enterprise.tax_number,
-        taxpayer_type=enterprise.taxpayer_type,
-        industry=enterprise.industry,
-        province=enterprise.province,
-        city=enterprise.city,
-        source=enterprise.source,
-        status=EnterpriseStatus(enterprise.status),
-        channel_id=enterprise.channel_id,
-        assigned_operator_id=enterprise.assigned_operator_id,
-        created_at=enterprise.created_at,
-        updated_at=enterprise.updated_at,
+        id=enterprise["id"],
+        name=enterprise["name"],
+        tax_number=enterprise["tax_number"],
+        taxpayer_type=enterprise["taxpayer_type"],
+        industry=enterprise["industry"],
+        province=enterprise["province"],
+        city=enterprise["city"],
+        source=enterprise["source"],
+        status=EnterpriseStatus(enterprise["status"]),
+        channel_id=enterprise["channel_id"],
+        assigned_operator_id=enterprise.get("assigned_operator_id"),
+        created_at=enterprise["created_at"],
+        updated_at=enterprise["updated_at"],
     )
 
 
@@ -183,19 +181,19 @@ async def update_enterprise(enterprise_id: str, req: EnterpriseUpdate):
 
     updated = enterprise_store.update(enterprise_id, **updates)
     return EnterpriseResponse(
-        id=updated.id,
-        name=updated.name,
-        tax_number=updated.tax_number,
-        taxpayer_type=updated.taxpayer_type,
-        industry=updated.industry,
-        province=updated.province,
-        city=updated.city,
-        source=updated.source,
-        status=EnterpriseStatus(updated.status),
-        channel_id=updated.channel_id,
-        assigned_operator_id=updated.assigned_operator_id,
-        created_at=updated.created_at,
-        updated_at=updated.updated_at,
+        id=updated["id"],
+        name=updated["name"],
+        tax_number=updated["tax_number"],
+        taxpayer_type=updated["taxpayer_type"],
+        industry=updated["industry"],
+        province=updated["province"],
+        city=updated["city"],
+        source=updated["source"],
+        status=EnterpriseStatus(updated["status"]),
+        channel_id=updated["channel_id"],
+        assigned_operator_id=updated.get("assigned_operator_id"),
+        created_at=updated["created_at"],
+        updated_at=updated["updated_at"],
     )
 
 
@@ -217,19 +215,16 @@ async def get_enterprise_summary(enterprise_id: str):
     if not enterprise:
         raise HTTPException(status_code=404, detail="Enterprise not found")
 
-    # Get counts via filter (simplified for JSON store)
-    from backend.storage.manager import invoice_store, bank_transaction_store
-
     invoice_count = len(invoice_store.filter(enterprise_id=enterprise_id))
     tx_count = len(bank_transaction_store.filter(enterprise_id=enterprise_id))
     report = _get_latest_report(enterprise_id)
 
     return {
         "enterprise_id": enterprise_id,
-        "enterprise_name": enterprise.name,
+        "enterprise_name": enterprise.get("name"),
         "invoice_count": invoice_count,
         "transaction_count": tx_count,
-        "latest_report_id": report.id if report else None,
-        "latest_report_score": report.overall_score if report else None,
-        "latest_report_date": report.analysis_date if report else None,
+        "latest_report_id": report.get("id") if report else None,
+        "latest_report_score": report.get("overall_score") if report else None,
+        "latest_report_date": report.get("analysis_date") if report else None,
     }
