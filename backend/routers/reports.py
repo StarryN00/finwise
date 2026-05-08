@@ -4,7 +4,8 @@
 from fastapi import APIRouter, HTTPException, Query
 from typing import Optional
 from pydantic import BaseModel
-from datetime import date
+from datetime import datetime, date
+import json
 
 from backend.reports.generator import (
     ReportGenerator,
@@ -14,6 +15,10 @@ from backend.reports.generator import (
     generate_vat_report,
     generate_health_report,
     generate_financing_score_report
+)
+from backend.storage.manager import (
+    vat_filing_store,
+    health_report_store,
 )
 
 
@@ -92,34 +97,32 @@ async def get_vat_report_list(
     - **period_year**: 申报年份（可选）
     - **period_month**: 申报月份（可选）
     """
-    # 模拟数据
-    mock_reports = [
-        {
-            "report_id": "vat-rpt-001",
-            "enterprise_id": enterprise_id,
-            "period_year": 2026,
-            "period_month": 3,
-            "total_tax_and_surcharge": "179752.95",
-            "status": "CONFIRMED",
-            "created_at": "2026-04-05T10:30:00Z"
-        },
-        {
-            "report_id": "vat-rpt-002",
-            "enterprise_id": enterprise_id,
-            "period_year": 2026,
-            "period_month": 4,
-            "total_tax_and_surcharge": "212108.48",
-            "status": "DRAFT",
-            "created_at": "2026-05-07T14:22:00Z"
-        }
-    ]
+    # Filter from vat_filing_store
+    filters = {"enterprise_id": enterprise_id, "report_type": "VAT_FILING"}
+    reports = vat_filing_store.filter(**filters)
 
-    if period_year:
-        mock_reports = [r for r in mock_reports if r["period_year"] == period_year]
-    if period_month:
-        mock_reports = [r for r in mock_reports if r["period_month"] == period_month]
+    # Apply period filters
+    if period_year is not None:
+        reports = [r for r in reports if r.get('period_year') == period_year]
+    if period_month is not None:
+        reports = [r for r in reports if r.get('period_month') == period_month]
 
-    return {"items": mock_reports, "total": len(mock_reports)}
+    # Build response items
+    items = []
+    for r in reports:
+        items.append({
+            "report_id": r.get('filing_id') or r.get('report_id') or r.get('id'),
+            "enterprise_id": r.get('enterprise_id'),
+            "period_year": r.get('period_year'),
+            "period_month": r.get('period_month'),
+            "sales_amount_excl_tax": r.get('sales_amount_excl_tax', '0'),
+            "tax_amount": r.get('tax_amount', '0'),
+            "total_tax_and_surcharge": r.get('total_tax_and_surcharge', '0'),
+            "status": r.get('status', 'DRAFT'),
+            "created_at": r.get('created_at', '')
+        })
+
+    return {"items": items, "total": len(items)}
 
 
 @router.post("/health/generate")
@@ -161,33 +164,40 @@ async def get_health_report_list(
     - **limit**: 返回数量
     - **offset**: 偏移量
     """
-    # 模拟数据
-    mock_reports = [
-        {
-            "report_id": "health-rpt-001",
-            "report_number": "HR-2026-ABC12345",
-            "enterprise_id": enterprise_id,
-            "analysis_date": "2026-04-15",
-            "overall_score": 78,
-            "overall_grade": "B_PLUS",
-            "status": "COMPLETED",
-            "created_at": "2026-04-15T16:30:00Z"
-        },
-        {
-            "report_id": "health-rpt-002",
-            "report_number": "HR-2026-DEF67890",
-            "enterprise_id": enterprise_id,
-            "analysis_date": "2026-05-01",
-            "overall_score": 82,
-            "overall_grade": "B_PLUS",
-            "status": "COMPLETED",
-            "created_at": "2026-05-01T09:15:00Z"
-        }
-    ]
+    # Filter from health_report_store for HEALTH_ANALYSIS type
+    filters = {"enterprise_id": enterprise_id, "report_type": "HEALTH_ANALYSIS"}
+    all_reports = health_report_store.filter(**filters)
+
+    # Sort by created_at desc (default in filter)
+    total = len(all_reports)
+
+    # Apply pagination
+    reports = all_reports[offset:offset+limit]
+
+    items = []
+    for r in reports:
+        # Try to parse data JSON
+        data_raw = r.get('data', '{}')
+        try:
+            data = json.loads(data_raw) if isinstance(data_raw, str) else data_raw
+        except (json.JSONDecodeError, TypeError):
+            data = {}
+
+        items.append({
+            "report_id": r.get('report_id') or r.get('id'),
+            "report_number": r.get('report_number', ''),
+            "enterprise_id": r.get('enterprise_id'),
+            "enterprise_name": r.get('enterprise_name', ''),
+            "analysis_date": data.get('analysis_date', r.get('created_at', '')[:10]),
+            "overall_score": r.get('overall_score') or data.get('overall_score', 0),
+            "overall_grade": r.get('overall_grade') or data.get('overall_grade', ''),
+            "status": r.get('status', 'COMPLETED'),
+            "created_at": r.get('created_at', '')
+        })
 
     return {
-        "items": mock_reports[offset:offset+limit],
-        "total": len(mock_reports),
+        "items": items,
+        "total": total,
         "limit": limit,
         "offset": offset
     }
@@ -200,34 +210,44 @@ async def get_latest_health_report(enterprise_id: str):
 
     - **enterprise_id**: 企业ID
     """
-    # 模拟最新报告数据
-    latest_report = {
-        "report_id": "health-rpt-002",
-        "report_number": "HR-2026-DEF67890",
-        "enterprise_id": enterprise_id,
-        "enterprise_name": "昆山某某科技有限公司",
-        "analysis_date": "2026-05-01",
-        "overall_score": 82,
-        "overall_grade": "B_PLUS",
-        "five_dimension_scores": {
-            "profitability": {"score": 82.5, "description": "盈利能力良好"},
-            "solvency": {"score": 75.0, "description": "偿债能力中等"},
-            "operation_efficiency": {"score": 80.0, "description": "运营效率较高"},
-            "growth": {"score": 72.5, "description": "增长潜力一般"},
-            "cash_flow": {"score": 85.0, "description": "现金流状况优秀"}
-        },
-        "key_metrics": {
-            "gross_margin": "28.5%",
-            "net_margin": "12.3%",
-            "roa": "8.7%"
-        },
-        "ai_interpretation": "该公司整体财务状况良好...",
-        "financing_score": 82,
-        "estimated_loan_amount": 5_000_000,
-        "status": "COMPLETED"
-    }
+    # Get latest health report from store
+    reports = health_report_store.filter(
+        enterprise_id=enterprise_id,
+        report_type="HEALTH_ANALYSIS",
+    )
 
-    return latest_report
+    if not reports:
+        raise HTTPException(status_code=404, detail="No health report found for this enterprise")
+
+    # Sort by created_at desc and take first
+    latest = reports[0]
+
+    # Parse data JSON
+    data_raw = latest.get('data', '{}')
+    try:
+        data = json.loads(data_raw) if isinstance(data_raw, str) else data_raw
+    except (json.JSONDecodeError, TypeError):
+        data = {}
+
+    return {
+        "report_id": latest.get('report_id') or latest.get('id'),
+        "report_number": latest.get('report_number', data.get('report_number', '')),
+        "enterprise_id": latest.get('enterprise_id'),
+        "enterprise_name": latest.get('enterprise_name', data.get('enterprise_name', '')),
+        "analysis_date": data.get('analysis_date', latest.get('created_at', '')[:10]),
+        "overall_score": latest.get('overall_score') or data.get('overall_score', 0),
+        "overall_grade": latest.get('overall_grade') or data.get('overall_grade', ''),
+        "five_dimension_scores": data.get('five_dimension_scores', {}),
+        "radar_data": data.get('radar_data', {}),
+        "key_metrics": data.get('key_metrics', {}),
+        "ai_interpretation": data.get('ai_interpretation', ''),
+        "risk_alerts": data.get('risk_alerts', []),
+        "improvement_suggestions": data.get('improvement_suggestions', []),
+        "financing_score": latest.get('financing_score') or data.get('financing_score', 0),
+        "estimated_loan_amount": data.get('estimated_loan_amount', 0),
+        "matched_products": data.get('matched_products', []),
+        "status": latest.get('status', 'COMPLETED')
+    }
 
 
 @router.post("/financing/generate")
@@ -266,31 +286,37 @@ async def get_financing_score_history(
     - **limit**: 返回数量
     - **offset**: 偏移量
     """
-    # 模拟数据
-    mock_scores = [
-        {
-            "score_id": "fin-sco-001",
-            "enterprise_id": enterprise_id,
-            "score_date": "2026-04-10",
-            "score": 78,
-            "level": "MEDIUM",
-            "estimated_loan_amount": "3,500,000",
-            "status": "COMPLETED"
-        },
-        {
-            "score_id": "fin-sco-002",
-            "enterprise_id": enterprise_id,
-            "score_date": "2026-05-07",
-            "score": 82,
-            "level": "HIGH",
-            "estimated_loan_amount": "5,000,000",
-            "status": "COMPLETED"
-        }
-    ]
+    # Filter from health_report_store for FINANCING_SCORE type
+    filters = {"enterprise_id": enterprise_id, "report_type": "FINANCING_SCORE"}
+    all_scores = health_report_store.filter(**filters)
+
+    total = len(all_scores)
+    scores = all_scores[offset:offset+limit]
+
+    items = []
+    for s in scores:
+        # Try to parse data JSON
+        data_raw = s.get('data', '{}')
+        try:
+            data = json.loads(data_raw) if isinstance(data_raw, str) else data_raw
+        except (json.JSONDecodeError, TypeError):
+            data = {}
+
+        items.append({
+            "score_id": s.get('report_id') or s.get('id'),
+            "enterprise_id": s.get('enterprise_id'),
+            "enterprise_name": s.get('enterprise_name', ''),
+            "score_date": data.get('score_date', s.get('created_at', '')[:10]),
+            "score": s.get('score') or data.get('score', 0),
+            "level": s.get('level') or data.get('level', ''),
+            "estimated_loan_amount": s.get('estimated_loan_amount') or data.get('estimated_loan_amount', 0),
+            "status": s.get('status', 'COMPLETED'),
+            "created_at": s.get('created_at', '')
+        })
 
     return {
-        "items": mock_scores[offset:offset+limit],
-        "total": len(mock_scores),
+        "items": items,
+        "total": total,
         "limit": limit,
         "offset": offset
     }

@@ -1,13 +1,27 @@
 # Report Generation API
 # 三类报告生成: VAT申报报告、财务健康分析报告、融资评分报告
 
-from datetime import date
-from decimal import Decimal
+from datetime import date, datetime
+from decimal import Decimal, ROUND_HALF_UP
 from typing import List, Optional, Dict, Any
 from uuid import uuid4, UUID
 from enum import Enum
 from pydantic import BaseModel
 import json
+import asyncio
+
+from backend.storage.manager import (
+    invoice_store,
+    bank_transaction_store,
+    enterprise_store,
+    vat_filing_store,
+    health_report_store,
+)
+from backend.tax.calculator import (
+    calculate_vat,
+    TaxCalculationInput,
+    TaxpayerType,
+)
 
 
 class ReportType(str, Enum):
@@ -119,6 +133,97 @@ class ReportGenerationResponse(BaseModel):
     preview_data: Optional[Dict[str, Any]] = None
 
 
+# ============ Helper Functions (outside ReportGenerator class) ============
+
+def _aggregate_invoice_data(enterprise_id: str, period_year: int, period_month: int) -> dict:
+    """
+    Aggregate invoice data for a given enterprise and period.
+    Returns dict with sales (销项) and purchases (进项) breakdowns.
+    """
+    all_invoices = invoice_store.filter(enterprise_id=enterprise_id)
+
+    # Filter by period
+    period_invoices = []
+    for inv in all_invoices:
+        issue_date_str = inv.get('issue_date', '')
+        if not issue_date_str:
+            continue
+        try:
+            dt = datetime.fromisoformat(issue_date_str.replace('Z', '+00:00'))
+            if dt.year == period_year and dt.month == period_month:
+                period_invoices.append(inv)
+        except (ValueError, TypeError):
+            # Try parsing as date only
+            try:
+                dt = datetime.strptime(issue_date_str[:10], '%Y-%m-%d')
+                if dt.year == period_year and dt.month == period_month:
+                    period_invoices.append(inv)
+            except ValueError:
+                continue
+
+    # Separate sales (销项, invoice_type contains SPECIAL) and purchases (进项)
+    sales_invoices = [inv for inv in period_invoices if 'SPECIAL' in inv.get('invoice_type', '')]
+    purchase_invoices = [inv for inv in period_invoices if 'SPECIAL' not in inv.get('invoice_type', '')]
+
+    def sum_invoices(invoices: List[dict]) -> tuple:
+        total_excl_tax = Decimal('0')
+        total_tax = Decimal('0')
+        count = 0
+        for inv in invoices:
+            amount = Decimal(str(inv.get('amount', 0) or 0))
+            tax = Decimal(str(inv.get('tax_amount', 0) or 0))
+            total_excl_tax += amount
+            total_tax += tax
+            count += 1
+        return total_excl_tax, total_tax, count
+
+    sales_excl_tax, sales_tax, sales_count = sum_invoices(sales_invoices)
+    purchase_excl_tax, purchase_tax, purchase_count = sum_invoices(purchase_invoices)
+
+    return {
+        'sales_excl_tax': sales_excl_tax,
+        'sales_tax': sales_tax,
+        'sales_count': sales_count,
+        'purchase_excl_tax': purchase_excl_tax,
+        'purchase_tax': purchase_tax,
+        'purchase_count': purchase_count,
+        'total_count': sales_count + purchase_count,
+        # Ratio for financing score
+        'sales_purchase_ratio': float(sales_excl_tax / purchase_excl_tax) if purchase_excl_tax > 0 else 0.0,
+    }
+
+
+def _aggregate_bank_transaction_data(enterprise_id: str) -> dict:
+    """
+    Aggregate bank transaction data for a given enterprise.
+    Returns dict with inflow, outflow, net cash flow, and transaction count.
+    """
+    transactions = bank_transaction_store.filter(enterprise_id=enterprise_id)
+
+    total_inflow = Decimal('0')
+    total_outflow = Decimal('0')
+    tx_count = len(transactions)
+
+    for tx in transactions:
+        credit = Decimal(str(tx.get('credit_amount', 0) or 0))
+        debit = Decimal(str(tx.get('debit_amount', 0) or 0))
+        total_inflow += credit
+        total_outflow += debit
+
+    net_cash_flow = total_inflow - total_outflow
+
+    return {
+        'total_inflow': total_inflow,
+        'total_outflow': total_outflow,
+        'net_cash_flow': net_cash_flow,
+        'transaction_count': tx_count,
+        'has_transactions': tx_count > 0,
+        'positive_cash_flow': net_cash_flow > 0,
+    }
+
+
+# ============ ReportGenerator Class ============
+
 class ReportGenerator:
     """
     报告生成器
@@ -134,36 +239,88 @@ class ReportGenerator:
         """
         report_id = str(uuid4())
 
-        # 模拟从数据库获取数据
+        # Get enterprise name
+        enterprise = enterprise_store.get_by_id(enterprise_id)
+        enterprise_name = enterprise.get('name', '未知企业') if enterprise else '未知企业'
+
+        # Aggregate invoice data
+        invoice_data = _aggregate_invoice_data(enterprise_id, period_year, period_month)
+
+        sales_excl_tax = invoice_data['sales_excl_tax']
+        sales_tax = invoice_data['sales_tax']
+
+        # If no real data, fall back to zeros
+        if sales_excl_tax == 0 and sales_tax == 0:
+            sales_amount_excl_tax = Decimal('0')
+        else:
+            # Use aggregated sales amount
+            sales_amount_excl_tax = sales_excl_tax
+
+        # Build tax calculation input
+        # sales_amount is the excluded-tax amount (不含税金额)
+        input_data = TaxCalculationInput(
+            enterprise_id=enterprise_id,
+            taxpayer_type=TaxpayerType.GENERAL,
+            sales_amount=sales_amount_excl_tax,
+            tax_amount=sales_amount_excl_tax,  # tax_amount_is_tax_included=True means this is the excluded-tax sales amount
+            tax_amount_is_tax_included=True,
+        )
+
+        # Calculate VAT
+        vat_result = calculate_vat(input_data)
+
+        # Build report data
         report_data = {
             "report_id": report_id,
             "report_type": "VAT_FILING",
             "enterprise_id": enterprise_id,
-            "enterprise_name": "昆山某某科技有限公司",  # 实际应从DB获取
+            "enterprise_name": enterprise_name,
             "period_year": period_year,
             "period_month": period_month,
             "taxpayer_type": "GENERAL",
-            "sales_amount_excl_tax": "1,234,567.00",
-            "tax_rate": "13%",
-            "tax_amount": "160,493.71",
+            "sales_amount_excl_tax": str(vat_result.sales_amount_excl_tax),
+            "tax_rate": f"{int(vat_result.tax_rate * 100)}%",
+            "tax_amount": str(vat_result.tax_amount),
             "surcharge_details": {
-                "urban_construction_tax": "11,234.56",
-                "education_surcharge": "4,814.81",
-                "local_education_surcharge": "3,209.87"
+                "urban_construction_tax": str(vat_result.surcharge_detail.urban_construction),
+                "education_surcharge": str(vat_result.surcharge_detail.education),
+                "local_education_surcharge": str(vat_result.surcharge_detail.local_education)
             },
-            "total_surcharge": "19,259.24",
-            "total_tax_and_surcharge": "179,752.95",
+            "total_surcharge": str(vat_result.surcharge_detail.total),
+            "total_tax_and_surcharge": str(vat_result.total_tax_and_surcharge),
             "status": "DRAFT",
-            "created_at": date.today().isoformat(),
+            "created_at": datetime.utcnow().isoformat(),
             "summary": {
-                "total_sales": "1,234,567.00",
-                "total_vat": "160,493.71",
-                "total_surcharge": "19,259.24",
-                "grand_total": "179,752.95"
+                "total_sales": str(vat_result.sales_amount_excl_tax),
+                "total_vat": str(vat_result.tax_amount),
+                "total_surcharge": str(vat_result.surcharge_detail.total),
+                "grand_total": str(vat_result.total_tax_and_surcharge)
             }
         }
 
         self._reports_cache[report_id] = report_data
+
+        # Store in vat_filing_store
+        vat_filing_store.create(
+            filing_id=report_id,
+            enterprise_id=enterprise_id,
+            enterprise_name=enterprise_name,
+            period_year=period_year,
+            period_month=period_month,
+            sales_amount_excl_tax=str(vat_result.sales_amount_excl_tax),
+            tax_rate=f"{int(vat_result.tax_rate * 100)}%",
+            tax_amount=str(vat_result.tax_amount),
+            surcharge_details=json.dumps({
+                "urban_construction_tax": str(vat_result.surcharge_detail.urban_construction),
+                "education_surcharge": str(vat_result.surcharge_detail.education),
+                "local_education_surcharge": str(vat_result.surcharge_detail.local_education)
+            }),
+            total_surcharge=str(vat_result.surcharge_detail.total),
+            total_tax_and_surcharge=str(vat_result.total_tax_and_surcharge),
+            status="DRAFT",
+            report_type="VAT_FILING",
+        )
+
         return report_data
 
     def generate_health_report(self, enterprise_id: str, report_type: str = "FULL") -> Dict[str, Any]:
@@ -171,88 +328,127 @@ class ReportGenerator:
         生成财务健康分析报告 JSON
         """
         report_id = str(uuid4())
-        report_number = f"HR-{date.today().year}-{report_id[:8].upper()}"
+        report_number = f"HR-{datetime.now().year}-{report_id[:8].upper()}"
+
+        # Get enterprise name
+        enterprise = enterprise_store.get_by_id(enterprise_id)
+        enterprise_name = enterprise.get('name', '未知企业') if enterprise else '未知企业'
+
+        # Aggregate real data
+        invoice_data = _aggregate_invoice_data(enterprise_id, datetime.now().year, datetime.now().month)
+        bank_data = _aggregate_bank_transaction_data(enterprise_id)
+
+        # Build financial_data for AI
+        financial_data = {
+            "enterprise_id": enterprise_id,
+            "report_date": datetime.now().isoformat(),
+            "invoice_summary": {
+                "sales_amount_excl_tax": float(invoice_data['sales_excl_tax']),
+                "sales_tax": float(invoice_data['sales_tax']),
+                "sales_invoice_count": invoice_data['sales_count'],
+                "purchase_amount_excl_tax": float(invoice_data['purchase_excl_tax']),
+                "purchase_tax": float(invoice_data['purchase_tax']),
+                "purchase_invoice_count": invoice_data['purchase_count'],
+                "total_invoice_count": invoice_data['total_count'],
+                "sales_purchase_ratio": invoice_data['sales_purchase_ratio'],
+            },
+            "bank_summary": {
+                "total_inflow": float(bank_data['total_inflow']),
+                "total_outflow": float(bank_data['total_outflow']),
+                "net_cash_flow": float(bank_data['net_cash_flow']),
+                "transaction_count": bank_data['transaction_count'],
+            }
+        }
+
+        # Call AI service (async) - use asyncio.run since this is sync context
+        try:
+            ai_result = asyncio.run(
+                _call_generate_health_analysis_with_ai(UUID(enterprise_id), financial_data)
+            )
+        except Exception as e:
+            # Fallback to safe mock if AI fails
+            ai_result = {
+                "overall_score": 50,
+                "overall_grade": "C",
+                "profitability_score": 50.0,
+                "solvency_score": 50.0,
+                "operation_efficiency_score": 50.0,
+                "growth_score": 50.0,
+                "cash_flow_score": 50.0,
+                "radar_data": {"profitability": 50.0, "solvency": 50.0, "operation_efficiency": 50.0, "growth": 50.0, "cash_flow": 50.0},
+                "key_metrics": {},
+                "ai_interpretation": f"AI分析服务暂时不可用，使用默认评分。详情：{str(e)}",
+                "risk_alerts": ["数据不足，无法生成完整分析"],
+                "improvement_suggestions": ["请确保发票和银行流水数据完整"],
+                "financing_score": 50,
+                "estimated_loan_amount": 2500000,
+                "matched_products": ["税易贷-A", "经营贷-优质客户专享"],
+            }
 
         report_data = {
             "report_id": report_id,
             "report_number": report_number,
             "report_type": "HEALTH_ANALYSIS",
             "enterprise_id": enterprise_id,
-            "enterprise_name": "昆山某某科技有限公司",
-            "analysis_date": date.today().isoformat(),
-            "overall_score": 78,
-            "overall_grade": "B_PLUS",
+            "enterprise_name": enterprise_name,
+            "analysis_date": datetime.now().date().isoformat(),
+            "overall_score": ai_result.get('overall_score', 50),
+            "overall_grade": ai_result.get('overall_grade', 'C'),
             "five_dimension_scores": {
                 "profitability": {
-                    "score": 82.5,
+                    "score": ai_result.get('profitability_score', 50.0),
                     "weight": 0.25,
-                    "description": "盈利能力良好"
+                    "description": "盈利能力分析"
                 },
                 "solvency": {
-                    "score": 75.0,
+                    "score": ai_result.get('solvency_score', 50.0),
                     "weight": 0.20,
-                    "description": "偿债能力中等"
+                    "description": "偿债能力分析"
                 },
                 "operation_efficiency": {
-                    "score": 80.0,
+                    "score": ai_result.get('operation_efficiency_score', 50.0),
                     "weight": 0.20,
-                    "description": "运营效率较高"
+                    "description": "运营效率分析"
                 },
                 "growth": {
-                    "score": 72.5,
+                    "score": ai_result.get('growth_score', 50.0),
                     "weight": 0.20,
-                    "description": "增长潜力一般"
+                    "description": "成长性分析"
                 },
                 "cash_flow": {
-                    "score": 85.0,
+                    "score": ai_result.get('cash_flow_score', 50.0),
                     "weight": 0.15,
-                    "description": "现金流状况优秀"
+                    "description": "现金流分析"
                 }
             },
-            "radar_data": {
-                "profitability": 82.5,
-                "solvency": 75.0,
-                "operation_efficiency": 80.0,
-                "growth": 72.5,
-                "cash_flow": 85.0
-            },
-            "key_metrics": {
-                "gross_margin": "28.5%",
-                "net_margin": "12.3%",
-                "roa": "8.7%",
-                "roe": "15.2%",
-                "current_ratio": 1.85,
-                "quick_ratio": 1.42,
-                "inventory_turnover": 4.5,
-                "receivable_turnover": 6.2,
-                "revenue_growth_yoy": "15.3%",
-                "profit_growth_yoy": "22.1%",
-                "operating_cash_flow": 2_450_000,
-                "free_cash_flow": 1_850_000
-            },
-            "ai_interpretation": "该公司整体财务状况良好，现金流充裕，盈利能力较强。建议关注应收账款周转情况，适当优化负债结构以进一步提升评级。",
-            "risk_alerts": [
-                "应收账款周转天数同比增加12天",
-                "存货周转率略低于行业平均水平",
-                "短期负债占比偏高"
-            ],
-            "improvement_suggestions": [
-                "加强客户信用管理，缩短应收账款账期",
-                "优化库存管理，提高存货周转率",
-                "适度增加长期融资，降低短期偿债压力"
-            ],
-            "financing_score": 82,
-            "estimated_loan_amount": 5_000_000,
-            "matched_products": [
-                "税易贷-A",
-                "经营贷-优质客户专享",
-                "供应链金融-核心企业"
-            ],
+            "radar_data": ai_result.get('radar_data', {"profitability": 50.0, "solvency": 50.0, "operation_efficiency": 50.0, "growth": 50.0, "cash_flow": 50.0}),
+            "key_metrics": ai_result.get('key_metrics', {}),
+            "ai_interpretation": ai_result.get('ai_interpretation', ''),
+            "risk_alerts": ai_result.get('risk_alerts', []),
+            "improvement_suggestions": ai_result.get('improvement_suggestions', []),
+            "financing_score": ai_result.get('financing_score', 50),
+            "estimated_loan_amount": ai_result.get('estimated_loan_amount', 2500000),
+            "matched_products": ai_result.get('matched_products', ["税易贷-A", "经营贷-优质客户专享"]),
             "status": "COMPLETED",
-            "created_at": date.today().isoformat()
+            "created_at": datetime.utcnow().isoformat()
         }
 
         self._reports_cache[report_id] = report_data
+
+        # Store in health_report_store
+        health_report_store.create(
+            report_id=report_id,
+            report_number=report_number,
+            enterprise_id=enterprise_id,
+            enterprise_name=enterprise_name,
+            report_type="HEALTH_ANALYSIS",
+            overall_score=ai_result.get('overall_score', 50),
+            overall_grade=ai_result.get('overall_grade', 'C'),
+            financing_score=ai_result.get('financing_score', 50),
+            data=json.dumps(report_data),
+            status="COMPLETED",
+        )
+
         return report_data
 
     def generate_financing_score_report(self, enterprise_id: str) -> Dict[str, Any]:
@@ -261,19 +457,69 @@ class ReportGenerator:
         """
         score_id = str(uuid4())
 
+        # Get enterprise name
+        enterprise = enterprise_store.get_by_id(enterprise_id)
+        enterprise_name = enterprise.get('name', '未知企业') if enterprise else '未知企业'
+
+        # Try to get financing_score from latest health report
+        financing_score = None
+        latest_health_report = None
+
+        health_reports = health_report_store.filter(
+            enterprise_id=enterprise_id,
+            report_type="HEALTH_ANALYSIS",
+        )
+        if health_reports:
+            # Sort by created_at desc, take first
+            latest_health_report = health_reports[0]
+            health_data_raw = latest_health_report.get('data', '{}')
+            try:
+                health_data = json.loads(health_data_raw)
+                financing_score = health_data.get('financing_score')
+            except (json.JSONDecodeError, TypeError):
+                financing_score = latest_health_report.get('financing_score')
+
+        # Calculate score if not available
+        if financing_score is None:
+            # Use invoice aggregation to calculate score
+            invoice_data = _aggregate_invoice_data(enterprise_id, datetime.now().year, datetime.now().month)
+            bank_data = _aggregate_bank_transaction_data(enterprise_id)
+
+            score = 50  # base score
+            score += min(invoice_data['total_count'] * 1, 20)  # +invoice count * 1 (max +20)
+            if bank_data['has_transactions']:
+                score += 10  # +10 for having bank transactions
+            if bank_data['positive_cash_flow']:
+                score += 10  # +10 for positive net cash flow
+            if invoice_data['sales_purchase_ratio'] > 1.2:
+                score += 10  # +10 for sales/purchase ratio > 1.2
+
+            financing_score = min(score, 100)
+
+        # Determine level
+        if financing_score >= 80:
+            level = "HIGH"
+        elif financing_score >= 60:
+            level = "MEDIUM"
+        else:
+            level = "LOW"
+
+        # Calculate estimated loan amount: score * 50000, max 5 million
+        estimated_loan_amount = min(financing_score * 50000, 5_000_000)
+
         report_data = {
             "score_id": score_id,
             "report_type": "FINANCING_SCORE",
             "enterprise_id": enterprise_id,
-            "enterprise_name": "昆山某某科技有限公司",
-            "score_date": date.today().isoformat(),
-            "score": 82,
-            "level": "HIGH",
-            "score_grade": "A",
-            "estimated_loan_amount": 5_000_000,
+            "enterprise_name": enterprise_name,
+            "score_date": datetime.now().date().isoformat(),
+            "score": financing_score,
+            "level": level,
+            "score_grade": "A" if level == "HIGH" else ("B" if level == "MEDIUM" else "C"),
+            "estimated_loan_amount": estimated_loan_amount,
             "loan_amount_range": {
-                "min": 3_000_000,
-                "max": 8_000_000
+                "min": int(estimated_loan_amount * 0.6),
+                "max": int(estimated_loan_amount * 1.2)
             },
             "matched_products": [
                 {
@@ -305,35 +551,35 @@ class ReportGenerator:
                 {
                     "factor": "纳税信用",
                     "weight": 0.25,
-                    "score": 88,
-                    "description": "纳税信用等级B级，表现良好"
+                    "score": financing_score,
+                    "description": "基于财务健康报告评分"
                 },
                 {
                     "factor": "财务健康度",
                     "weight": 0.30,
-                    "score": 82,
-                    "description": "综合财务指标良好，盈利能力较强"
+                    "score": financing_score,
+                    "description": "综合财务指标评估"
                 },
                 {
                     "factor": "经营稳定性",
                     "weight": 0.20,
-                    "score": 78,
-                    "description": "经营年限较长，业务结构稳定"
+                    "score": financing_score - 5 if financing_score > 5 else financing_score,
+                    "description": "经营年限和稳定性"
                 },
                 {
                     "factor": "现金流状况",
                     "weight": 0.15,
-                    "score": 90,
-                    "description": "经营现金流充裕，偿债能力强"
+                    "score": financing_score,
+                    "description": "银行流水分析"
                 },
                 {
                     "factor": "企业信用记录",
                     "weight": 0.10,
-                    "score": 75,
-                    "description": "无不良信用记录，整体信用良好"
+                    "score": financing_score - 10 if financing_score > 10 else financing_score,
+                    "description": "信用记录评估"
                 }
             ],
-            "analysis_summary": "该企业综合评分82分，达到A级标准。建议申请税易贷-A产品，最高可获500万元贷款，利率4.35%起。",
+            "analysis_summary": f"该企业综合评分{financing_score}分，达到{level}级标准。{'建议申请税易贷-A产品' if level == 'HIGH' else '建议提升财务健康度后再申请'}，最高可获{estimated_loan_amount / 10000:.0f}万元贷款。",
             "risk_factors": [
                 "行业周期风险",
                 "应收账款集中度"
@@ -343,10 +589,24 @@ class ReportGenerator:
                 "适度分散客户结构，降低应收账款集中度",
                 "关注现金流管理，保持健康的现金储备"
             ],
-            "created_at": date.today().isoformat()
+            "created_at": datetime.utcnow().isoformat()
         }
 
         self._reports_cache[score_id] = report_data
+
+        # Store in health_report_store with type FINANCING_SCORE
+        health_report_store.create(
+            report_id=score_id,
+            enterprise_id=enterprise_id,
+            enterprise_name=enterprise_name,
+            report_type="FINANCING_SCORE",
+            score=financing_score,
+            level=level,
+            estimated_loan_amount=str(estimated_loan_amount),
+            data=json.dumps(report_data),
+            status="COMPLETED",
+        )
+
         return report_data
 
     def generate_report(self, request: ReportGenerationRequest) -> Dict[str, Any]:
@@ -356,8 +616,8 @@ class ReportGenerator:
         if request.report_type == ReportType.VAT_FILING:
             return self.generate_vat_report(
                 enterprise_id=request.enterprise_id,
-                period_year=request.period_year or date.today().year,
-                period_month=request.period_month or date.today().month
+                period_year=request.period_year or datetime.now().year,
+                period_month=request.period_month or datetime.now().month
             )
         elif request.report_type == ReportType.HEALTH_ANALYSIS:
             return self.generate_health_report(
@@ -415,7 +675,7 @@ class ReportGenerator:
     <div class="report-header">
         <div class="report-title">{report_type}报告</div>
         <div>企业: {report_data.get('enterprise_name', 'N/A')}</div>
-        <div>生成日期: {report_data.get('created_at', date.today().isoformat())}</div>
+        <div>生成日期: {report_data.get('created_at', datetime.now().date().isoformat())}</div>
     </div>
     <div class="section">
         <pre>{json.dumps(report_data, indent=2, ensure_ascii=False)}</pre>
@@ -425,7 +685,18 @@ class ReportGenerator:
         return html_template
 
 
-# 全局报告生成器实例
+# ============ Async wrapper for AI service ============
+
+async def _call_generate_health_analysis_with_ai(enterprise_id: UUID, financial_data: Dict[str, Any]) -> Dict[str, Any]:
+    """Wrapper to call the async AI service from sync context."""
+    # Import here to avoid circular imports
+    from backend.services.ai_service import generate_health_analysis_with_ai
+    return await generate_health_analysis_with_ai(enterprise_id, financial_data)
+
+
+# ============ Module-level shortcut functions ============
+
+# Global report generator instance
 report_generator = ReportGenerator()
 
 
