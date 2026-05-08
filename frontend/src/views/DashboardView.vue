@@ -47,6 +47,10 @@
             <el-icon><Document /></el-icon>
             <span>报告管理</span>
           </el-menu-item>
+          <el-menu-item index="financing">
+            <el-icon><Money /></el-icon>
+            <span>融资服务</span>
+          </el-menu-item>
         </el-menu>
       </aside>
 
@@ -159,7 +163,7 @@ import { ref, reactive, onMounted, onUnmounted } from 'vue'
 import { useRouter } from 'vue-router'
 import { useAuthStore } from '@/stores/auth'
 import * as echarts from 'echarts'
-import api from '@/stores/auth'
+import api from '@/api'
 
 const router = useRouter()
 const authStore = useAuthStore()
@@ -203,6 +207,12 @@ const handleMenuSelect = (index) => {
     router.push('/')
   } else if (index === 'enterprises') {
     router.push('/enterprises')
+  } else if (index === 'import') {
+    router.push('/invoices')
+  } else if (index === 'reports') {
+    router.push('/reports')
+  } else if (index === 'financing') {
+    router.push('/financing')
   }
 }
 

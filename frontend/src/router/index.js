@@ -16,7 +16,25 @@ const routes = [
   {
     path: '/enterprises',
     name: 'Enterprises',
-    component: () => import('../views/EnterprisesView.vue'),
+    component: () => import('../views/enterprises/index.vue'),
+    meta: { requiresAuth: true }
+  },
+  {
+    path: '/invoices',
+    name: 'Invoices',
+    component: () => import('../views/invoices/index.vue'),
+    meta: { requiresAuth: true }
+  },
+  {
+    path: '/reports',
+    name: 'Reports',
+    component: () => import('../views/reports/index.vue'),
+    meta: { requiresAuth: true }
+  },
+  {
+    path: '/financing',
+    name: 'Financing',
+    component: () => import('../views/financing/index.vue'),
     meta: { requiresAuth: true }
   }
 ]
