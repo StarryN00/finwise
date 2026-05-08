@@ -5,25 +5,45 @@
       <div class="brand-bg-pattern"></div>
       <div class="brand-content">
         <div class="brand-logo">
-          <svg width="56" height="56" viewBox="0 0 56 56" fill="none">
-            <rect width="56" height="56" rx="16" fill="rgba(255,255,255,0.15)"/>
-            <path d="M14 40V24l14-8 14 8v16l-14 8-14-8z" fill="white" opacity="0.9"/>
-            <path d="M28 16v24M14 24l14 8 14-8" stroke="white" stroke-width="2.5" fill="none"/>
+          <svg width="52" height="52" viewBox="0 0 52 52" fill="none">
+            <!-- 外圈圆环 -->
+            <circle cx="26" cy="26" r="24" stroke="rgba(255,255,255,0.25)" stroke-width="2"/>
+            <!-- 主体：圆角方块 + 向上的箭头，象征"收入/增长" -->
+            <rect x="12" y="20" width="20" height="16" rx="3" fill="white" opacity="0.95"/>
+            <!-- 方块内的折线，象征税单/报表 -->
+            <path d="M16 30h4l2-3 4 5 4-6" stroke="#cc785c" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" fill="none"/>
+            <!-- 顶部小三角，象征"管家"屋顶/保护 -->
+            <path d="M22 20V14l4-4 4 4v6" stroke="white" stroke-width="2" stroke-linejoin="round" fill="none" opacity="0.8"/>
           </svg>
         </div>
         <h1 class="brand-title">智税管家</h1>
         <p class="brand-subtitle">企业全生命周期服务 SaaS 平台</p>
         <div class="brand-features">
           <div class="feature-item">
-            <span class="feature-icon">📋</span>
+            <span class="feature-icon">
+              <svg width="16" height="16" viewBox="0 0 16 16" fill="none">
+                <rect x="2" y="2" width="12" height="12" rx="2" stroke="rgba(255,255,255,0.8)" stroke-width="1.5"/>
+                <path d="M5 6h6M5 8.5h4" stroke="rgba(255,255,255,0.8)" stroke-width="1.5" stroke-linecap="round"/>
+              </svg>
+            </span>
             <span>发票智能管理</span>
           </div>
           <div class="feature-item">
-            <span class="feature-icon">📊</span>
+            <span class="feature-icon">
+              <svg width="16" height="16" viewBox="0 0 16 16" fill="none">
+                <path d="M8 2v12M2 8l6-6 6 6" stroke="rgba(255,255,255,0.8)" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round"/>
+                <circle cx="8" cy="11" r="2" fill="rgba(255,255,255,0.8)"/>
+              </svg>
+            </span>
             <span>税务智能申报</span>
           </div>
           <div class="feature-item">
-            <span class="feature-icon">💰</span>
+            <span class="feature-icon">
+              <svg width="16" height="16" viewBox="0 0 16 16" fill="none">
+                <circle cx="8" cy="8" r="6" stroke="rgba(255,255,255,0.8)" stroke-width="1.5"/>
+                <path d="M8 5v3.5l2.5 1.5" stroke="rgba(255,255,255,0.8)" stroke-width="1.5" stroke-linecap="round"/>
+              </svg>
+            </span>
             <span>融资精准匹配</span>
           </div>
         </div>
