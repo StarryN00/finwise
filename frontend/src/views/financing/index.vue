@@ -94,7 +94,7 @@ const products = ref([
     rate: '4.35% - 6.00%',
     amount: '最高 300 万',
     term: '12 个月',
-    minScore: 650,
+    minScore: 65,
     feature: '凭纳税记录快速审批，纯信用'
   },
   {
@@ -103,7 +103,7 @@ const products = ref([
     rate: '5.22% - 8.00%',
     amount: '最高 500 万',
     term: '6-24 个月',
-    minScore: 600,
+    minScore: 60,
     feature: '依据发票数据核定额度，循环使用'
   },
   {
@@ -112,7 +112,7 @@ const products = ref([
     rate: '6.00% - 10.00%',
     amount: '最高 100 万',
     term: '3-12 个月',
-    minScore: 550,
+    minScore: 55,
     feature: '银行流水即可申请，审批快'
   },
   {
@@ -121,7 +121,7 @@ const products = ref([
     rate: '8.00% - 12.00%',
     amount: '最高 1000 万',
     term: '12-36 个月',
-    minScore: 500,
+    minScore: 50,
     feature: '需要抵押或担保，额度更高'
   },
   {
@@ -130,7 +130,7 @@ const products = ref([
     rate: '3.85% - 5.50%',
     amount: '最高 500 万',
     term: '12 个月',
-    minScore: 700,
+    minScore: 70,
     feature: '高新技术企业专属，利率优惠'
   },
   {
@@ -139,15 +139,15 @@ const products = ref([
     rate: '5.00% - 7.50%',
     amount: '最高 800 万',
     term: '6-18 个月',
-    minScore: 600,
+    minScore: 60,
     feature: '依托核心企业，批量授信'
   }
 ])
 
 const scoreClass = (score) => {
   if (score == null) return ''
-  if (score >= 700) return 'high'
-  if (score >= 500) return 'mid'
+  if (score >= 70) return 'high'
+  if (score >= 50) return 'mid'
   return 'low'
 }
 
@@ -157,7 +157,7 @@ const isQualified = (product) => {
 
 const isRecommended = (product) => {
   if (currentScore.value === null) return false
-  return currentScore.value >= product.minScore && currentScore.value < product.minScore + 100
+  return currentScore.value >= product.minScore && currentScore.value < product.minScore + 20
 }
 
 const onEnterpriseChange = async (id) => {
@@ -170,7 +170,7 @@ const onEnterpriseChange = async (id) => {
     // 尝试调用融资评分接口
     try {
       const res = await api.post('/api/reports/financing/generate', { enterprise_id: id })
-      currentScore.value = res.data.data?.financing_score || null
+      currentScore.value = res.data.data?.score || null
     } catch {
       currentScore.value = null
     }

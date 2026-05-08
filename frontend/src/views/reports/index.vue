@@ -136,23 +136,23 @@
               <el-row :gutter="24">
                 <el-col :span="8">
                   <el-card shadow="hover" class="fin-score-card">
-                    <div class="fin-score">{{ finReportData.financing_score || '--' }}</div>
+                    <div class="fin-score">{{ finReportData.score || '--' }}</div>
                     <div class="fin-score-label">融资评分</div>
-                    <el-tag :type="finScoreTag" style="margin-top: 8px">{{ finReportData.credit_level || '待评估' }}</el-tag>
+                    <el-tag :type="finScoreTag" style="margin-top: 8px">{{ finReportData.level || '待评估' }}</el-tag>
                   </el-card>
                 </el-col>
                 <el-col :span="8">
                   <el-card shadow="hover" class="fin-info-card">
-                    <div class="fin-info-row"><span class="fin-info-label">信用等级</span><span class="fin-info-value">{{ finReportData.credit_level || '--' }}</span></div>
+                    <div class="fin-info-row"><span class="fin-info-label">信用等级</span><span class="fin-info-value">{{ finReportData.level || '--' }}</span></div>
                     <el-divider style="margin: 12px 0" />
-                    <div class="fin-info-row"><span class="fin-info-label">建议额度</span><span class="fin-info-value highlight">¥{{ Number(finReportData.suggested_amount || 0).toLocaleString() }}</span></div>
+                    <div class="fin-info-row"><span class="fin-info-label">建议额度</span><span class="fin-info-value highlight">¥{{ Number(finReportData.estimated_loan_amount || 0).toLocaleString() }}</span></div>
                   </el-card>
                 </el-col>
                 <el-col :span="8">
                   <el-card shadow="hover" class="fin-info-card">
-                    <div class="fin-info-row"><span class="fin-info-label">评分区间</span><span class="fin-info-value">{{ finReportData.score_range || '--' }}</span></div>
+                    <div class="fin-info-row"><span class="fin-info-label">评分区间</span><span class="fin-info-value">{{ finReportData.score || '--' }}</span></div>
                     <el-divider style="margin: 12px 0" />
-                    <div class="fin-info-row"><span class="fin-info-label">报告编号</span><span class="fin-info-value" style="font-size: 11px">{{ finReportData.report_id || '--' }}</span></div>
+                    <div class="fin-info-row"><span class="fin-info-label">报告编号</span><span class="fin-info-value" style="font-size: 11px">{{ finReportData.score_id || '--' }}</span></div>
                   </el-card>
                 </el-col>
               </el-row>
@@ -314,8 +314,8 @@ const generateFinancingReport = async () => {
       enterprise_id: finEnterpriseId.value
     })
     finReportData.value = res.data.data
-    const score = res.data.data.financing_score || 0
-    finScoreTag.value = score >= 700 ? 'success' : score >= 500 ? 'warning' : 'danger'
+    const score = res.data.data.score || 0
+    finScoreTag.value = score >= 70 ? 'success' : score >= 50 ? 'warning' : 'danger'
   } catch (e) {
     ElMessage.error(e.response?.data?.detail || '生成失败')
   } finally {
