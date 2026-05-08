@@ -166,6 +166,7 @@ import { useRouter } from 'vue-router'
 import { ElMessage } from 'element-plus'
 import * as echarts from 'echarts'
 import api from '@/api'
+import { exportToPdf } from '@/utils/pdf-export'
 
 const router = useRouter()
 const activeTab = ref('vat')
@@ -268,33 +269,17 @@ const generateFinancingReport = async () => {
 
 const applyLoan = () => ElMessage.success('贷款申请已提交，请等待银行客户经理联系')
 
-// PDF
+// PDF — uses localized export utility
 const exportPdf = async (type) => {
-  if (typeof window.html2canvas === 'undefined' || typeof window.jspdf === 'undefined') {
-    ElMessage.error('PDF 导出组件未加载')
-    return
-  }
-  const { jsPDF } = window.jspdf
-  ElMessage.info('正在生成 PDF...')
+  const tabNames = { health: '财务健康报告', financing: '融资评分报告' }
+  const tabName = tabNames[type] || '财务报告'
+  const activeContent = document.querySelector('.tab-content .tab-body')
+  if (!activeContent) { ElMessage.error('未找到报告内容'); return }
   try {
-    const targetEl = document.querySelector('.tab-body')
-    if (!targetEl) { ElMessage.error('未找到报告内容'); return }
-    const canvas = await window.html2canvas(targetEl, { scale: 2, useCORS: true, backgroundColor: '#faf9f6' })
-    const imgData = canvas.toDataURL('image/png')
-    const pdf = new jsPDF({ orientation: 'portrait', unit: 'mm', format: 'a4' })
-    const pw = pdf.internal.pageSize.getWidth()
-    const ph = pdf.internal.pageSize.getHeight()
-    const ratio = canvas.height / canvas.width
-    const imgH = pw * ratio
-    let y = 0
-    while (y < imgH) {
-      pdf.addImage(imgData, 'PNG', 0, -y, pw, imgH)
-      y += ph
-      if (y < imgH) pdf.addPage()
-    }
-    pdf.save(`finwise-${type}-report.pdf`)
+    ElMessage.info('正在生成 PDF...')
+    await exportToPdf(activeContent, `finwise-${type}-report`, { title: tabName })
     ElMessage.success('PDF 已下载')
-  } catch { ElMessage.error('PDF 导出失败') }
+  } catch (e) { ElMessage.error('PDF 导出失败: ' + (e.message || '')) }
 }
 
 const fetchEnterprises = async () => {
