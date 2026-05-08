@@ -51,17 +51,17 @@
             {{ sourceLabel(row.source) }}
           </template>
         </el-table-column>
-        <el-table-column prop="financingScore" label="融资评分" width="90" align="center">
+        <el-table-column prop="financing_score" label="融资评分" width="90" align="center">
           <template #default="{ row }">
-            <span v-if="row.financingScore != null" :class="'score-' + scoreClass(row.financingScore)">
-              {{ row.financingScore }}
+            <span v-if="row.financing_score != null" :class="'score-' + scoreClass(row.financing_score)">
+              {{ row.financing_score }}
             </span>
             <span v-else class="text-muted">--</span>
           </template>
         </el-table-column>
-        <el-table-column prop="lastAnalysisDate" label="最近分析日期" width="130">
+        <el-table-column prop="last_analysis_date" label="最近分析日期" width="130">
           <template #default="{ row }">
-            {{ row.lastAnalysisDate || '--' }}
+            {{ row.last_analysis_date || '--' }}
           </template>
         </el-table-column>
         <el-table-column label="操作" width="120" fixed="right">
@@ -170,8 +170,8 @@ const sourceLabel = (source) => {
 }
 
 const scoreClass = (score) => {
-  if (score >= 700) return 'high'
-  if (score >= 500) return 'mid'
+  if (score >= 70) return 'high'
+  if (score >= 50) return 'mid'
   return 'low'
 }
 
@@ -188,7 +188,7 @@ const fetchEnterprises = async () => {
     if (filterStatus.value) params.status = filterStatus.value
     if (filterSource.value) params.source = filterSource.value
 
-    const res = await api.get('/enterprises', { params })
+    const res = await api.get('/api/enterprises', { params })
     enterprises.value = res.data.items
     total.value = res.data.total
   } catch (e) {
@@ -204,7 +204,7 @@ const submitAdd = async () => {
 
   submitting.value = true
   try {
-    await api.post('/enterprises', {
+    await api.post('/api/enterprises', {
       name: form.name,
       tax_id: form.taxId,
       taxpayer_type: form.taxpayerType,
