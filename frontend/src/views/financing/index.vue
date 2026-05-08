@@ -164,12 +164,12 @@ const onEnterpriseChange = async (id) => {
   if (!id) return
   // 从企业列表获取已有评分
   const ent = enterprises.value.find(e => e.id === id)
-  if (ent && ent.financingScore != null) {
-    currentScore.value = ent.financingScore
+  if (ent && ent.financing_score != null) {
+    currentScore.value = ent.financing_score
   } else {
     // 尝试调用融资评分接口
     try {
-      const res = await api.post('/reports/financing/generate', { enterprise_id: id })
+      const res = await api.post('/api/reports/financing/generate', { enterprise_id: id })
       currentScore.value = res.data.data?.financing_score || null
     } catch {
       currentScore.value = null
@@ -183,7 +183,7 @@ const applyLoan = (product) => {
 
 const fetchEnterprises = async () => {
   try {
-    const res = await api.get('/enterprises', { params: { page: 1, page_size: 100 } })
+    const res = await api.get('/api/enterprises', { params: { page: 1, page_size: 100 } })
     enterprises.value = res.data.items || []
   } catch {}
 }

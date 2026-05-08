@@ -206,7 +206,7 @@ const submitInvoiceImport = async () => {
   try {
     const formData = new FormData()
     formData.append('file', invoiceFile.value)
-    const res = await api.post(`/import/invoices?enterprise_id=${invoiceEnterpriseId.value}`, formData, {
+    const res = await api.post(`/api/import/invoices?enterprise_id=${invoiceEnterpriseId.value}`, formData, {
       headers: { 'Content-Type': 'multipart/form-data' }
     })
     ElMessage.success(`发票导入成功，共 ${res.data.total_rows} 条`)
@@ -245,7 +245,7 @@ const submitBankImport = async () => {
   try {
     const formData = new FormData()
     formData.append('file', bankFile.value)
-    const res = await api.post(`/import/bank_statements?enterprise_id=${bankEnterpriseId.value}`, formData, {
+    const res = await api.post(`/api/import/bank_statements?enterprise_id=${bankEnterpriseId.value}`, formData, {
       headers: { 'Content-Type': 'multipart/form-data' }
     })
     importBatchId.value = res.data.batch_id
@@ -267,13 +267,20 @@ const runAiParse = async () => {
   parseLoading.value = true
   parseStatus.value = 'PROCESSING'
   try {
-    await api.post('/parse/bank_statement', {
+    await api.post('/api/parse/bank_statement', {
       enterprise_id: bankEnterpriseId.value,
       file_id: importBatchId.value
     })
+    // Pull parsed results via preview endpoint
+    try {
+      const previewRes = await api.get(`/api/parse/bank_statement/preview/${importBatchId.value}`, {
+        params: { enterprise_id: bankEnterpriseId.value }
+      })
+      parsedTransactions.value = previewRes.data.transactions || []
+    } catch {
+      parsedTransactions.value = []
+    }
     parseStatus.value = 'COMPLETED'
-    // Fetch parsed transactions (in real app would refetch from store; here just show status)
-    ElMessage.success('AI 解析完成')
   } catch (e) {
     parseStatus.value = 'PENDING'
     ElMessage.error(e.response?.data?.detail || 'AI 解析失败')
@@ -286,7 +293,7 @@ const runMatch = async () => {
   if (!bankEnterpriseId.value) return
   matchLoading.value = true
   try {
-    const res = await api.post('/parse/match', {
+    const res = await api.post('/api/parse/match', {
       enterprise_id: bankEnterpriseId.value
     })
     matchResults.value = (res.data.candidates || []).map(c => ({
@@ -308,10 +315,10 @@ const runMatch = async () => {
 
 const fetchEnterprises = async () => {
   try {
-    const res = await api.get('/enterprises', { params: { page: 1, page_size: 100 } })
+    const res = await api.get('/api/enterprises', { params: { page: 1, page_size: 100 } })
     enterprises.value = res.data.items || []
   } catch (e) {
-    // silent
+    ElMessage.error('加载企业列表失败')
   }
 }
 

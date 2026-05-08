@@ -195,7 +195,7 @@ const generateVatReport = async () => {
   vatLoading.value = true
   try {
     const [year, month] = vatPeriod.value.split('-')
-    const res = await api.post('/reports/vat/generate', {
+    const res = await api.post('/api/reports/vat/generate', {
       enterprise_id: vatEnterpriseId.value,
       period_year: parseInt(year),
       period_month: parseInt(month)
@@ -228,9 +228,9 @@ const healthDimensions = ref([])
 const healthDimConfig = [
   { name: '盈利能力', key: 'profitability', color: '#67c23a' },
   { name: '偿债能力', key: 'solvency', color: '#409eff' },
-  { name: '运营效率', key: 'efficiency', color: '#e6a23c' },
+  { name: '运营效率', key: 'operation_efficiency', color: '#e6a23c' },
   { name: '成长性', key: 'growth', color: '#f56c6c' },
-  { name: '信用状况', key: 'credit', color: '#9b59b6' }
+  { name: '现金流', key: 'cash_flow', color: '#9b59b6' }
 ]
 
 const generateHealthReport = async () => {
@@ -241,7 +241,7 @@ const generateHealthReport = async () => {
   healthLoading.value = true
   healthReportData.value = null
   try {
-    const res = await api.post('/reports/health/generate', {
+    const res = await api.post('/api/reports/health/generate', {
       enterprise_id: healthEnterpriseId.value,
       report_type: 'FULL'
     })
@@ -310,7 +310,7 @@ const generateFinancingReport = async () => {
   finLoading.value = true
   finReportData.value = null
   try {
-    const res = await api.post('/reports/financing/generate', {
+    const res = await api.post('/api/reports/financing/generate', {
       enterprise_id: finEnterpriseId.value
     })
     finReportData.value = res.data.data
@@ -368,7 +368,7 @@ const exportPdf = async (type) => {
 // --- Fetch enterprises ---
 const fetchEnterprises = async () => {
   try {
-    const res = await api.get('/enterprises', { params: { page: 1, page_size: 100 } })
+    const res = await api.get('/api/enterprises', { params: { page: 1, page_size: 100 } })
     enterprises.value = res.data.items || []
   } catch (e) {}
 }
