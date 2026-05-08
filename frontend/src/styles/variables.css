@@ -1,0 +1,251 @@
+/**
+ * FinWise Design System — Global CSS Variables & Base Styles
+ * Design tokens following the warm cream + terracotta palette
+ */
+
+/* === Color Palette === */
+:root {
+  /* Core palette */
+  --color-bg: #faf9f6;
+  --color-bg-alt: #f5f3ee;
+  --color-bg-card: #ffffff;
+  --color-surface: #f0ece0;
+
+  /* Accent colors */
+  --color-accent: #cc785c;        /* Terracotta orange — primary accent */
+  --color-accent-light: #dda490;
+  --color-accent-dark: #b06040;
+  --color-accent-bg: #fdf3ef;
+
+  /* Semantic colors */
+  --color-success: #3d6b4a;       /* Success green */
+  --color-success-light: #e8f2eb;
+  --color-warning: #a86a1f;        /* Warning orange */
+  --color-warning-light: #fdf2e4;
+  --color-danger: #c0392b;
+  --color-danger-light: #fdf0ee;
+  --color-info: #5a7a9a;
+  --color-info-light: #eef3f7;
+
+  /* Text */
+  --color-text-primary: #29261b;
+  --color-text-secondary: #5c5645;
+  --color-text-muted: #9c9786;
+  --color-text-inverse: #ffffff;
+
+  /* Borders */
+  --color-border: #e8e4da;
+  --color-border-light: #f0ece0;
+  --color-border-strong: #d4cfc3;
+
+  /* Element Plus overrides */
+  --el-color-primary: var(--color-accent);
+  --el-color-primary-light-3: var(--color-accent-light);
+  --el-color-primary-dark-2: var(--color-accent-dark);
+  --el-color-success: var(--color-success);
+  --el-color-warning: var(--color-warning);
+  --el-color-danger: var(--color-danger);
+  --el-color-info: var(--color-info);
+
+  --el-bg-color: var(--color-bg);
+  --el-bg-color-page: var(--color-bg);
+  --el-bg-color-overlay: var(--color-bg-card);
+
+  --el-text-color-primary: var(--color-text-primary);
+  --el-text-color-regular: var(--color-text-secondary);
+  --el-text-color-secondary: var(--color-text-muted);
+  --el-text-color-placeholder: var(--color-text-muted);
+
+  --el-border-color: var(--color-border);
+  --el-border-color-light: var(--color-border-light);
+  --el-border-color-lighter: var(--color-border-light);
+  --el-border-color-extra-light: var(--color-border-light);
+
+  --el-fill-color-blank: var(--color-bg-card);
+
+  /* Typography */
+  --font-sans: -apple-system, BlinkMacSystemFont, "PingFang SC", "Hiragino Sans GB", "Microsoft YaHei", sans-serif;
+  --font-mono: "JetBrains Mono", "Fira Code", "SF Mono", ui-monospace, monospace;
+
+  /* Spacing */
+  --space-1: 4px;
+  --space-2: 8px;
+  --space-3: 12px;
+  --space-4: 16px;
+  --space-5: 20px;
+  --space-6: 24px;
+  --space-8: 32px;
+  --space-10: 40px;
+
+  /* Radii */
+  --radius-sm: 4px;
+  --radius-md: 8px;
+  --radius-lg: 12px;
+  --radius-xl: 16px;
+
+  /* Shadows */
+  --shadow-sm: 0 1px 3px rgba(41, 38, 27, 0.06);
+  --shadow-md: 0 4px 12px rgba(41, 38, 27, 0.08);
+  --shadow-lg: 0 8px 24px rgba(41, 38, 27, 0.10);
+
+  /* Transitions */
+  --transition-fast: 0.15s ease;
+  --transition-base: 0.25s ease;
+}
+
+/* === Base Reset === */
+*, *::before, *::after {
+  box-sizing: border-box;
+  margin: 0;
+  padding: 0;
+}
+
+html {
+  scroll-behavior: smooth;
+}
+
+body {
+  font-family: var(--font-sans);
+  background-color: var(--color-bg);
+  color: var(--color-text-primary);
+  -webkit-font-smoothing: antialiased;
+  -moz-osx-font-smoothing: grayscale;
+  line-height: 1.6;
+}
+
+#app {
+  min-height: 100vh;
+}
+
+/* === Scrollbar === */
+::-webkit-scrollbar {
+  width: 6px;
+  height: 6px;
+}
+::-webkit-scrollbar-track {
+  background: var(--color-bg-alt);
+}
+::-webkit-scrollbar-thumb {
+  background: var(--color-border-strong);
+  border-radius: 3px;
+}
+::-webkit-scrollbar-thumb:hover {
+  background: var(--color-text-muted);
+}
+
+/* === Selection === */
+::selection {
+  background: var(--color-accent-bg);
+  color: var(--color-accent-dark);
+}
+
+/* === Focus States === */
+:focus-visible {
+  outline: 2px solid var(--color-accent);
+  outline-offset: 2px;
+}
+
+/* === Monospace Utility === */
+.mono {
+  font-family: var(--font-mono);
+}
+
+/* === Element Plus Component Overrides === */
+
+/* Buttons */
+.el-button--primary {
+  --el-button-bg-color: var(--color-accent);
+  --el-button-border-color: var(--color-accent);
+  --el-button-hover-bg-color: var(--color-accent-dark);
+  --el-button-hover-border-color: var(--color-accent-dark);
+  --el-button-active-bg-color: var(--color-accent-dark);
+  --el-button-active-border-color: var(--color-accent-dark);
+}
+
+/* Cards */
+.el-card {
+  --el-card-bg-color: var(--color-bg-card);
+  border: 1px solid var(--color-border) !important;
+  border-radius: var(--radius-lg) !important;
+  box-shadow: var(--shadow-sm) !important;
+}
+
+/* Inputs */
+.el-input__wrapper {
+  border-radius: var(--radius-md) !important;
+  box-shadow: 0 0 0 1px var(--color-border) inset !important;
+}
+.el-input__wrapper:hover {
+  box-shadow: 0 0 0 1px var(--color-accent) inset !important;
+}
+.el-input__wrapper.is-focus {
+  box-shadow: 0 0 0 1px var(--color-accent) inset !important;
+}
+
+/* Tags */
+.el-tag {
+  border-radius: var(--radius-sm) !important;
+}
+
+/* Tables */
+.el-table {
+  --el-table-border-color: var(--color-border);
+  --el-table-header-bg-color: var(--color-bg-alt);
+  border-radius: var(--radius-md) !important;
+  overflow: hidden;
+}
+.el-table th.el-table__cell {
+  background-color: var(--color-bg-alt) !important;
+  color: var(--color-text-secondary);
+  font-weight: 600;
+  font-size: 13px;
+  text-transform: uppercase;
+  letter-spacing: 0.5px;
+}
+.el-table tr:hover > td.el-table__cell {
+  background-color: var(--color-accent-bg) !important;
+}
+
+/* Menu */
+.el-menu {
+  border-right: none !important;
+}
+
+/* Dialog */
+.el-dialog {
+  border-radius: var(--radius-xl) !important;
+  border: 1px solid var(--color-border) !important;
+}
+
+/* Dropdown */
+.el-dropdown-menu {
+  border-radius: var(--radius-md) !important;
+  border: 1px solid var(--color-border) !important;
+  box-shadow: var(--shadow-md) !important;
+}
+
+/* Pagination */
+.el-pagination {
+  --el-pagination-hover-color: var(--color-accent);
+}
+
+/* Progress */
+.el-progress-bar__outer {
+  background-color: var(--color-bg-alt) !important;
+}
+
+/* Tabs */
+.el-tabs__item.is-active {
+  color: var(--color-accent) !important;
+}
+.el-tabs__active-bar {
+  background-color: var(--color-accent) !important;
+}
+
+/* === Utility Classes === */
+.bg-warm { background-color: var(--color-bg); }
+.text-accent { color: var(--color-accent); }
+.text-success { color: var(--color-success); }
+.text-warning { color: var(--color-warning); }
+.text-muted { color: var(--color-text-muted); }
+.font-mono { font-family: var(--font-mono); }
