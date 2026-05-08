@@ -12,7 +12,7 @@ import jwt
 from backend.core.config import settings
 from backend.storage.manager import user_store
 from backend.schemas.user import (
-    LoginRequest, LoginResponse, UserResponse, UserStatus, UserRole
+    LoginRequest, LoginResponse, UserResponse, UserStatus, UserRole, UserCreate
 )
 
 router = APIRouter(prefix="/api/auth", tags=["auth"])
@@ -120,22 +120,18 @@ async def get_me(current_user: dict = Depends(get_current_user)):
 
 
 @router.post("/register", response_model=UserResponse)
-async def register(
-    username: str,
-    password: str,
-    real_name: str,
-):
+async def register(req: UserCreate):
     """Register a new user (for demo/seed purposes)."""
     # Check if username exists
-    existing = user_store.first(username=username)
+    existing = user_store.first(username=req.username)
     if existing:
         raise HTTPException(status_code=400, detail="Username already exists")
 
     user = user_store.create(
         id=str(uuid.uuid4()),
-        username=username,
-        password_hash=_hash_password(password),
-        real_name=real_name,
+        username=req.username,
+        password_hash=_hash_password(req.password),
+        real_name=req.real_name or req.username,
         role=UserRole.OPERATOR.value,
         status=UserStatus.ACTIVE.value,
     )
