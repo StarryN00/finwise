@@ -1,518 +1,389 @@
 <template>
   <div class="dashboard">
-    <!-- Header -->
-    <header class="dashboard-header">
-      <div class="header-left">
-        <span class="logo-icon">💰</span>
-        <span class="logo-text">智税管家</span>
-      </div>
-      <div class="header-right">
-        <el-dropdown @command="handleCommand">
-          <span class="user-info">
-            <el-icon><User /></el-icon>
-            <span>{{ authStore.user?.real_name || authStore.user?.username }}</span>
-            <el-icon><ArrowDown /></el-icon>
-          </span>
-          <template #dropdown>
-            <el-dropdown-menu>
-              <el-dropdown-item command="logout">退出登录</el-dropdown-item>
-            </el-dropdown-menu>
-          </template>
-        </el-dropdown>
-      </div>
-    </header>
-
-    <!-- Main Content -->
-    <div class="dashboard-content">
-      <!-- Sidebar -->
-      <aside class="sidebar">
-        <el-menu
-          :default-active="activeMenu"
-          class="sidebar-menu"
-          @select="handleMenuSelect"
-        >
-          <el-menu-item index="dashboard">
-            <el-icon><DataLine /></el-icon>
-            <span>企业总览</span>
-          </el-menu-item>
-          <el-menu-item index="enterprises">
-            <el-icon><OfficeBuilding /></el-icon>
-            <span>企业管理</span>
-          </el-menu-item>
-          <el-menu-item index="import">
-            <el-icon><Upload /></el-icon>
-            <span>数据导入</span>
-          </el-menu-item>
-          <el-menu-item index="reports">
-            <el-icon><Document /></el-icon>
-            <span>报告管理</span>
-          </el-menu-item>
-          <el-menu-item index="financing">
-            <el-icon><Money /></el-icon>
-            <span>融资服务</span>
-          </el-menu-item>
-        </el-menu>
-      </aside>
-
-      <!-- Main Panel -->
-      <main class="main-panel">
-        <h1 class="page-title">企业总览</h1>
-
-        <!-- Stats Cards -->
-        <div class="stats-grid">
-          <div class="stat-card">
-            <div class="stat-icon" style="background: #e8f4fd;">
-              <el-icon :size="28" color="#409eff"><OfficeBuilding /></el-icon>
-            </div>
-            <div class="stat-info">
-              <span class="stat-value">{{ stats.total }}</span>
-              <span class="stat-label">企业总数</span>
-            </div>
+    <!-- Stat Cards -->
+    <el-row :gutter="20" class="stat-row">
+      <el-col v-for="(stat, i) in stats" :key="stat.label" :span="6">
+        <div class="stat-card" :style="{ '--accent': stat.color }">
+          <div class="stat-icon-wrap">
+            <span class="stat-icon" v-html="stat.icon"></span>
           </div>
-
-          <div class="stat-card">
-            <div class="stat-icon" style="background: #e8faf0;">
-              <el-icon :size="28" color="#67c23a"><CircleCheck /></el-icon>
-            </div>
-            <div class="stat-info">
-              <span class="stat-value">{{ stats.active }}</span>
-              <span class="stat-label">活跃企业</span>
-            </div>
+          <div class="stat-body">
+            <div class="stat-value">{{ stat.value }}</div>
+            <div class="stat-label">{{ stat.label }}</div>
           </div>
-
-          <div class="stat-card">
-            <div class="stat-icon" style="background: #fef0e8;">
-              <el-icon :size="28" color="#e6a23c"><Star /></el-icon>
-            </div>
-            <div class="stat-info">
-              <span class="stat-value">{{ stats.highPotential }}</span>
-              <span class="stat-label">高潜力企业</span>
-            </div>
+          <div class="stat-trend" :class="stat.trendUp ? 'up' : 'down'">
+            <span v-html="stat.trendUp ? arrowUp : arrowDown"></span>
+            {{ stat.trend }}
           </div>
+        </div>
+      </el-col>
+    </el-row>
 
-          <div class="stat-card">
-            <div class="stat-icon" style="background: #fde8e8;">
-              <el-icon :size="28" color="#f56c6c"><Warning /></el-icon>
-            </div>
-            <div class="stat-info">
-              <span class="stat-value">{{ stats.pendingAnalysis }}</span>
-              <span class="stat-label">待分析企业</span>
+    <!-- Main Grid -->
+    <el-row :gutter="20">
+      <!-- Activity Feed -->
+      <el-col :span="14">
+        <div class="panel">
+          <div class="panel-header">
+            <span class="panel-title">最近操作</span>
+            <span class="panel-meta">实时同步</span>
+          </div>
+          <div class="activity-list">
+            <div v-for="item in activities" :key="item.id" class="activity-item">
+              <div class="activity-dot" :style="{ background: item.color }"></div>
+              <div class="activity-content">
+                <div class="activity-text">{{ item.text }}</div>
+                <div class="activity-meta">
+                  <span class="activity-enterprise">{{ item.enterprise }}</span>
+                  <span class="activity-time mono">{{ item.time }}</span>
+                </div>
+              </div>
             </div>
           </div>
         </div>
+      </el-col>
 
-        <!-- Charts Row -->
-        <div class="charts-row">
-          <!-- Enterprise Source Distribution -->
-          <div class="chart-card">
-            <h3 class="chart-title">企业来源分布</h3>
-            <div ref="sourceChartRef" class="chart-container"></div>
+      <!-- Quick Actions -->
+      <el-col :span="10">
+        <div class="panel">
+          <div class="panel-header">
+            <span class="panel-title">快捷操作</span>
           </div>
-
-          <!-- Industry Distribution -->
-          <div class="chart-card">
-            <h3 class="chart-title">行业分布</h3>
-            <div ref="industryChartRef" class="chart-container"></div>
+          <div class="quick-actions">
+            <button
+              v-for="action in quickActions"
+              :key="action.label"
+              class="quick-action-btn"
+              @click="$router.push(action.path)"
+            >
+              <span class="qa-icon" v-html="action.icon"></span>
+              <span class="qa-label">{{ action.label }}</span>
+            </button>
           </div>
         </div>
 
-        <!-- Recent Enterprises Table -->
-        <div class="table-card">
-          <h3 class="chart-title">最近添加的企业</h3>
-          <el-table :data="recentEnterprises" stripe style="width: 100%">
-            <el-table-column prop="name" label="企业名称" min-width="200" />
-            <el-table-column prop="industry" label="行业" width="120">
-              <template #default="{ row }">
-                {{ row.industry || '--' }}
-              </template>
-            </el-table-column>
-            <el-table-column prop="status" label="状态" width="100">
-              <template #default="{ row }">
-                <el-tag :type="row.status === 'ACTIVE' ? 'success' : 'info'" size="small">
-                  {{ row.status === 'ACTIVE' ? '活跃' : '非活跃' }}
-                </el-tag>
-              </template>
-            </el-table-column>
-            <el-table-column prop="source" label="来源" width="100">
-              <template #default="{ row }">
-                <span class="source-tag">{{ getSourceLabel(row.source) }}</span>
-              </template>
-            </el-table-column>
-            <el-table-column prop="financing_score" label="融资评分" width="100">
-              <template #default="{ row }">
-                <span v-if="row.financing_score" :class="getScoreClass(row.financing_score)">
-                  {{ row.financing_score }}
-                </span>
-                <span v-else class="no-score">--</span>
-              </template>
-            </el-table-column>
-            <el-table-column prop="last_analysis_date" label="最近分析" width="120">
-              <template #default="{ row }">
-                {{ row.last_analysis_date || '--' }}
-              </template>
-            </el-table-column>
-          </el-table>
+        <!-- Financing Snapshot -->
+        <div class="panel" style="margin-top: 20px;">
+          <div class="panel-header">
+            <span class="panel-title">融资概览</span>
+            <span class="panel-link" @click="$router.push('/financing')">查看全部 →</span>
+          </div>
+          <div class="fin-snapshot">
+            <div v-for="item in finSnapshot" :key="item.name" class="fin-row">
+              <span class="fin-name">{{ item.name }}</span>
+              <div class="fin-bar-wrap">
+                <div class="fin-bar" :style="{ width: item.pct + '%', background: item.color }"></div>
+              </div>
+              <span class="fin-score" :style="{ color: item.color }">{{ item.score }}</span>
+            </div>
+          </div>
         </div>
-      </main>
-    </div>
+      </el-col>
+    </el-row>
   </div>
 </template>
 
 <script setup>
-import { ref, reactive, onMounted, onUnmounted } from 'vue'
-import { useRouter } from 'vue-router'
-import { useAuthStore } from '@/stores/auth'
-import * as echarts from 'echarts'
-import api from '@/api'
+import { ref } from 'vue'
 
-const router = useRouter()
-const authStore = useAuthStore()
+const arrowUp = `<svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5"><polyline points="18 15 12 9 6 15"/></svg>`
+const arrowDown = `<svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5"><polyline points="6 9 12 15 18 9"/></svg>`
 
-const activeMenu = ref('dashboard')
-const sourceChartRef = ref(null)
-const industryChartRef = ref(null)
-let sourceChart = null
-let industryChart = null
-
-const stats = reactive({
-  total: 0,
-  active: 0,
-  highPotential: 0,
-  pendingAnalysis: 0
-})
-
-const recentEnterprises = ref([])
-
-const getSourceLabel = (source) => {
-  const map = { 'DIRECT': '直拓', 'LIU': '刘总', 'PING': '平总' }
-  return map[source] || source || '--'
-}
-
-const getScoreClass = (score) => {
-  if (score >= 80) return 'score-high'
-  if (score >= 60) return 'score-medium'
-  return 'score-low'
-}
-
-const handleCommand = (command) => {
-  if (command === 'logout') {
-    authStore.logout()
-    router.push('/login')
+const stats = ref([
+  {
+    label: '服务企业数',
+    value: '12',
+    color: '#cc785c',
+    icon: `<svg width="22" height="22" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M3 21h18M5 21V7l8-4 8 4v14M9 21v-6h6v6"/></svg>`,
+    trend: '+2 本月',
+    trendUp: true
+  },
+  {
+    label: '本月发票数',
+    value: '256',
+    color: '#3d6b4a',
+    icon: `<svg width="22" height="22" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M14 2H6a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V8z"/><polyline points="14 2 14 8 20 8"/></svg>`,
+    trend: '+18%',
+    trendUp: true
+  },
+  {
+    label: '待申报任务',
+    value: '18',
+    color: '#a86a1f',
+    icon: `<svg width="22" height="22" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><circle cx="12" cy="12" r="10"/><polyline points="12 6 12 12 16 14"/></svg>`,
+    trend: '需处理',
+    trendUp: false
+  },
+  {
+    label: '融资需求',
+    value: '5',
+    color: '#5a7a9a',
+    icon: `<svg width="22" height="22" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><circle cx="12" cy="12" r="10"/><path d="M16 8h-6a2 2 0 1 0 0 4h4a2 2 0 1 1 0 4H8"/><line x1="12" y1="6" x2="12" y2="8"/><line x1="12" y1="16" x2="12" y2="18"/></svg>`,
+    trend: '待匹配',
+    trendUp: false
   }
-}
+])
 
-const handleMenuSelect = (index) => {
-  activeMenu.value = index
-  if (index === 'dashboard') {
-    router.push('/')
-  } else if (index === 'enterprises') {
-    router.push('/enterprises')
-  } else if (index === 'import') {
-    router.push('/invoices')
-  } else if (index === 'reports') {
-    router.push('/reports')
-  } else if (index === 'financing') {
-    router.push('/financing')
+const activities = ref([
+  { id: 1, text: '完成增值税申报', enterprise: '南京华瑞机械', time: '16:30', color: '#3d6b4a' },
+  { id: 2, text: '导入银行对账单 23 条', enterprise: '苏州华锦纺织', time: '14:20', color: '#cc785c' },
+  { id: 3, text: '生成财务健康报告', enterprise: '杭州鼎盛科技', time: '10:15', color: '#5a7a9a' },
+  { id: 4, text: '发票匹配完成', enterprise: '南京华瑞机械', time: '09:45', color: '#3d6b4a' },
+  { id: 5, text: '发起贷款申请', enterprise: '苏州华锦纺织', time: '昨天', color: '#a86a1f' }
+])
+
+const quickActions = [
+  {
+    label: '导入发票',
+    path: '/invoices',
+    icon: `<svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4"/><polyline points="17 8 12 3 7 8"/><line x1="12" y1="3" x2="12" y2="15"/></svg>`
+  },
+  {
+    label: '发起申报',
+    path: '/reports',
+    icon: `<svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M14 2H6a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V8z"/><polyline points="14 2 14 8 20 8"/><line x1="16" y1="13" x2="8" y2="13"/><line x1="16" y1="17" x2="8" y2="17"/></svg>`
+  },
+  {
+    label: '生成报告',
+    path: '/reports',
+    icon: `<svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><line x1="18" y1="20" x2="18" y2="10"/><line x1="12" y1="20" x2="12" y2="4"/><line x1="6" y1="20" x2="6" y2="14"/></svg>`
+  },
+  {
+    label: '添加企业',
+    path: '/enterprises',
+    icon: `<svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M16 21v-2a4 4 0 0 0-4-4H5a4 4 0 0 0-4 4v2"/><circle cx="8.5" cy="7" r="4"/><line x1="20" y1="8" x2="20" y2="14"/><line x1="23" y1="11" x2="17" y2="11"/></svg>`
   }
-}
+]
 
-const fetchDashboardData = async () => {
-  try {
-    const response = await api.get('/api/enterprises', { params: { page_size: 100 } })
-    const data = response.data
-
-    stats.total = data.total || 0
-    stats.active = data.items.filter(e => e.status === 'ACTIVE').length
-    stats.highPotential = data.items.filter(e => e.financing_score && e.financing_score >= 70).length
-    stats.pendingAnalysis = data.items.filter(e => !e.financing_score).length
-
-    recentEnterprises.value = data.items.slice(0, 10)
-
-    updateSourceChart(data.items)
-    updateIndustryChart(data.items)
-  } catch (error) {
-    console.error('Failed to fetch dashboard data:', error)
-  }
-}
-
-const updateSourceChart = (items) => {
-  if (!sourceChartRef.value) return
-
-  const sourceCount = {}
-  items.forEach(item => {
-    const source = item.source || 'UNKNOWN'
-    sourceCount[source] = (sourceCount[source] || 0) + 1
-  })
-
-  const sourceMap = { 'DIRECT': '直拓', 'LIU': '刘总介绍', 'PING': '平总介绍' }
-
-  const chartData = Object.entries(sourceCount).map(([key, value]) => ({
-    name: sourceMap[key] || key,
-    value
-  }))
-
-  if (!sourceChart) {
-    sourceChart = echarts.init(sourceChartRef.value)
-  }
-
-  sourceChart.setOption({
-    tooltip: { trigger: 'item', formatter: '{b}: {c} ({d}%)' },
-    legend: { orient: 'vertical', left: 'left', top: 'middle' },
-    series: [{
-      type: 'pie',
-      radius: ['45%', '75%'],
-      center: ['60%', '50%'],
-      avoidLabelOverlap: false,
-      itemStyle: { borderRadius: 8, borderColor: '#fff', borderWidth: 2 },
-      label: { show: false },
-      emphasis: {
-        label: { show: true, fontSize: 14, fontWeight: 'bold' }
-      },
-      data: chartData.length ? chartData : [{ name: '暂无数据', value: 1 }]
-    }],
-    color: ['#667eea', '#764ba2', '#f6d365', '#fda085']
-  })
-}
-
-const updateIndustryChart = (items) => {
-  if (!industryChartRef.value) return
-
-  const industryCount = {}
-  items.forEach(item => {
-    const industry = item.industry || '未知'
-    industryCount[industry] = (industryCount[industry] || 0) + 1
-  })
-
-  const chartData = Object.entries(industryCount)
-    .sort((a, b) => b[1] - a[1])
-    .slice(0, 8)
-    .map(([name, value]) => ({ name, value }))
-
-  if (!industryChart) {
-    industryChart = echarts.init(industryChartRef.value)
-  }
-
-  industryChart.setOption({
-    tooltip: { trigger: 'axis', axisPointer: { type: 'shadow' } },
-    grid: { left: '3%', right: '4%', bottom: '3%', containLabel: true },
-    xAxis: { type: 'value' },
-    yAxis: {
-      type: 'category',
-      data: chartData.map(d => d.name),
-      axisLabel: { interval: 0, fontSize: 11 }
-    },
-    series: [{
-      type: 'bar',
-      data: chartData.map(d => d.value),
-      itemStyle: {
-        color: new echarts.graphic.LinearGradient(0, 0, 1, 0, [
-          { offset: 0, color: '#667eea' },
-          { offset: 1, color: '#764ba2' }
-        ]),
-        borderRadius: [0, 4, 4, 0]
-      },
-      barWidth: '50%'
-    }]
-  })
-}
-
-const handleResize = () => {
-  sourceChart?.resize()
-  industryChart?.resize()
-}
-
-onMounted(() => {
-  fetchDashboardData()
-  window.addEventListener('resize', handleResize)
-})
-
-onUnmounted(() => {
-  window.removeEventListener('resize', handleResize)
-  sourceChart?.dispose()
-  industryChart?.dispose()
-})
+const finSnapshot = ref([
+  { name: '南京华瑞机械', score: 78, pct: 78, color: '#3d6b4a' },
+  { name: '苏州华锦纺织', score: 65, pct: 65, color: '#a86a1f' },
+  { name: '杭州鼎盛科技', score: 82, pct: 82, color: '#3d6b4a' },
+  { name: '上海鼎丰贸易', score: 51, pct: 51, color: '#a86a1f' }
+])
 </script>
 
 <style scoped>
-.dashboard {
-  display: flex;
-  flex-direction: column;
-  height: 100vh;
-  background-color: #f5f7fa;
-}
+.dashboard { width: 100%; }
 
-.dashboard-header {
-  display: flex;
-  align-items: center;
-  justify-content: space-between;
-  height: 60px;
-  padding: 0 24px;
-  background: white;
-  box-shadow: 0 2px 8px rgba(0, 0, 0, 0.08);
-}
-
-.header-left {
-  display: flex;
-  align-items: center;
-  gap: 8px;
-}
-
-.logo-icon {
-  font-size: 28px;
-}
-
-.logo-text {
-  font-size: 20px;
-  font-weight: 600;
-  color: #333;
-}
-
-.header-right {
-  display: flex;
-  align-items: center;
-}
-
-.user-info {
-  display: flex;
-  align-items: center;
-  gap: 8px;
-  cursor: pointer;
-  padding: 8px 12px;
-  border-radius: 4px;
-}
-
-.user-info:hover {
-  background-color: #f5f7fa;
-}
-
-.dashboard-content {
-  display: flex;
-  flex: 1;
-  overflow: hidden;
-}
-
-.sidebar {
-  width: 200px;
-  background: white;
-  border-right: 1px solid #e8e8e8;
-  padding-top: 16px;
-}
-
-.sidebar-menu {
-  border-right: none;
-}
-
-.main-panel {
-  flex: 1;
-  padding: 24px;
-  overflow-y: auto;
-}
-
-.page-title {
-  font-size: 24px;
-  font-weight: 600;
-  color: #333;
-  margin-bottom: 24px;
-}
-
-.stats-grid {
-  display: grid;
-  grid-template-columns: repeat(4, 1fr);
-  gap: 20px;
-  margin-bottom: 24px;
-}
+/* === Stat Cards === */
+.stat-row { margin-bottom: 20px; }
 
 .stat-card {
+  background: var(--color-bg-card);
+  border: 1px solid var(--color-border);
+  border-radius: var(--radius-lg);
+  padding: 20px;
   display: flex;
   align-items: center;
   gap: 16px;
-  padding: 24px;
-  background: white;
-  border-radius: 12px;
-  box-shadow: 0 2px 12px rgba(0, 0, 0, 0.04);
+  box-shadow: var(--shadow-sm);
+  transition: box-shadow var(--transition-base), transform var(--transition-base);
+  position: relative;
+  overflow: hidden;
 }
 
-.stat-icon {
+.stat-card::before {
+  content: '';
+  position: absolute;
+  top: 0;
+  left: 0;
+  width: 4px;
+  height: 100%;
+  background: var(--accent);
+}
+
+.stat-card:hover {
+  box-shadow: var(--shadow-md);
+  transform: translateY(-1px);
+}
+
+.stat-icon-wrap {
+  width: 48px;
+  height: 48px;
+  border-radius: var(--radius-md);
   display: flex;
   align-items: center;
   justify-content: center;
-  width: 56px;
-  height: 56px;
-  border-radius: 12px;
+  background: color-mix(in srgb, var(--accent) 10%, transparent);
+  color: var(--accent);
+  flex-shrink: 0;
 }
 
-.stat-info {
-  display: flex;
-  flex-direction: column;
-}
+.stat-body { flex: 1; min-width: 0; }
 
 .stat-value {
-  font-size: 28px;
-  font-weight: 700;
-  color: #333;
+  font-size: 26px;
+  font-weight: 800;
+  color: var(--color-text-primary);
+  line-height: 1.1;
 }
 
 .stat-label {
-  font-size: 14px;
-  color: #666;
-  margin-top: 4px;
+  font-size: 12px;
+  color: var(--color-text-muted);
+  margin-top: 2px;
+  text-transform: uppercase;
+  letter-spacing: 0.5px;
 }
 
-.charts-row {
-  display: grid;
-  grid-template-columns: 1fr 1fr;
-  gap: 20px;
-  margin-bottom: 24px;
-}
-
-.chart-card {
-  padding: 20px;
-  background: white;
-  border-radius: 12px;
-  box-shadow: 0 2px 12px rgba(0, 0, 0, 0.04);
-}
-
-.chart-title {
-  font-size: 16px;
+.stat-trend {
+  display: flex;
+  align-items: center;
+  gap: 4px;
+  font-size: 11px;
   font-weight: 600;
-  color: #333;
+  padding: 3px 8px;
+  border-radius: 20px;
+}
+.stat-trend.up { background: var(--color-success-light); color: var(--color-success); }
+.stat-trend.down { background: var(--color-warning-light); color: var(--color-warning); }
+
+/* === Panels === */
+.panel {
+  background: var(--color-bg-card);
+  border: 1px solid var(--color-border);
+  border-radius: var(--radius-lg);
+  padding: 20px;
+  box-shadow: var(--shadow-sm);
+}
+
+.panel-header {
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
   margin-bottom: 16px;
 }
 
-.chart-container {
-  height: 260px;
+.panel-title {
+  font-size: 14px;
+  font-weight: 700;
+  color: var(--color-text-primary);
+  letter-spacing: 0.5px;
 }
 
-.table-card {
-  padding: 20px;
-  background: white;
-  border-radius: 12px;
-  box-shadow: 0 2px 12px rgba(0, 0, 0, 0.04);
+.panel-meta {
+  font-size: 11px;
+  color: var(--color-text-muted);
 }
 
-.source-tag {
+.panel-link {
   font-size: 12px;
-  padding: 2px 8px;
-  background: #f0f2f5;
-  border-radius: 4px;
-  color: #666;
+  color: var(--color-accent);
+  cursor: pointer;
+  font-weight: 500;
+}
+.panel-link:hover { text-decoration: underline; }
+
+/* === Activity === */
+.activity-list { display: flex; flex-direction: column; gap: 0; }
+
+.activity-item {
+  display: flex;
+  align-items: flex-start;
+  gap: 12px;
+  padding: 10px 0;
+  border-bottom: 1px solid var(--color-border-light);
+}
+.activity-item:last-child { border-bottom: none; }
+
+.activity-dot {
+  width: 8px;
+  height: 8px;
+  border-radius: 50%;
+  margin-top: 5px;
+  flex-shrink: 0;
 }
 
-.score-high {
-  color: #67c23a;
-  font-weight: 600;
+.activity-text {
+  font-size: 13px;
+  color: var(--color-text-primary);
+  font-weight: 500;
 }
 
-.score-medium {
-  color: #e6a23c;
-  font-weight: 600;
+.activity-meta {
+  display: flex;
+  gap: 8px;
+  margin-top: 2px;
 }
 
-.score-low {
-  color: #909399;
+.activity-enterprise {
+  font-size: 12px;
+  color: var(--color-text-muted);
 }
 
-.no-score {
-  color: #c0c4cc;
+.activity-time {
+  font-size: 11px;
+  color: var(--color-text-muted);
+}
+
+/* === Quick Actions === */
+.quick-actions {
+  display: grid;
+  grid-template-columns: 1fr 1fr;
+  gap: 10px;
+}
+
+.quick-action-btn {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  justify-content: center;
+  gap: 8px;
+  padding: 16px 12px;
+  background: var(--color-bg);
+  border: 1px solid var(--color-border);
+  border-radius: var(--radius-md);
+  cursor: pointer;
+  transition: all var(--transition-fast);
+}
+
+.quick-action-btn:hover {
+  background: var(--color-accent-bg);
+  border-color: var(--color-accent);
+}
+
+.qa-icon { color: var(--color-accent); }
+.qa-label { font-size: 12px; font-weight: 600; color: var(--color-text-secondary); }
+
+/* === Fin Snapshot === */
+.fin-snapshot { display: flex; flex-direction: column; gap: 10px; }
+
+.fin-row {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+}
+
+.fin-name {
+  width: 90px;
+  font-size: 12px;
+  color: var(--color-text-secondary);
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  flex-shrink: 0;
+}
+
+.fin-bar-wrap {
+  flex: 1;
+  height: 6px;
+  background: var(--color-bg-alt);
+  border-radius: 3px;
+  overflow: hidden;
+}
+
+.fin-bar {
+  height: 100%;
+  border-radius: 3px;
+  transition: width 0.6s ease;
+}
+
+.fin-score {
+  font-size: 12px;
+  font-weight: 700;
+  width: 28px;
+  text-align: right;
+  flex-shrink: 0;
 }
 </style>
