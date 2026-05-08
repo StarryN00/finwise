@@ -221,7 +221,7 @@ const generateHealthReport = async () => {
 
 const renderRadarChart = (data) => {
   if (!radarChartRef.value) return
-  const chart = echarts.init(radarChartRef.value)
+  const chart = echarts.init(radarChartRef.value, 'finwise')
   const scores = data.dimensions || {}
   chart.setOption({
     backgroundColor: 'transparent',

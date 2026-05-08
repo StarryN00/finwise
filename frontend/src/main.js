@@ -5,6 +5,10 @@ import 'element-plus/dist/index.css'
 import '@/styles/variables.css'
 import * as ElementPlusIconsVue from '@element-plus/icons-vue'
 import router from './router'
+import { finwiseTheme } from './styles/echarts-theme'
+import * as echarts from 'echarts'
+echarts.registerTheme('finwise', finwiseTheme)
+
 import App from './App.vue'
 
 const app = createApp(App)

@@ -4,7 +4,10 @@
  * Background: warm cream (#faf9f6), accent: terracotta (#cc785c)
  */
 
-import { finwiseTheme } from './echarts-theme'
+import html2canvas from 'html2canvas'
+import { jsPDF } from 'jspdf'
+
+// Design tokens shared for PDF generation (background, accent, text colors)
 
 /**
  * Export a DOM element as a localized FinWise PDF
@@ -13,15 +16,10 @@ import { finwiseTheme } from './echarts-theme'
  * @param {object} options - { title, companyName, date }
  */
 export async function exportToPdf(element, filename = 'finwise-report', options = {}) {
-  if (typeof window.html2canvas === 'undefined' || typeof window.jspdf === 'undefined') {
-    throw new Error('PDF export components not loaded (html2canvas or jspdf)')
-  }
-
-  const { jsPDF } = window.jspdf
   const { title = '财务报告', companyName = '', date = new Date().toLocaleDateString('zh-CN') } = options
 
   // Capture the element
-  const canvas = await window.html2canvas(element, {
+  const canvas = await html2canvas(element, {
     scale: 2,
     useCORS: true,
     backgroundColor: '#faf9f6',
