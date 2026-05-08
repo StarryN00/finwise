@@ -1,41 +1,44 @@
 import { createRouter, createWebHistory } from 'vue-router'
+import Layout from '@/layout/index.vue'
 
 const routes = [
   {
     path: '/login',
     name: 'Login',
-    component: () => import('../views/LoginView.vue'),
+    component: () => import('@/views/LoginView.vue'),
     meta: { requiresAuth: false }
   },
   {
     path: '/',
-    name: 'Dashboard',
-    component: () => import('../views/DashboardView.vue'),
-    meta: { requiresAuth: true }
-  },
-  {
-    path: '/enterprises',
-    name: 'Enterprises',
-    component: () => import('../views/enterprises/index.vue'),
-    meta: { requiresAuth: true }
-  },
-  {
-    path: '/invoices',
-    name: 'Invoices',
-    component: () => import('../views/invoices/index.vue'),
-    meta: { requiresAuth: true }
-  },
-  {
-    path: '/reports',
-    name: 'Reports',
-    component: () => import('../views/reports/index.vue'),
-    meta: { requiresAuth: true }
-  },
-  {
-    path: '/financing',
-    name: 'Financing',
-    component: () => import('../views/financing/index.vue'),
-    meta: { requiresAuth: true }
+    component: Layout,
+    meta: { requiresAuth: true },
+    children: [
+      {
+        path: '',
+        name: 'Dashboard',
+        component: () => import('@/views/DashboardView.vue')
+      },
+      {
+        path: 'enterprises',
+        name: 'Enterprises',
+        component: () => import('@/views/enterprises/index.vue')
+      },
+      {
+        path: 'invoices',
+        name: 'Invoices',
+        component: () => import('@/views/invoices/index.vue')
+      },
+      {
+        path: 'reports',
+        name: 'Reports',
+        component: () => import('@/views/reports/index.vue')
+      },
+      {
+        path: 'financing',
+        name: 'Financing',
+        component: () => import('@/views/financing/index.vue')
+      }
+    ]
   }
 ]
 
@@ -44,7 +47,6 @@ const router = createRouter({
   routes
 })
 
-// Navigation guard for auth check
 router.beforeEach((to, from, next) => {
   const token = localStorage.getItem('token')
   if (to.meta.requiresAuth && !token) {
