@@ -13,7 +13,8 @@
             <div class="publish-label mono">PUBLISHED ON</div>
             <div class="publish-date mono">2026 - 05 - 08</div>
           </div>
-          <button class="btn ghost export-btn">导出 PDF 月刊</button>
+          <!-- TODO: Wire PDF export after the report export API is ready. -->
+          <button class="btn ghost export-btn" disabled>导出 PDF 月刊</button>
         </div>
       </div>
 
@@ -73,8 +74,8 @@
             <div class="donut-wrap">
               <div ref="activeChartRef" class="active-chart"></div>
               <div class="donut-center">
-                <strong>74%</strong>
-                <span class="mono">ACTIVE</span>
+                <strong>{{ activeCenterText }}</strong>
+                <span class="mono">{{ activeCenterLabel }}</span>
               </div>
             </div>
             <div class="active-legend">
@@ -103,7 +104,7 @@
 </template>
 
 <script setup>
-import { ref, onMounted, onUnmounted, nextTick, watch } from 'vue'
+import { ref, reactive, computed, onMounted, onUnmounted, nextTick, watch } from 'vue'
 import * as echarts from 'echarts'
 
 const industryChartRef = ref(null)
@@ -112,6 +113,14 @@ const industryView = ref('count')
 const activeView = ref('month')
 const sparklineRefs = []
 const charts = []
+const activeCenterText = ref('0%')
+const activeCenterLabel = ref('ACTIVE')
+const theme = reactive({
+  ink: '',
+  accent: '',
+  lineSoft: '',
+  lineStrong: ''
+})
 
 const kpis = [
   {
@@ -157,10 +166,10 @@ const kpis = [
   }
 ]
 
-const activeStats = [
-  { name: '活跃企业', value: 923, rate: '74%', color: 'var(--ink)' },
-  { name: '异常企业', value: 186, rate: '14%', color: 'var(--accent)' },
-  { name: '休眠企业', value: 139, rate: '11%', color: 'var(--line-strong)' }
+const activeSource = [
+  { name: '活跃企业', value: 923, colorToken: 'ink' },
+  { name: '异常企业', value: 186, colorToken: 'accent' },
+  { name: '休眠企业', value: 139, colorToken: 'lineStrong' }
 ]
 
 const setSparklineRef = (el, index) => {
@@ -169,8 +178,50 @@ const setSparklineRef = (el, index) => {
 
 const cssVar = (name) => getComputedStyle(document.documentElement).getPropertyValue(name).trim()
 
+const loadTheme = () => {
+  theme.ink = cssVar('--ink')
+  theme.accent = cssVar('--accent')
+  theme.lineSoft = cssVar('--line-soft')
+  theme.lineStrong = cssVar('--line-strong')
+}
+
+const distributePercentages = (values) => {
+  const total = values.reduce((sum, value) => sum + value, 0)
+  if (!total) return values.map(() => 0)
+
+  const exact = values.map(value => (value / total) * 100)
+  const rounded = exact.map(Math.floor)
+  let remaining = 100 - rounded.reduce((sum, value) => sum + value, 0)
+  const order = exact
+    .map((value, index) => ({ index, remainder: value - rounded[index] }))
+    .sort((a, b) => b.remainder - a.remainder)
+
+  order.forEach(({ index }) => {
+    if (remaining <= 0) return
+    rounded[index] += 1
+    remaining -= 1
+  })
+
+  return rounded
+}
+
+const activeStats = computed(() => {
+  const percentages = distributePercentages(activeSource.map(item => item.value))
+  return activeSource.map((item, index) => ({
+    ...item,
+    rate: `${percentages[index]}%`,
+    percentage: percentages[index],
+    color: theme[item.colorToken] || `var(--${item.colorToken === 'lineStrong' ? 'line-strong' : item.colorToken})`
+  }))
+})
+
+watch(activeStats, (stats) => {
+  activeCenterText.value = stats[0]?.rate || '0%'
+}, { immediate: true })
+
 onMounted(async () => {
   await nextTick()
+  loadTheme()
   renderSparklines()
   renderIndustryChart()
   renderActiveChart()
@@ -180,12 +231,25 @@ onMounted(async () => {
 onUnmounted(() => {
   window.removeEventListener('resize', resizeCharts)
   charts.forEach(chart => chart.dispose())
+  charts.length = 0
 })
 
 watch(industryView, () => renderIndustryChart())
 watch(activeView, () => renderActiveChart())
 
-const rememberChart = (chart) => {
+const removeChart = (chart) => {
+  const index = charts.indexOf(chart)
+  if (index >= 0) charts.splice(index, 1)
+}
+
+const replaceChart = (dom, initFn) => {
+  const existing = echarts.getInstanceByDom(dom)
+  if (existing) {
+    removeChart(existing)
+    existing.dispose()
+  }
+
+  const chart = initFn()
   charts.push(chart)
   return chart
 }
@@ -197,7 +261,16 @@ const resizeCharts = () => {
 const renderSparklines = () => {
   sparklineRefs.forEach((el, index) => {
     if (!el) return
-    const chart = rememberChart(echarts.init(el))
+    if (!kpis[index]) return
+
+    const existing = echarts.getInstanceByDom(el)
+    if (existing) {
+      removeChart(existing)
+      existing.dispose()
+    }
+
+    const chart = echarts.init(el)
+    charts.push(chart)
     chart.setOption({
       animation: false,
       grid: { left: 2, right: 2, top: 6, bottom: 6 },
@@ -208,7 +281,7 @@ const renderSparklines = () => {
         data: kpis[index].data,
         smooth: true,
         symbol: 'none',
-        lineStyle: { width: 1.2, color: kpis[index].trendDirection === 'down' ? cssVar('--accent') : cssVar('--ink') },
+        lineStyle: { width: 1.2, color: kpis[index].trendDirection === 'down' ? theme.accent : theme.ink },
         areaStyle: { opacity: 0 }
       }]
     })
@@ -217,13 +290,11 @@ const renderSparklines = () => {
 
 const renderIndustryChart = () => {
   if (!industryChartRef.value) return
-  const existing = echarts.getInstanceByDom(industryChartRef.value)
-  if (existing) existing.dispose()
 
   const labels = ['制造业', '科技', '零售', '服务业', '建筑', '金融', '其他']
   const values = [328, 276, 182, 142, 118, 82, 120]
   const max = 360
-  const chart = rememberChart(echarts.init(industryChartRef.value))
+  const chart = replaceChart(industryChartRef.value, () => echarts.init(industryChartRef.value))
   chart.setOption({
     animation: false,
     grid: { left: 74, right: 50, top: 4, bottom: 4 },
@@ -234,7 +305,7 @@ const renderIndustryChart = () => {
       data: labels,
       axisLine: { show: false },
       axisTick: { show: false },
-      axisLabel: { color: cssVar('--ink'), fontSize: 13, margin: 14 }
+      axisLabel: { color: theme.ink, fontSize: 13, margin: 14 }
     },
     series: [
       {
@@ -243,20 +314,20 @@ const renderIndustryChart = () => {
         barWidth: 10,
         barGap: '-100%',
         silent: true,
-        itemStyle: { color: cssVar('--line-soft') }
+        itemStyle: { color: theme.lineSoft }
       },
       {
         type: 'bar',
         data: values.map((value, index) => ({
           value,
-          itemStyle: { color: labels[index] === '零售' ? cssVar('--accent') : cssVar('--ink') }
+          itemStyle: { color: labels[index] === '零售' ? theme.accent : theme.ink }
         })),
         barWidth: 10,
         label: {
           show: true,
           position: 'right',
           formatter: '{c}',
-          color: cssVar('--ink'),
+          color: theme.ink,
           fontSize: 16,
           distance: 20
         },
@@ -268,10 +339,8 @@ const renderIndustryChart = () => {
 
 const renderActiveChart = () => {
   if (!activeChartRef.value) return
-  const existing = echarts.getInstanceByDom(activeChartRef.value)
-  if (existing) existing.dispose()
 
-  const chart = rememberChart(echarts.init(activeChartRef.value))
+  const chart = replaceChart(activeChartRef.value, () => echarts.init(activeChartRef.value))
   chart.setOption({
     animation: false,
     tooltip: { show: false },
@@ -283,11 +352,11 @@ const renderActiveChart = () => {
       avoidLabelOverlap: true,
       label: { show: false },
       labelLine: { show: false },
-      data: [
-        { value: 74, name: '活跃企业', itemStyle: { color: cssVar('--ink') } },
-        { value: 14, name: '异常企业', itemStyle: { color: cssVar('--accent') } },
-        { value: 12, name: '休眠企业', itemStyle: { color: cssVar('--line-strong') } }
-      ]
+      data: activeStats.value.map(item => ({
+        value: item.percentage,
+        name: item.name,
+        itemStyle: { color: item.color }
+      }))
     }]
   })
 }
@@ -548,8 +617,9 @@ const renderActiveChart = () => {
 
 .donut-wrap {
   position: relative;
-  width: 176px;
-  height: 176px;
+  width: min(176px, 100%);
+  height: auto;
+  aspect-ratio: 1 / 1;
   max-width: 100%;
   justify-self: center;
 }
