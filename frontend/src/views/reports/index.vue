@@ -185,7 +185,7 @@
 <script setup>
 import { ref, reactive, onMounted, nextTick, computed } from 'vue'
 import { useRouter } from 'vue-router'
-import { ElMessage } from 'element-plus'
+import { ElMessage, ElMessageBox } from 'element-plus'
 import * as echarts from 'echarts'
 import api from '@/api'
 import { exportToPdf } from '@/utils/pdf-export'
@@ -211,7 +211,33 @@ const generateVatReport = async () => {
   finally { vatLoading.value = false }
 }
 
-const exportVatExcel = () => ElMessage.info('Excel 导出功能开发中')
+const exportVatExcel = () => {
+  if (!vatReportData.value) { ElMessage.warning('请先生成报告'); return }
+  const ent = enterprises.value.find(e => e.id === vatEnterpriseId.value)
+  const companyName = ent?.name || '未知企业'
+  const d = vatReportData.value
+  const headers = ['报告项', '金额']
+  const rows = [
+    ['销售额（不含税）', d.sales_amount_excl_tax || 0],
+    ['增值税率', `${(d.tax_rate || 0) * 100}%`],
+    ['增值税', d.tax_amount || 0],
+    ['城建税', d.urban_construction_tax || 0],
+    ['教育费附加', d.education_surcharge || 0],
+    ['地方教育附加', d.local_education_surcharge || 0],
+    ['应申报税额（含附加税）', d.total_tax_and_surcharge || 0],
+  ]
+  const csv = [headers.join(','), ...rows.map(r => `${r[0]},${r[1]}`)].join('\n')
+  const blob = new Blob(['\uFEFF' + csv], { type: 'text/csv;charset=utf-8;' })
+  const url = URL.createObjectURL(blob)
+  const a = document.createElement('a')
+  a.href = url
+  a.download = `VAT_${companyName}_${vatPeriod.value}.csv`
+  document.body.appendChild(a)
+  a.click()
+  document.body.removeChild(a)
+  URL.revokeObjectURL(url)
+  ElMessage.success('CSV 导出成功')
+}
 
 // Health
 const healthEnterpriseId = ref('')
@@ -298,16 +324,37 @@ const generateFinancingReport = async () => {
   finally { finLoading.value = false }
 }
 
-const applyLoan = () => ElMessage.success('贷款申请已提交，请等待银行客户经理联系')
+const applyLoan = async () => {
+  if (!finReportData.value) return
+  const ent = enterprises.value.find(e => e.id === finEnterpriseId.value)
+  const companyName = ent?.name || '未知企业'
+  const d = finReportData.value
+  try {
+    await ElMessageBox.confirm(
+      `企业名称：${companyName}\n融资评分：${d.score || '--'}\n建议额度：¥${Number(d.estimated_loan_amount || 0).toLocaleString()}\n匹配产品：${d.level || '待评估'}`,
+      '贷款申请确认',
+      { confirmButtonText: '确认提交', cancelButtonText: '取消', type: 'info' }
+    )
+    ElMessage.success('已提交，请等待银行经理联系')
+  } catch {
+    // user cancelled
+  }
+}
 
 const exportPdf = async (type) => {
   const tabNames = { health: '财务健康报告', financing: '融资评分报告' }
   const tabName = tabNames[type] || '财务报告'
+  let ent = null
+  if (type === 'health') {
+    ent = enterprises.value.find(e => e.id === healthEnterpriseId.value)
+  } else if (type === 'financing') {
+    ent = enterprises.value.find(e => e.id === finEnterpriseId.value)
+  }
   const activeContent = document.querySelector('.tab-body')
   if (!activeContent) { ElMessage.error('未找到报告内容'); return }
   try {
     ElMessage.info('正在生成 PDF...')
-    await exportToPdf(activeContent, `finwise-${type}-report`, { title: tabName })
+    await exportToPdf(activeContent, `finwise-${type}-report`, { title: tabName, companyName: ent?.name || '' })
     ElMessage.success('PDF 已下载')
   } catch (e) { ElMessage.error('PDF 导出失败: ' + (e.message || '')) }
 }

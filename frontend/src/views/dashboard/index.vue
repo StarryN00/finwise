@@ -106,6 +106,7 @@
 <script setup>
 import { ref, reactive, computed, onMounted, onUnmounted, nextTick, watch } from 'vue'
 import * as echarts from 'echarts'
+import api from '@/api'
 
 const industryChartRef = ref(null)
 const activeChartRef = ref(null)
@@ -122,7 +123,7 @@ const theme = reactive({
   lineStrong: ''
 })
 
-const kpis = [
+const kpis = ref([
   {
     scope: '总企业数 / TOTAL',
     badge: 'REALTIME',
@@ -164,13 +165,16 @@ const kpis = [
     trendDirection: 'up',
     data: [78, 80, 79, 82, 81, 84, 85.4]
   }
-]
+])
 
-const activeSource = [
+const activeSource = ref([
   { name: '活跃企业', value: 923, colorToken: 'ink' },
   { name: '异常企业', value: 186, colorToken: 'accent' },
   { name: '休眠企业', value: 139, colorToken: 'lineStrong' }
-]
+])
+
+const industryDistribution = ref(null)
+const statusDistribution = ref(null)
 
 const setSparklineRef = (el, index) => {
   if (el) sparklineRefs[index] = el
@@ -206,8 +210,8 @@ const distributePercentages = (values) => {
 }
 
 const activeStats = computed(() => {
-  const percentages = distributePercentages(activeSource.map(item => item.value))
-  return activeSource.map((item, index) => ({
+  const percentages = distributePercentages(activeSource.value.map(item => item.value))
+  return activeSource.value.map((item, index) => ({
     ...item,
     rate: `${percentages[index]}%`,
     percentage: percentages[index],
@@ -222,6 +226,39 @@ watch(activeStats, (stats) => {
 onMounted(async () => {
   await nextTick()
   loadTheme()
+
+  // Fetch dashboard summary from API; keep mock data as fallback on failure
+  try {
+    const res = await api.get('/api/dashboard/summary')
+    const d = res.data
+    // Update KPI cards
+    kpis.value[0].value = d.total_enterprises?.toLocaleString?.() ?? String(d.total_enterprises ?? 0)
+    kpis.value[1].value = d.pending_enterprises?.toLocaleString?.() ?? String(d.pending_enterprises ?? 0)
+    kpis.value[2].value = d.report_count?.toLocaleString?.() ?? String(d.report_count ?? 0)
+    kpis.value[3].value = String(d.average_health_score ?? 0)
+
+    // Update industry distribution
+    if (d.industry_distribution && Object.keys(d.industry_distribution).length > 0) {
+      industryDistribution.value = d.industry_distribution
+    }
+
+    // Update status distribution
+    if (d.status_distribution && Object.keys(d.status_distribution).length > 0) {
+      statusDistribution.value = d.status_distribution
+      const statusMap = { ACTIVE: '活跃企业', SUSPENDED: '异常企业', CANCELLED: '休眠企业' }
+      const colorMap = { ACTIVE: 'ink', SUSPENDED: 'accent', CANCELLED: 'lineStrong' }
+      activeSource.value = Object.entries(d.status_distribution)
+        .filter(([_, count]) => count > 0)
+        .map(([status, count]) => ({
+          name: statusMap[status] || status,
+          value: count,
+          colorToken: colorMap[status] || 'ink'
+        }))
+    }
+  } catch {
+    // Keep existing mock data as fallback
+  }
+
   renderSparklines()
   renderIndustryChart()
   renderActiveChart()
@@ -261,7 +298,7 @@ const resizeCharts = () => {
 const renderSparklines = () => {
   sparklineRefs.forEach((el, index) => {
     if (!el) return
-    if (!kpis[index]) return
+    if (!kpis.value[index]) return
 
     const existing = echarts.getInstanceByDom(el)
     if (existing) {
@@ -274,14 +311,14 @@ const renderSparklines = () => {
     chart.setOption({
       animation: false,
       grid: { left: 2, right: 2, top: 6, bottom: 6 },
-      xAxis: { type: 'category', show: false, boundaryGap: false, data: kpis[index].data.map((_, i) => i) },
+      xAxis: { type: 'category', show: false, boundaryGap: false, data: kpis.value[index].data.map((_, i) => i) },
       yAxis: { type: 'value', show: false, min: 'dataMin', max: 'dataMax' },
       series: [{
         type: 'line',
-        data: kpis[index].data,
+        data: kpis.value[index].data,
         smooth: true,
         symbol: 'none',
-        lineStyle: { width: 1.2, color: kpis[index].trendDirection === 'down' ? theme.accent : theme.ink },
+        lineStyle: { width: 1.2, color: kpis.value[index].trendDirection === 'down' ? theme.accent : theme.ink },
         areaStyle: { opacity: 0 }
       }]
     })
@@ -291,9 +328,14 @@ const renderSparklines = () => {
 const renderIndustryChart = () => {
   if (!industryChartRef.value) return
 
-  const labels = ['制造业', '科技', '零售', '服务业', '建筑', '金融', '其他']
-  const values = [328, 276, 182, 142, 118, 82, 120]
-  const max = 360
+  const dist = industryDistribution.value
+  const labels = dist && Object.keys(dist).length > 0
+    ? Object.keys(dist)
+    : ['制造业', '科技', '零售', '服务业', '建筑', '金融', '其他']
+  const values = dist && Object.keys(dist).length > 0
+    ? Object.values(dist)
+    : [328, 276, 182, 142, 118, 82, 120]
+  const max = values.length > 0 ? Math.max(...values) * 1.1 : 360
   const chart = replaceChart(industryChartRef.value, () => echarts.init(industryChartRef.value))
   chart.setOption({
     animation: false,

@@ -308,8 +308,11 @@ const runMatch = async () => {
   try {
     const res = await api.post('/api/parse/match', { enterprise_id: bankEnterpriseId.value })
     matchResults.value = (res.data.candidates || []).map(c => ({
-      invoiceNumber: `INV-${c.invoice_index}`,
-      amount: 0, date: '-', description: c.match_reason, confidence: c.confidence
+      invoiceNumber: c.invoice_number || `INV-${c.invoice_index}`,
+      amount: c.invoice_total_amount || (c.transaction_debit_amount || c.transaction_credit_amount || 0),
+      date: c.invoice_issue_date || c.transaction_date || '-',
+      description: c.transaction_summary || c.match_reason || '',
+      confidence: c.confidence
     }))
     unmatchedTransactions.value = res.data.unmatched_transactions?.length || 0
     unmatchedInvoices.value = res.data.unmatched_invoices?.length || 0
