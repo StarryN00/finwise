@@ -215,7 +215,7 @@ onUnmounted(() => clearInterval(timer))
 .nav-group-title {
   font-family: var(--font-mono);
   font-size: 11px;
-  letter-spacing: 0.18em;
+  letter-spacing: 0.16em;
   text-transform: uppercase;
   color: var(--mute);
   padding: 4px 12px 8px;

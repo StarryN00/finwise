@@ -189,6 +189,16 @@ class MatchCandidate(BaseModel):
     invoice_index: int
     confidence: float
     match_reason: str
+    # Invoice details
+    invoice_number: Optional[str] = None
+    invoice_total_amount: Optional[float] = None
+    invoice_issue_date: Optional[str] = None
+    invoice_seller_name: Optional[str] = None
+    # Transaction details
+    transaction_summary: Optional[str] = None
+    transaction_debit_amount: Optional[float] = None
+    transaction_credit_amount: Optional[float] = None
+    transaction_date: Optional[str] = None
 
 
 class MatchRequest(BaseModel):

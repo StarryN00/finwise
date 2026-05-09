@@ -245,11 +245,22 @@ async def match_transactions(req: MatchRequest):
         inv_idx = cand.get("invoice_index")
 
         if tx_idx is not None and inv_idx is not None:
+            tx = transactions[tx_idx] if 0 <= tx_idx < len(transactions) else None
+            inv = invoices[inv_idx] if 0 <= inv_idx < len(invoices) else None
+
             candidates.append(MatchCandidate(
                 transaction_index=tx_idx,
                 invoice_index=inv_idx,
                 confidence=cand.get("confidence", 0.0),
                 match_reason=cand.get("match_reason", ""),
+                invoice_number=inv.get("invoice_number") if inv else None,
+                invoice_total_amount=float(inv.get("total_amount", 0)) if inv else None,
+                invoice_issue_date=inv.get("issue_date") if inv else None,
+                invoice_seller_name=inv.get("seller_name") if inv else None,
+                transaction_summary=tx.get("summary") if tx else None,
+                transaction_debit_amount=float(tx["debit_amount"]) if tx and tx.get("debit_amount") is not None else None,
+                transaction_credit_amount=float(tx["credit_amount"]) if tx and tx.get("credit_amount") is not None else None,
+                transaction_date=tx.get("transaction_date") if tx else None,
             ))
             matched_tx_indices.add(tx_idx)
             matched_inv_indices.add(inv_idx)
@@ -317,8 +328,65 @@ async def confirm_matches(req: MatchConfirmRequest):
 async def _read_import_file(batch_id: str, filename: str) -> str:
     """
     Read the raw content of an imported file for AI parsing.
-    For now, returns placeholder - actual implementation needs file storage.
+    Supports .xlsx/.xls/.csv (via pandas) and .pdf (via PyPDF2/pdfplumber).
+    Falls back to plain text for other formats.
     """
-    # In a full implementation, you would read from file storage
-    # For now, return empty string to be replaced
-    return ""
+    import uuid as _uuid
+    import pandas as pd
+    from backend.services.file_service import file_service
+    from backend.storage.manager import import_batch_store
+
+    batch = import_batch_store.get_by_id(batch_id)
+    if not batch:
+        return ""
+
+    file_id = batch.get("file_id")
+    if not file_id:
+        return ""
+
+    file_path = file_service.get_file_path(_uuid.UUID(file_id), filename)
+    if not file_path or not file_path.exists():
+        return ""
+
+    ext = file_path.suffix.lower()
+
+    if ext in (".xlsx", ".xls", ".csv"):
+        if ext == ".csv":
+            df = pd.read_csv(file_path, encoding="utf-8-sig")
+        else:
+            df = pd.read_excel(file_path)
+        return df.to_csv(index=False, encoding="utf-8-sig")
+
+    if ext == ".pdf":
+        # Try PyPDF2 first, then pdfplumber, then fallback
+        try:
+            import PyPDF2
+            reader = PyPDF2.PdfReader(str(file_path))
+            parts = []
+            for page in reader.pages:
+                text = page.extract_text()
+                if text:
+                    parts.append(text)
+            return "\n".join(parts)
+        except Exception:
+            pass
+
+        try:
+            import pdfplumber
+            parts = []
+            with pdfplumber.open(str(file_path)) as pdf:
+                for page in pdf.pages:
+                    text = page.extract_text()
+                    if text:
+                        parts.append(text)
+            return "\n".join(parts)
+        except Exception:
+            pass
+
+        return f"[PDF file: {filename}] PDF text extraction unavailable. Install PyPDF2 or pdfplumber."
+
+    # Fallback: plain text
+    try:
+        return file_path.read_text(encoding="utf-8", errors="ignore")
+    except Exception:
+        return ""

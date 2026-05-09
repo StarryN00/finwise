@@ -16,7 +16,7 @@ from backend.core.config import settings
 from backend.storage.manager import enterprise_store, user_store
 
 # Import routers
-from backend.routers import auth, enterprises, imports, parse, files, tax, reports
+from backend.routers import auth, enterprises, imports, parse, files, tax, reports, dashboard
 
 
 @asynccontextmanager
@@ -59,6 +59,7 @@ app.include_router(parse.router)
 app.include_router(files.router)
 app.include_router(tax.router)
 app.include_router(reports.router)
+app.include_router(dashboard.router)
 
 
 @app.get("/api/health")

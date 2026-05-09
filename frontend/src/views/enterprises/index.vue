@@ -271,9 +271,13 @@ onMounted(fetchEnterprises)
   pointer-events: none;
   z-index: 1;
 }
-.filter-select {
-  width: 140px;
-  cursor: pointer;
+.filter-group-label {
+  font-family: var(--font-mono);
+  font-size: 11px;
+  letter-spacing: 0.16em;
+  text-transform: uppercase;
+  color: var(--mute);
+  font-weight: 500;
 }
 
 /* Table */

@@ -47,7 +47,7 @@
 
         <div class="upload-meta">支持 .xls · .xlsx · .csv 格式，文件不超过 10MB</div>
 
-        <el-divider style="border-color: var(--line);" />
+        <div class="section-divider"></div>
 
         <!-- Invoice Table -->
         <div v-if="invoiceList.length > 0">
@@ -417,8 +417,10 @@ onMounted(fetchEnterprises)
   align-items: end;
 }
 .upload-section { display: flex; flex-direction: column; gap: 6px; }
-.upload-label { font-size: 12px; color: var(--mute); font-weight: 500; }
+.upload-label { font-family: var(--font-mono); font-size: 11px; letter-spacing: 0.16em; text-transform: uppercase; color: var(--mute); font-weight: 500; }
 .enterprise-select { width: 100%; cursor: pointer; }
+
+.section-divider { border-top: 1px solid var(--line); margin: 16px 0; }
 
 .upload-dropzone {
   position: relative;
