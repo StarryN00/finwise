@@ -5,6 +5,7 @@ Uses JSONStore for persistence.
 """
 import uuid
 from datetime import date
+from pathlib import Path
 from typing import List, Optional
 from decimal import Decimal
 
@@ -68,9 +69,9 @@ async def import_invoices(
         status=ImportStatus.PENDING,
     )
 
-    # Parse the file
+    # Parse the file — read from the saved file on disk, not the consumed UploadFile stream
     try:
-        invoices = await _parse_invoice_file(file, filename)
+        invoices = await _parse_invoice_file_from_disk(file_id, filename, subfolder=f"imports/{enterprise_id}")
         batch['total_rows'] = len(invoices)
         batch['processed_rows'] = 0
         batch['status'] = ImportStatus.PROCESSING
@@ -220,6 +221,84 @@ async def _parse_invoice_file(file: UploadFile, filename: str) -> List[dict]:
     df.columns = df.columns.str.strip()
 
     # Map common column names
+    column_map = {
+        "发票号码": "invoice_number",
+        "发票号": "invoice_number",
+        "发票类型": "invoice_type",
+        "开票日期": "issue_date",
+        "金额": "amount",
+        "税额": "tax_amount",
+        "价税合计": "total_amount",
+        "销售方名称": "seller_name",
+        "销售方纳税人识别号": "seller_tax_number",
+        "购买方名称": "buyer_name",
+        "购买方纳税人识别号": "buyer_tax_number",
+    }
+
+    normalized = df.rename(columns=column_map)
+
+    invoices = []
+    for _, row in normalized.iterrows():
+        # Parse date
+        issue_date = row.get("issue_date")
+        if isinstance(issue_date, str):
+            issue_date = date.fromisoformat(issue_date)
+        elif hasattr(issue_date, "date"):
+            issue_date = issue_date.date()
+        else:
+            issue_date = date.today()
+
+        # Normalize invoice type
+        inv_type = str(row.get("invoice_type", "VAT_SPECIAL")).upper()
+        if "普通" in inv_type:
+            inv_type = "VAT_NORMAL"
+        else:
+            inv_type = "VAT_SPECIAL"
+
+        invoices.append({
+            "invoice_number": str(row.get("invoice_number", "")),
+            "invoice_type": inv_type,
+            "issue_date": issue_date,
+            "amount": float(row.get("amount", 0)),
+            "tax_amount": float(row.get("tax_amount", 0)),
+            "total_amount": float(row.get("total_amount", 0)),
+            "seller_name": str(row.get("seller_name", "")),
+            "seller_tax_number": str(row.get("seller_tax_number", "")),
+            "buyer_name": str(row.get("buyer_name", "")),
+            "buyer_tax_number": str(row.get("buyer_tax_number", "")),
+        })
+
+    return invoices
+
+
+def _get_saved_file_path(file_id: uuid.UUID, filename: str, subfolder: str) -> Path:
+    """Get path to a saved file by file_id, original filename, and subfolder."""
+    ext = Path(filename).suffix.lower()
+    # The file is saved as {file_id}{ext} under the subfolder
+    from backend.core.config import settings
+    folder = settings.FILES_DIR / subfolder
+    return folder / f"{file_id}{ext}"
+
+
+def _parse_invoice_file_from_disk(file_id: uuid.UUID, filename: str, subfolder: str) -> List[dict]:
+    """
+    Parse invoice Excel/CSV file from disk (after the UploadFile stream has been consumed).
+    Returns list of invoice dicts.
+    """
+    import pandas as pd
+
+    file_path = _get_saved_file_path(file_id, filename, subfolder)
+    ext = file_path.suffix.lower()
+
+    if ext == ".csv":
+        df = pd.read_csv(file_path, encoding="utf-8-sig")
+    else:
+        df = pd.read_excel(file_path)
+
+    # Normalize columns
+    df.columns = df.columns.str.strip()
+
+    # Map common column names (Chinese -> English)
     column_map = {
         "发票号码": "invoice_number",
         "发票号": "invoice_number",
