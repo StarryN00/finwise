@@ -6,13 +6,9 @@
       <div class="brand-content">
         <div class="brand-logo">
           <svg width="52" height="52" viewBox="0 0 52 52" fill="none">
-            <!-- 外圈圆环 -->
             <circle cx="26" cy="26" r="24" stroke="rgba(255,255,255,0.25)" stroke-width="2"/>
-            <!-- 主体：圆角方块 + 向上的箭头，象征"收入/增长" -->
             <rect x="12" y="20" width="20" height="16" rx="3" fill="white" opacity="0.95"/>
-            <!-- 方块内的折线，象征税单/报表 -->
-            <path d="M16 30h4l2-3 4 5 4-6" stroke="#cc785c" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" fill="none"/>
-            <!-- 顶部小三角，象征"管家"屋顶/保护 -->
+            <path d="M16 30h4l2-3 4 5 4-6" stroke="var(--accent)" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" fill="none"/>
             <path d="M22 20V14l4-4 4 4v6" stroke="white" stroke-width="2" stroke-linejoin="round" fill="none" opacity="0.8"/>
           </svg>
         </div>
@@ -49,7 +45,7 @@
         </div>
       </div>
       <div class="brand-footer">
-        <span class="mono text-muted" style="font-size:11px">FinWise v1.0</span>
+        <span class="mono" style="font-size:11px; color: rgba(255,255,255,0.5);">FinWise v1.0</span>
       </div>
     </div>
 
@@ -57,8 +53,9 @@
     <div class="login-form-panel">
       <div class="login-card">
         <div class="login-card-header">
-          <h2>欢迎回来</h2>
-          <p>登录您的账户继续使用</p>
+          <div class="login-eyebrow mono">FinWise · 智税管家 · LOGIN</div>
+          <h2 class="login-title">欢迎回来</h2>
+          <p class="login-desc">登录您的账户继续使用</p>
         </div>
 
         <el-form
@@ -75,7 +72,7 @@
               placeholder="请输入用户名"
               size="large"
               clearable
-              :prefix-icon="UserIcon"
+              class="login-input"
             />
           </div>
 
@@ -87,7 +84,7 @@
               placeholder="请输入密码"
               size="large"
               show-password
-              :prefix-icon="LockIcon"
+              class="login-input"
               @keyup.enter="handleLogin"
             />
           </div>
@@ -97,19 +94,17 @@
             {{ authStore.error }}
           </div>
 
-          <el-button
-            type="primary"
-            size="large"
-            :loading="authStore.loading"
-            class="login-btn"
-            @click="handleLogin"
+          <button
+            type="submit"
+            class="btn primary login-btn"
+            :disabled="authStore.loading"
           >
             {{ authStore.loading ? '登录中...' : '登 录' }}
-          </el-button>
+          </button>
         </el-form>
 
         <div class="login-hint">
-          <span class="mono text-muted" style="font-size:11px">演示账号: admin / admin123</span>
+          <span class="mono" style="font-size:11px; color: var(--mute);">演示账号: admin / admin123</span>
         </div>
       </div>
     </div>
@@ -117,24 +112,13 @@
 </template>
 
 <script setup>
-import { reactive, ref, h } from 'vue'
+import { reactive, ref } from 'vue'
 import { useRouter } from 'vue-router'
 import { useAuthStore } from '@/stores/auth'
 
 const router = useRouter()
 const authStore = useAuthStore()
 const formRef = ref(null)
-
-const UserIcon = h('svg', {
-  width: 16, height: 16, viewBox: '0 0 24 24', fill: 'none',
-  stroke: 'currentColor', 'stroke-width': 2,
-  innerHTML: '<path d="M20 21v-2a4 4 0 0 0-4-4H8a4 4 0 0 0-4 4v2"/><circle cx="12" cy="7" r="4"/>'
-})
-const LockIcon = h('svg', {
-  width: 16, height: 16, viewBox: '0 0 24 24', fill: 'none',
-  stroke: 'currentColor', 'stroke-width': 2,
-  innerHTML: '<rect x="3" y="11" width="18" height="11" rx="2" ry="2"/><path d="M7 11V7a5 5 0 0 1 10 0v4"/>'
-})
 
 const form = reactive({ username: '', password: '' })
 
@@ -157,14 +141,14 @@ const handleLogin = async () => {
 .login-root {
   display: flex;
   min-height: 100vh;
-  background: var(--color-bg);
+  background: var(--bg);
 }
 
 /* === Brand Panel === */
 .login-brand {
   width: 480px;
   flex-shrink: 0;
-  background: var(--color-accent);
+  background: var(--accent);
   position: relative;
   display: flex;
   flex-direction: column;
@@ -186,9 +170,7 @@ const handleLogin = async () => {
   z-index: 1;
 }
 
-.brand-logo {
-  margin-bottom: 24px;
-}
+.brand-logo { margin-bottom: 24px; }
 
 .brand-title {
   font-size: 36px;
@@ -218,9 +200,7 @@ const handleLogin = async () => {
   font-size: 14px;
 }
 
-.feature-icon {
-  font-size: 18px;
-}
+.feature-icon { font-size: 18px; }
 
 .brand-footer {
   position: relative;
@@ -245,16 +225,28 @@ const handleLogin = async () => {
   margin-bottom: 36px;
 }
 
-.login-card-header h2 {
-  font-size: 26px;
-  font-weight: 800;
-  color: var(--color-text-primary);
-  margin-bottom: 8px;
+.login-eyebrow {
+  font-family: var(--font-mono);
+  font-size: 11px;
+  letter-spacing: 0.22em;
+  color: var(--accent);
+  text-transform: uppercase;
+  margin-bottom: 12px;
 }
 
-.login-card-header p {
+.login-title {
+  font-size: 88px;
+  font-weight: 600;
+  letter-spacing: -0.028em;
+  color: var(--ink);
+  line-height: 0.95;
+  margin-bottom: 16px;
+}
+
+.login-desc {
   font-size: 14px;
-  color: var(--color-text-muted);
+  color: var(--mute);
+  line-height: 1.5;
 }
 
 /* === Form Fields === */
@@ -271,10 +263,32 @@ const handleLogin = async () => {
 }
 
 .form-label {
-  font-size: 13px;
+  font-size: 12px;
   font-weight: 600;
-  color: var(--color-text-secondary);
-  letter-spacing: 0.5px;
+  color: var(--ink-2);
+  letter-spacing: 0.05em;
+}
+
+/* Use custom underline input style — override el-input */
+.login-input :deep(.el-input__wrapper) {
+  border-radius: 0 !important;
+  box-shadow: none !important;
+  border-bottom: 1px solid var(--line) !important;
+  background: transparent !important;
+  padding: 4px 0 !important;
+}
+.login-input :deep(.el-input__wrapper:hover) {
+  box-shadow: none !important;
+  border-bottom-color: var(--ink) !important;
+}
+.login-input :deep(.el-input__wrapper.is-focus) {
+  box-shadow: none !important;
+  border-bottom-color: var(--accent) !important;
+}
+.login-input :deep(.el-input__inner) {
+  font-size: 15px;
+  color: var(--ink);
+  height: 36px;
 }
 
 .error-message {
@@ -282,27 +296,25 @@ const handleLogin = async () => {
   align-items: center;
   gap: 8px;
   padding: 10px 14px;
-  background: var(--color-danger-light);
-  border: 1px solid var(--color-danger);
-  border-radius: var(--radius-md);
-  color: var(--color-danger);
+  background: var(--alert-bg);
+  border-radius: 8px;
+  color: var(--alert-fg);
   font-size: 13px;
 }
 
 .login-btn {
   width: 100%;
-  height: 46px;
+  height: 54px !important;
   font-size: 15px;
   font-weight: 600;
-  letter-spacing: 2px;
+  letter-spacing: 0.18em;
   margin-top: 8px;
-  border-radius: var(--radius-md) !important;
 }
 
 .login-hint {
   text-align: center;
   margin-top: 24px;
   padding-top: 20px;
-  border-top: 1px solid var(--color-border-light);
+  border-top: 1px solid var(--line-soft);
 }
 </style>

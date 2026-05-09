@@ -1,109 +1,117 @@
 <template>
   <div class="page">
-    <!-- Page Header -->
+    <!-- Editorial Header -->
     <div class="page-header">
-      <div>
-        <h1 class="page-title">企业管理</h1>
-        <p class="page-desc">管理服务企业基本信息、纳税类型与融资状态</p>
+      <div class="header-left">
+        <div class="page-eyebrow">§ 02 · ENTERPRISE LEDGER —</div>
+        <h1 class="page-title">企业名册</h1>
+        <p class="page-desc">管理已经接入的企业财税与融资档案。</p>
       </div>
-      <el-button type="primary" @click="showAddDialog = true">
-        <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5" style="margin-right:6px"><line x1="12" y1="5" x2="12" y2="19"/><line x1="5" y1="12" x2="19" y2="12"/></svg>
-        新增企业
-      </el-button>
+      <div class="header-actions">
+        <button class="btn primary" @click="showAddDialog = true">
+          <svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5"><line x1="12" y1="5" x2="12" y2="19"/><line x1="5" y1="12" x2="19" y2="12"/></svg>
+          新增企业
+        </button>
+      </div>
     </div>
 
     <!-- Filters -->
     <div class="filter-bar">
-      <el-input
-        v-model="searchKeyword"
-        placeholder="搜索企业名称..."
-        style="width: 240px"
-        clearable
-        @keyup.enter="fetchEnterprises"
-        @clear="fetchEnterprises"
-      >
-        <template #prefix>
-          <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><circle cx="11" cy="11" r="8"/><line x1="21" y1="21" x2="16.65" y2="16.65"/></svg>
-        </template>
-      </el-input>
-      <el-select v-model="filterStatus" placeholder="状态" style="width: 140px" clearable @change="fetchEnterprises">
-        <el-option label="正常" value="ACTIVE" />
-        <el-option label="暂停" value="SUSPENDED" />
-        <el-option label="注销" value="CANCELLED" />
-      </el-select>
-      <el-select v-model="filterSource" placeholder="来源" style="width: 140px" clearable @change="fetchEnterprises">
-        <el-option label="自主获客" value="DIRECT" />
-        <el-option label="渠道推广" value="CHANNEL" />
-        <el-option label="老客推荐" value="REFERRAL" />
-      </el-select>
+      <div class="filter-input-wrap">
+        <svg class="filter-icon" width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><circle cx="11" cy="11" r="8"/><line x1="21" y1="21" x2="16.65" y2="16.65"/></svg>
+        <input
+          v-model="searchKeyword"
+          class="input"
+          placeholder="搜索企业名称..."
+          style="padding-left: 28px;"
+          clearable
+          @keyup.enter="fetchEnterprises"
+        />
+      </div>
+      <div class="filter-group">
+        <span class="filter-group-label">状态</span>
+        <div class="seg small">
+          <button :class="{ on: filterStatus === '' }" @click="filterStatus = ''; fetchEnterprises()">全部</button>
+          <button :class="{ on: filterStatus === 'ACTIVE' }" @click="filterStatus = 'ACTIVE'; fetchEnterprises()">正常</button>
+          <button :class="{ on: filterStatus === 'SUSPENDED' }" @click="filterStatus = 'SUSPENDED'; fetchEnterprises()">暂停</button>
+          <button :class="{ on: filterStatus === 'CANCELLED' }" @click="filterStatus = 'CANCELLED'; fetchEnterprises()">注销</button>
+        </div>
+      </div>
+      <div class="filter-group">
+        <span class="filter-group-label">来源</span>
+        <div class="seg small">
+          <button :class="{ on: filterSource === '' }" @click="filterSource = ''; fetchEnterprises()">全部</button>
+          <button :class="{ on: filterSource === 'DIRECT' }" @click="filterSource = 'DIRECT'; fetchEnterprises()">自主获客</button>
+          <button :class="{ on: filterSource === 'CHANNEL' }" @click="filterSource = 'CHANNEL'; fetchEnterprises()">渠道推广</button>
+          <button :class="{ on: filterSource === 'REFERRAL' }" @click="filterSource = 'REFERRAL'; fetchEnterprises()">老客推荐</button>
+        </div>
+      </div>
     </div>
 
     <!-- Table -->
-    <div class="table-card">
-      <el-table
-        :data="enterprises"
-        stripe
-        style="width: 100%"
-        v-loading="loading"
-        @row-click="viewDetail"
-      >
-        <el-table-column prop="name" label="企业名称" min-width="180">
-          <template #default="{ row }">
-            <div class="enterprise-name-cell">
-              <div class="ent-avatar">{{ row.name.charAt(0) }}</div>
-              <span class="ent-name">{{ row.name }}</span>
-            </div>
-          </template>
-        </el-table-column>
-        <el-table-column prop="industry" label="行业" width="120" />
-        <el-table-column prop="status" label="状态" width="90">
-          <template #default="{ row }">
-            <span class="status-badge" :class="'status-' + row.status.toLowerCase()">
-              {{ statusLabel(row.status) }}
-            </span>
-          </template>
-        </el-table-column>
-        <el-table-column prop="source" label="来源" width="100">
-          <template #default="{ row }">
-            <span class="source-tag">{{ sourceLabel(row.source) }}</span>
-          </template>
-        </el-table-column>
-        <el-table-column prop="financing_score" label="融资评分" width="90" align="center">
-          <template #default="{ row }">
-            <span v-if="row.financing_score != null" class="score-badge" :class="'score-' + scoreClass(row.financing_score)">
-              {{ row.financing_score }}
-            </span>
-            <span v-else class="text-muted">--</span>
-          </template>
-        </el-table-column>
-        <el-table-column prop="last_analysis_date" label="最近分析" width="130">
-          <template #default="{ row }">
-            <span class="mono text-muted" style="font-size:12px">{{ row.last_analysis_date || '--' }}</span>
-          </template>
-        </el-table-column>
-        <el-table-column label="操作" width="100" fixed="right">
-          <template #default="{ row }">
-            <el-button type="primary" link size="small" @click.stop="viewDetail(row)">详情</el-button>
-          </template>
-        </el-table-column>
-      </el-table>
+    <div class="panel" style="padding: 0;">
+      <table class="table" style="border-radius: 14px; overflow: hidden;">
+        <thead>
+          <tr>
+            <th>企业名称</th>
+            <th>行业</th>
+            <th>状态</th>
+            <th>来源</th>
+            <th>融资评分</th>
+            <th>最近分析</th>
+            <th></th>
+          </tr>
+        </thead>
+        <tbody>
+          <tr v-for="row in enterprises" :key="row.id" class="table-row" @click="viewDetail(row)">
+            <td>
+              <div class="enterprise-name-cell">
+                <div class="ent-avatar">{{ row.name.charAt(0) }}</div>
+                <span class="ent-name">{{ row.name }}</span>
+              </div>
+            </td>
+            <td style="color: var(--ink-2);">{{ row.industry || '—' }}</td>
+            <td>
+              <span class="pill" :class="statusPillClass(row.status)">
+                {{ statusLabel(row.status) }}
+              </span>
+            </td>
+            <td>
+              <span class="pill pill--idle" style="font-size: 11px;">
+                {{ sourceLabel(row.source) }}
+              </span>
+            </td>
+            <td>
+              <span v-if="row.financing_score != null" class="score-val" :class="scoreClass(row.financing_score)">
+                {{ row.financing_score }}
+              </span>
+              <span v-else style="color: var(--mute);">—</span>
+            </td>
+            <td>
+              <span class="mono" style="font-size: 12px; color: var(--mute);">{{ row.last_analysis_date || '—' }}</span>
+            </td>
+            <td style="text-align: right;">
+              <button class="btn ghost" style="height: 28px; padding: 0 4px; font-size: 12px;" @click.stop="viewDetail(row)">详情</button>
+            </td>
+          </tr>
+          <tr v-if="enterprises.length === 0 && !loading">
+            <td colspan="7" style="text-align: center; color: var(--mute); padding: 40px;">暂无企业数据</td>
+          </tr>
+        </tbody>
+      </table>
 
       <div class="table-footer">
         <span class="table-count">共 {{ total }} 家企业</span>
-        <el-pagination
-          v-model:current-page="page"
-          v-model:page-size="pageSize"
-          :total="total"
-          :page-sizes="[10, 20, 50]"
-          layout="sizes, prev, pager, next"
-          @size-change="fetchEnterprises"
-          @current-change="fetchEnterprises"
-        />
+        <div class="pager-wrap">
+          <button class="btn secondary" style="height: 34px; padding: 0 14px; font-size: 12px;" :disabled="page <= 1" @click="page--; fetchEnterprises()">上一页</button>
+          <span class="mono" style="font-size: 12px; color: var(--mute);">{{ page }} / {{ Math.ceil(total / pageSize) || 1 }}</span>
+          <button class="btn secondary" style="height: 34px; padding: 0 14px; font-size: 12px;" :disabled="page >= Math.ceil(total / pageSize)" @click="page++; fetchEnterprises()">下一页</button>
+        </div>
       </div>
     </div>
 
     <!-- Add Dialog -->
-    <el-dialog v-model="showAddDialog" title="新增企业" width="520px" :close-on-click-modal="false">
+    <el-dialog v-model="showAddDialog" title="新增企业" width="520px" :close-on-click-modal="false" style="border-radius: 8px;">
       <el-form ref="formRef" :model="form" :rules="formRules" label-width="110px" class="add-form">
         <el-form-item label="企业名称" prop="name">
           <el-input v-model="form.name" placeholder="请输入企业名称" />
@@ -132,8 +140,8 @@
         </el-form-item>
       </el-form>
       <template #footer>
-        <el-button @click="showAddDialog = false">取消</el-button>
-        <el-button type="primary" :loading="submitting" @click="submitAdd">确定</el-button>
+        <el-button @click="showAddDialog = false" style="border-radius: 999px;">取消</el-button>
+        <el-button type="primary" :loading="submitting" @click="submitAdd" style="border-radius: 999px;">确定</el-button>
       </template>
     </el-dialog>
   </div>
@@ -169,7 +177,8 @@ const formRules = {
 
 const statusLabel = (s) => ({ ACTIVE: '正常', SUSPENDED: '暂停', CANCELLED: '注销' }[s] || s)
 const sourceLabel = (s) => ({ DIRECT: '自主获客', CHANNEL: '渠道推广', REFERRAL: '老客推荐' }[s] || s)
-const scoreClass = (score) => score >= 70 ? 'high' : score >= 50 ? 'mid' : 'low'
+const statusPillClass = (s) => ({ ACTIVE: 'pill--ok', SUSPENDED: 'pill--warn', CANCELLED: 'pill--idle' }[s] || 'pill--idle')
+const scoreClass = (score) => score >= 70 ? 'score-high' : score >= 50 ? 'score-mid' : 'score-low'
 
 const fetchEnterprises = async () => {
   loading.value = true
@@ -210,107 +219,123 @@ onMounted(fetchEnterprises)
 <style scoped>
 .page { width: 100%; }
 
+/* Editorial Header */
 .page-header {
   display: flex;
   justify-content: space-between;
-  align-items: flex-start;
-  margin-bottom: 20px;
+  align-items: flex-end;
+  margin-bottom: 32px;
 }
-
+.header-left { flex: 1; }
+.page-eyebrow {
+  font-family: var(--font-mono);
+  font-size: 11px;
+  letter-spacing: 0.22em;
+  color: var(--accent);
+  text-transform: uppercase;
+  margin-bottom: 8px;
+}
 .page-title {
-  font-size: 20px;
-  font-weight: 800;
-  color: var(--color-text-primary);
-  margin-bottom: 4px;
+  font-size: 48px;
+  font-weight: 600;
+  letter-spacing: -0.022em;
+  color: var(--ink);
+  margin-bottom: 8px;
+  line-height: 1.1;
 }
-
 .page-desc {
-  font-size: 13px;
-  color: var(--color-text-muted);
+  font-size: 13.5px;
+  color: var(--mute);
+  line-height: 1.7;
 }
+.header-actions { flex-shrink: 0; }
 
+/* Filters */
 .filter-bar {
   display: flex;
-  gap: 10px;
-  margin-bottom: 16px;
+  gap: 12px;
+  margin-bottom: 20px;
   align-items: center;
+  flex-wrap: wrap;
+}
+.filter-input-wrap {
+  position: relative;
+  display: flex;
+  align-items: center;
+  width: 240px;
+}
+.filter-icon {
+  position: absolute;
+  left: 0;
+  color: var(--mute);
+  pointer-events: none;
+  z-index: 1;
+}
+.filter-select {
+  width: 140px;
+  cursor: pointer;
 }
 
-.table-card {
-  background: var(--color-bg-card);
-  border: 1px solid var(--color-border);
-  border-radius: var(--radius-lg);
-  padding: 20px;
-  box-shadow: var(--shadow-sm);
+/* Table */
+.table thead th {
+  font-family: var(--font-mono);
+  font-size: 11px;
+  letter-spacing: 0.18em;
+  text-transform: uppercase;
+  color: var(--mute);
+  font-weight: 400;
+  padding: 14px 16px;
 }
+.table-row { cursor: pointer; }
 
 .enterprise-name-cell {
   display: flex;
   align-items: center;
   gap: 10px;
 }
-
 .ent-avatar {
-  width: 30px;
-  height: 30px;
-  border-radius: var(--radius-sm);
-  background: var(--color-accent-bg);
-  color: var(--color-accent);
-  display: flex;
-  align-items: center;
-  justify-content: center;
-  font-size: 13px;
-  font-weight: 700;
-  flex-shrink: 0;
-}
-
-.ent-name {
-  font-weight: 600;
-  color: var(--color-text-primary);
-  font-size: 13px;
-}
-
-.status-badge {
-  display: inline-block;
-  padding: 2px 8px;
-  border-radius: 20px;
-  font-size: 11px;
-  font-weight: 600;
-}
-.status-active { background: var(--color-success-light); color: var(--color-success); }
-.status-suspended { background: var(--color-warning-light); color: var(--color-warning); }
-.status-cancelled { background: var(--color-bg-alt); color: var(--color-text-muted); }
-
-.source-tag {
-  font-size: 12px;
-  color: var(--color-text-muted);
-}
-
-.score-badge {
+  width: 32px;
+  height: 32px;
+  border-radius: 4px;
+  background: var(--panel);
   display: inline-flex;
   align-items: center;
   justify-content: center;
-  width: 32px;
-  height: 24px;
-  border-radius: var(--radius-sm);
-  font-size: 12px;
-  font-weight: 800;
+  font-size: 13px;
+  font-weight: 600;
+  color: var(--ink);
+  flex-shrink: 0;
 }
-.score-high { background: var(--color-success-light); color: var(--color-success); }
-.score-mid { background: var(--color-warning-light); color: var(--color-warning); }
-.score-low { background: var(--color-danger-light); color: var(--color-danger); }
+.ent-name {
+  font-weight: 500;
+  color: var(--ink);
+  font-size: 13.5px;
+}
+
+/* Score badge (still using colored badge since pill is for status) */
+.score-val {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 30px;
+  height: 22px;
+  border-radius: 4px;
+  font-size: 12px;
+  font-weight: 700;
+}
+.score-high { background: var(--ok-bg); color: var(--ok-fg); }
+.score-mid  { background: var(--warn-bg); color: var(--warn-fg); }
+.score-low  { background: var(--alert-bg); color: var(--alert-fg); }
 
 .table-footer {
   display: flex;
   justify-content: space-between;
   align-items: center;
-  margin-top: 16px;
+  padding: 16px 20px;
+  border-top: 1px solid var(--line-soft);
 }
-
-.table-count {
-  font-size: 13px;
-  color: var(--color-text-muted);
-}
+.table-count { font-size: 13px; color: var(--mute); }
+.pager-wrap { display: flex; align-items: center; gap: 10px; }
 
 .add-form :deep(.el-form-item__label) {
   font-weight: 600;
