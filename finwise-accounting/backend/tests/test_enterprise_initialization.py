@@ -1,9 +1,17 @@
 from datetime import date
-from uuid import UUID
+from uuid import UUID, uuid4
 
 import pytest
+from fastapi.testclient import TestClient
+from sqlalchemy import create_engine, event
 from sqlalchemy.exc import IntegrityError
+from sqlalchemy.orm import sessionmaker
+from sqlalchemy.pool import StaticPool
 
+from app.api.deps import get_db
+from app.core.database import Base
+from app.core.org_context import ensure_default_organization
+from app.main import create_app
 from app.models.entities import BankTransaction, Enterprise, InitialFinancialSnapshot, MatchRecord, MonthlyWorkPackage
 from app.services.enterprise_service import (
     create_enterprise as service_create_enterprise,
@@ -13,6 +21,33 @@ from app.services.enterprise_service import (
 
 
 DEFAULT_CHANNEL_ID = UUID("00000000-0000-0000-0000-000000000001")
+
+
+def create_test_client():
+    engine = create_engine(
+        "sqlite://",
+        connect_args={"check_same_thread": False},
+        poolclass=StaticPool,
+    )
+
+    @event.listens_for(engine, "connect")
+    def enable_sqlite_foreign_keys(dbapi_connection, connection_record):
+        cursor = dbapi_connection.cursor()
+        cursor.execute("PRAGMA foreign_keys=ON")
+        cursor.close()
+
+    TestingSession = sessionmaker(bind=engine, autoflush=False, autocommit=False)
+    Base.metadata.create_all(bind=engine)
+    session = TestingSession()
+    ensure_default_organization(session)
+
+    app = create_app()
+
+    def override_get_db():
+        yield session
+
+    app.dependency_overrides[get_db] = override_get_db
+    return TestClient(app, raise_server_exceptions=False)
 
 
 def create_enterprise(db_session):
@@ -170,3 +205,99 @@ def test_create_enterprise_initial_snapshot_and_package(db_session):
 
     assert snapshot.validation_result == {"balanced": True}
     assert package.data_status == "PENDING_IMPORT"
+
+
+def test_duplicate_enterprise_returns_409_through_api(db_session):
+    client = create_test_client()
+    payload = {
+        "name": "苏州重复企业有限公司",
+        "unified_social_credit_code": "91320500DUP000001",
+        "taxpayer_type": "GENERAL",
+        "industry": "软件和信息技术服务业",
+    }
+
+    assert client.post("/api/enterprises", json=payload).status_code == 201
+    response = client.post("/api/enterprises", json=payload)
+
+    assert response.status_code == 409
+
+
+def test_missing_enterprise_snapshot_returns_404_through_api(db_session):
+    client = create_test_client()
+
+    response = client.post(
+        f"/api/enterprises/{uuid4()}/initial-snapshot",
+        json={
+            "balance_sheet_data": {"资产总计": 100, "负债合计": 40, "所有者权益合计": 60},
+            "income_statement_data": {"营业收入": 100, "净利润": 10},
+        },
+    )
+
+    assert response.status_code == 404
+
+
+def test_duplicate_monthly_package_returns_409_through_api(db_session):
+    client = create_test_client()
+    enterprise_response = client.post(
+        "/api/enterprises",
+        json={
+            "name": "苏州月包重复有限公司",
+            "unified_social_credit_code": "91320500PKG000001",
+            "taxpayer_type": "GENERAL",
+            "industry": "制造业",
+        },
+    )
+    enterprise_id = enterprise_response.json()["id"]
+    payload = {"period_year": 2026, "period_month": 5}
+
+    assert client.post(f"/api/enterprises/{enterprise_id}/monthly-packages", json=payload).status_code == 201
+    response = client.post(f"/api/enterprises/{enterprise_id}/monthly-packages", json=payload)
+
+    assert response.status_code == 409
+
+
+def test_invalid_balance_sheet_value_returns_client_error_through_api(db_session):
+    client = create_test_client()
+    enterprise_response = client.post(
+        "/api/enterprises",
+        json={
+            "name": "苏州报表错误有限公司",
+            "unified_social_credit_code": "91320500BAD000001",
+            "taxpayer_type": "GENERAL",
+            "industry": "制造业",
+        },
+    )
+    enterprise_id = enterprise_response.json()["id"]
+
+    response = client.post(
+        f"/api/enterprises/{enterprise_id}/initial-snapshot",
+        json={
+            "balance_sheet_data": {"资产总计": "五十万", "负债合计": 120000, "所有者权益合计": 380000},
+            "income_statement_data": {"营业收入": 200000, "净利润": 30000},
+        },
+    )
+
+    assert response.status_code in {400, 422}
+
+
+def test_duplicate_initial_snapshot_returns_409_through_api(db_session):
+    client = create_test_client()
+    enterprise_response = client.post(
+        "/api/enterprises",
+        json={
+            "name": "苏州快照重复有限公司",
+            "unified_social_credit_code": "91320500SNAP0001",
+            "taxpayer_type": "GENERAL",
+            "industry": "制造业",
+        },
+    )
+    enterprise_id = enterprise_response.json()["id"]
+    payload = {
+        "balance_sheet_data": {"资产总计": 500000, "负债合计": 120000, "所有者权益合计": 380000},
+        "income_statement_data": {"营业收入": 200000, "净利润": 30000},
+    }
+
+    assert client.post(f"/api/enterprises/{enterprise_id}/initial-snapshot", json=payload).status_code == 201
+    response = client.post(f"/api/enterprises/{enterprise_id}/initial-snapshot", json=payload)
+
+    assert response.status_code == 409
