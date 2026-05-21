@@ -2,6 +2,7 @@ from __future__ import annotations
 
 from datetime import date, datetime
 from decimal import Decimal, InvalidOperation
+import re
 from numbers import Real
 from uuid import UUID
 
@@ -32,6 +33,10 @@ INVOICE_COLUMNS = {
     "seller_name": ["销售方名称", "销货方", "卖方名称"],
     "buyer_name": ["购买方名称", "购货方", "买方名称"],
 }
+
+SEPARATOR_DATE_RE = re.compile(
+    r"^(?P<year>\d{4})(?P<separator>[-/.])(?P<month>\d{1,2})(?P=separator)(?P<day>\d{1,2})$"
+)
 
 
 class ImportDomainError(Exception):
@@ -87,17 +92,18 @@ def to_date(value) -> date:
                 return datetime.strptime(normalized, "%Y%m%d").date()
             except ValueError as exc:
                 raise ValueError(f"invalid date value: {value}") from exc
-        value = normalized
-    try:
-        timestamp = pd.to_datetime(value, errors="coerce")
-    except (TypeError, ValueError) as exc:
-        raise ValueError(f"invalid date value: {value}") from exc
-    if pd.isna(timestamp):
-        raise ValueError(f"invalid date value: {value}")
-    parsed_date = timestamp.date()
-    if not isinstance(parsed_date, date):
-        raise ValueError(f"invalid date value: {value}")
-    return parsed_date
+        matched = SEPARATOR_DATE_RE.fullmatch(normalized)
+        if matched is None:
+            raise ValueError(f"invalid date value: {value}")
+        try:
+            return date(
+                int(matched.group("year")),
+                int(matched.group("month")),
+                int(matched.group("day")),
+            )
+        except ValueError as exc:
+            raise ValueError(f"invalid date value: {value}") from exc
+    raise ValueError(f"invalid date value: {value}")
 
 
 def import_bank_rows(db: Session, *, monthly_work_package_id: UUID, rows: list[dict]) -> dict:

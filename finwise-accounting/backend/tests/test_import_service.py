@@ -5,6 +5,7 @@ import pytest
 from fastapi.testclient import TestClient
 from sqlalchemy.exc import SQLAlchemyError
 
+from app.api.deps import get_db
 from app.main import create_app
 from app.models import BankTransaction, Enterprise, Invoice, MonthlyWorkPackage
 from app.services.import_service import MonthlyPackageNotFoundError, import_bank_rows, import_invoice_rows
@@ -104,6 +105,35 @@ def test_import_bank_rows_accepts_yyyymmdd_string_date(db_session):
     assert result["created"] == 1
     assert result["errors"] == []
     assert transaction.transaction_date.isoformat() == "2026-05-08"
+
+
+def test_import_bank_rows_accepts_explicit_single_digit_separator_date(db_session):
+    package = make_package(db_session)
+
+    result = import_bank_rows(
+        db_session,
+        monthly_work_package_id=package.id,
+        rows=[{"交易日期": "2026.5.8", "摘要": "收到货款", "贷方金额": "11300.00"}],
+    )
+
+    transaction = db_session.query(BankTransaction).one()
+    assert result["created"] == 1
+    assert result["errors"] == []
+    assert transaction.transaction_date.isoformat() == "2026-05-08"
+
+
+def test_import_bank_rows_rejects_ambiguous_slash_date(db_session):
+    package = make_package(db_session)
+
+    result = import_bank_rows(
+        db_session,
+        monthly_work_package_id=package.id,
+        rows=[{"交易日期": "05/06/2026", "摘要": "收到货款", "贷方金额": "11300.00"}],
+    )
+
+    assert result["created"] == 0
+    assert result["errors"][0]["row"] == 1
+    assert db_session.query(BankTransaction).count() == 0
 
 
 @pytest.mark.parametrize("date_value", [20260508, 45000])
@@ -219,3 +249,23 @@ def test_malformed_excel_upload_returns_400():
 
     assert response.status_code == 400
     assert "Could not read import file" in response.json()["detail"]
+
+
+def test_gb18030_csv_upload_imports_bank_rows(db_session):
+    package = make_package(db_session)
+    app = create_app(init_db_on_startup=False)
+
+    def override_get_db():
+        yield db_session
+
+    app.dependency_overrides[get_db] = override_get_db
+    client = TestClient(app, raise_server_exceptions=False)
+    csv_content = "交易日期,摘要,贷方金额\n2026-05-08,收到货款,11300.00\n".encode("gb18030")
+
+    response = client.post(
+        f"/api/monthly-packages/{package.id}/imports/bank",
+        files={"file": ("bank.csv", csv_content, "text/csv")},
+    )
+
+    assert response.status_code == 200
+    assert response.json()["created"] == 1
