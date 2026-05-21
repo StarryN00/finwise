@@ -6,6 +6,7 @@ from sqlalchemy import text
 
 from app import models  # noqa: F401
 from app.api.enterprises import router as enterprises_router
+from app.api.imports import router as imports_router
 from app.core.database import Base, SessionLocal, engine
 from app.core.org_context import ensure_default_organization
 
@@ -37,6 +38,7 @@ def create_app(*, init_db_on_startup: bool = True) -> FastAPI:
 
     app = FastAPI(**app_kwargs)
     app.include_router(enterprises_router)
+    app.include_router(imports_router)
 
     @app.get("/health")
     def health() -> dict[str, str]:

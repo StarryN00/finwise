@@ -22,3 +22,14 @@ class ImportBatchRead(BaseModel):
     error_rows: list[dict[str, Any]]
     import_summary: dict[str, Any]
     created_at: datetime
+
+
+class ImportRowError(BaseModel):
+    row: int
+    error: str
+    raw: dict[str, Any]
+
+
+class ImportResult(BaseModel):
+    created: int
+    errors: list[ImportRowError]
