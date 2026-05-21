@@ -85,6 +85,21 @@ def test_monthly_package_rejects_invalid_period_month(db_session):
         db_session.commit()
 
 
+def test_monthly_package_rejects_invalid_completion_percent(db_session):
+    enterprise = create_enterprise(db_session)
+    package = MonthlyWorkPackage(
+        organization_id=enterprise.organization_id,
+        enterprise_id=enterprise.id,
+        period_year=2026,
+        period_month=5,
+        completion_percent=101,
+    )
+    db_session.add(package)
+
+    with pytest.raises(IntegrityError):
+        db_session.commit()
+
+
 def test_match_record_rejects_invalid_confidence(db_session):
     enterprise = create_enterprise(db_session)
     package = MonthlyWorkPackage(
