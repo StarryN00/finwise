@@ -3,14 +3,12 @@ from __future__ import annotations
 from datetime import datetime
 from uuid import UUID
 
-from pydantic import BaseModel, ConfigDict
+from pydantic import BaseModel, ConfigDict, Field
 
 
 class MonthlyPackageCreate(BaseModel):
-    organization_id: UUID
-    enterprise_id: UUID
-    period_year: int
-    period_month: int
+    period_year: int = Field(ge=2020, le=2100)
+    period_month: int = Field(ge=1, le=12)
 
 
 class MonthlyPackageRead(BaseModel):

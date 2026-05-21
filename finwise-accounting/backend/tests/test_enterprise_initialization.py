@@ -5,6 +5,11 @@ import pytest
 from sqlalchemy.exc import IntegrityError
 
 from app.models.entities import BankTransaction, Enterprise, InitialFinancialSnapshot, MatchRecord, MonthlyWorkPackage
+from app.services.enterprise_service import (
+    create_enterprise as service_create_enterprise,
+    create_monthly_work_package,
+    save_initial_snapshot,
+)
 
 
 DEFAULT_CHANNEL_ID = UUID("00000000-0000-0000-0000-000000000001")
@@ -145,3 +150,23 @@ def test_bank_transaction_rejects_invalid_parse_confidence(db_session):
 
     with pytest.raises(IntegrityError):
         db_session.commit()
+
+
+def test_create_enterprise_initial_snapshot_and_package(db_session):
+    enterprise = service_create_enterprise(
+        db_session,
+        name="苏州初始化测试有限公司",
+        unified_social_credit_code="91320500INIT000001",
+        taxpayer_type="GENERAL",
+        industry="软件和信息技术服务业",
+    )
+    snapshot = save_initial_snapshot(
+        db_session,
+        enterprise_id=enterprise.id,
+        balance_sheet_data={"资产总计": 500000, "负债合计": 120000, "所有者权益合计": 380000},
+        income_statement_data={"营业收入": 200000, "净利润": 30000},
+    )
+    package = create_monthly_work_package(db_session, enterprise_id=enterprise.id, year=2026, month=5)
+
+    assert snapshot.validation_result == {"balanced": True}
+    assert package.data_status == "PENDING_IMPORT"
