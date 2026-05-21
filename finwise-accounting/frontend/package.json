@@ -1,0 +1,25 @@
+{
+  "name": "finwise-accounting-frontend",
+  "version": "0.1.0",
+  "private": true,
+  "type": "module",
+  "scripts": {
+    "dev": "vite --host 127.0.0.1",
+    "build": "vite build",
+    "test": "vitest run"
+  },
+  "dependencies": {
+    "@element-plus/icons-vue": "^2.3.1",
+    "@vitejs/plugin-vue": "^5.0.5",
+    "axios": "^1.7.2",
+    "echarts": "^5.5.0",
+    "element-plus": "^2.7.5",
+    "pinia": "^2.1.7",
+    "vite": "^5.2.12",
+    "vue": "^3.4.27",
+    "vue-router": "^4.3.2"
+  },
+  "devDependencies": {
+    "vitest": "^1.6.0"
+  }
+}

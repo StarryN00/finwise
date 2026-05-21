@@ -1,0 +1,16 @@
+body {
+  margin: 0;
+  font-family: var(--fw-font-family);
+  color: var(--fw-ink);
+  background: var(--fw-bg);
+}
+
+#app {
+  min-height: 100vh;
+}
+
+.app-root {
+  padding: 24px;
+  font-size: 24px;
+  font-weight: 800;
+}
