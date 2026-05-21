@@ -15,6 +15,9 @@ uvicorn app.main:app --reload
 The FastAPI backend starts with a `/health` endpoint and SQLite defaults for
 local development. Use `python3` for local smoke tests on macOS.
 
+For PostgreSQL deployments, conventional `postgresql://` database URLs are
+normalized to SQLAlchemy's `postgresql+psycopg://` driver form at startup.
+
 ## Frontend
 
 ```bash
