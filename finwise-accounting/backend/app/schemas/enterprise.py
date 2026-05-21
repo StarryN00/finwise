@@ -29,6 +29,7 @@ class EnterpriseRead(BaseModel):
     model_config = ConfigDict(from_attributes=True)
 
     id: UUID
+    channel_id: UUID
     organization_id: UUID
     name: str
     unified_social_credit_code: str

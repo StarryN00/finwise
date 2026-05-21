@@ -12,6 +12,7 @@ class MatchRecordRead(BaseModel):
     model_config = ConfigDict(from_attributes=True)
 
     id: UUID
+    channel_id: UUID
     organization_id: UUID
     monthly_work_package_id: UUID
     bank_transaction_id: Optional[UUID]
@@ -28,6 +29,7 @@ class AccountingLineRead(BaseModel):
     model_config = ConfigDict(from_attributes=True)
 
     id: UUID
+    channel_id: UUID
     organization_id: UUID
     monthly_work_package_id: UUID
     source_type: str
@@ -45,10 +47,11 @@ class MatchingRuleRead(BaseModel):
     model_config = ConfigDict(from_attributes=True)
 
     id: UUID
+    channel_id: UUID
     organization_id: UUID
     enterprise_id: Optional[UUID]
     scope: str
-    summary_keywords: list
+    summary_keywords: list[str]
     counterparty_pattern: Optional[str]
     min_amount: Optional[Decimal]
     max_amount: Optional[Decimal]

@@ -5,17 +5,21 @@ from decimal import Decimal
 from typing import Optional
 from uuid import UUID, uuid4
 
-from sqlalchemy import Date, DateTime, ForeignKey, Integer, JSON, Numeric, String, Text, UniqueConstraint
+from sqlalchemy import CheckConstraint, Date, DateTime, ForeignKey, Integer, JSON, Numeric, String, Text, UniqueConstraint
 from sqlalchemy.orm import Mapped, mapped_column
 from sqlalchemy.types import Uuid
 
 from app.core.database import Base
 
 
+DEFAULT_CHANNEL_ID = UUID("00000000-0000-0000-0000-000000000001")
+
+
 class Organization(Base):
     __tablename__ = "organizations"
 
     id: Mapped[UUID] = mapped_column(Uuid(as_uuid=True), default=uuid4, primary_key=True)
+    channel_id: Mapped[UUID] = mapped_column(Uuid(as_uuid=True), default=DEFAULT_CHANNEL_ID, index=True)
     name: Mapped[str] = mapped_column(String(120), default="默认代账机构")
     created_at: Mapped[datetime] = mapped_column(DateTime, default=datetime.utcnow)
 
@@ -25,7 +29,8 @@ class Enterprise(Base):
     __table_args__ = (UniqueConstraint("organization_id", "unified_social_credit_code"),)
 
     id: Mapped[UUID] = mapped_column(Uuid(as_uuid=True), default=uuid4, primary_key=True)
-    organization_id: Mapped[UUID] = mapped_column(Uuid(as_uuid=True), index=True)
+    channel_id: Mapped[UUID] = mapped_column(Uuid(as_uuid=True), default=DEFAULT_CHANNEL_ID, index=True)
+    organization_id: Mapped[UUID] = mapped_column(Uuid(as_uuid=True), ForeignKey("organizations.id"), index=True)
     name: Mapped[str] = mapped_column(String(160), index=True)
     unified_social_credit_code: Mapped[str] = mapped_column(String(32), index=True)
     taxpayer_type: Mapped[str] = mapped_column(String(20))
@@ -41,7 +46,8 @@ class InitialFinancialSnapshot(Base):
     __tablename__ = "initial_financial_snapshots"
 
     id: Mapped[UUID] = mapped_column(Uuid(as_uuid=True), default=uuid4, primary_key=True)
-    organization_id: Mapped[UUID] = mapped_column(Uuid(as_uuid=True), index=True)
+    channel_id: Mapped[UUID] = mapped_column(Uuid(as_uuid=True), default=DEFAULT_CHANNEL_ID, index=True)
+    organization_id: Mapped[UUID] = mapped_column(Uuid(as_uuid=True), ForeignKey("organizations.id"), index=True)
     enterprise_id: Mapped[UUID] = mapped_column(Uuid(as_uuid=True), ForeignKey("enterprises.id"), index=True)
     balance_sheet_data: Mapped[dict] = mapped_column(JSON, default=dict)
     income_statement_data: Mapped[dict] = mapped_column(JSON, default=dict)
@@ -51,10 +57,18 @@ class InitialFinancialSnapshot(Base):
 
 class MonthlyWorkPackage(Base):
     __tablename__ = "monthly_work_packages"
-    __table_args__ = (UniqueConstraint("organization_id", "enterprise_id", "period_year", "period_month"),)
+    __table_args__ = (
+        UniqueConstraint("organization_id", "enterprise_id", "period_year", "period_month"),
+        CheckConstraint("period_month >= 1 AND period_month <= 12", name="ck_monthly_work_packages_period_month"),
+        CheckConstraint(
+            "completion_percent >= 0 AND completion_percent <= 100",
+            name="ck_monthly_work_packages_completion_percent",
+        ),
+    )
 
     id: Mapped[UUID] = mapped_column(Uuid(as_uuid=True), default=uuid4, primary_key=True)
-    organization_id: Mapped[UUID] = mapped_column(Uuid(as_uuid=True), index=True)
+    channel_id: Mapped[UUID] = mapped_column(Uuid(as_uuid=True), default=DEFAULT_CHANNEL_ID, index=True)
+    organization_id: Mapped[UUID] = mapped_column(Uuid(as_uuid=True), ForeignKey("organizations.id"), index=True)
     enterprise_id: Mapped[UUID] = mapped_column(Uuid(as_uuid=True), ForeignKey("enterprises.id"), index=True)
     period_year: Mapped[int] = mapped_column(Integer)
     period_month: Mapped[int] = mapped_column(Integer)
@@ -71,7 +85,8 @@ class ImportBatch(Base):
     __tablename__ = "import_batches"
 
     id: Mapped[UUID] = mapped_column(Uuid(as_uuid=True), default=uuid4, primary_key=True)
-    organization_id: Mapped[UUID] = mapped_column(Uuid(as_uuid=True), index=True)
+    channel_id: Mapped[UUID] = mapped_column(Uuid(as_uuid=True), default=DEFAULT_CHANNEL_ID, index=True)
+    organization_id: Mapped[UUID] = mapped_column(Uuid(as_uuid=True), ForeignKey("organizations.id"), index=True)
     monthly_work_package_id: Mapped[UUID] = mapped_column(
         Uuid(as_uuid=True), ForeignKey("monthly_work_packages.id"), index=True
     )
@@ -87,9 +102,16 @@ class ImportBatch(Base):
 
 class BankTransaction(Base):
     __tablename__ = "bank_transactions"
+    __table_args__ = (
+        CheckConstraint(
+            "parse_confidence >= 0 AND parse_confidence <= 100",
+            name="ck_bank_transactions_parse_confidence",
+        ),
+    )
 
     id: Mapped[UUID] = mapped_column(Uuid(as_uuid=True), default=uuid4, primary_key=True)
-    organization_id: Mapped[UUID] = mapped_column(Uuid(as_uuid=True), index=True)
+    channel_id: Mapped[UUID] = mapped_column(Uuid(as_uuid=True), default=DEFAULT_CHANNEL_ID, index=True)
+    organization_id: Mapped[UUID] = mapped_column(Uuid(as_uuid=True), ForeignKey("organizations.id"), index=True)
     monthly_work_package_id: Mapped[UUID] = mapped_column(
         Uuid(as_uuid=True), ForeignKey("monthly_work_packages.id"), index=True
     )
@@ -112,7 +134,8 @@ class Invoice(Base):
     __tablename__ = "invoices"
 
     id: Mapped[UUID] = mapped_column(Uuid(as_uuid=True), default=uuid4, primary_key=True)
-    organization_id: Mapped[UUID] = mapped_column(Uuid(as_uuid=True), index=True)
+    channel_id: Mapped[UUID] = mapped_column(Uuid(as_uuid=True), default=DEFAULT_CHANNEL_ID, index=True)
+    organization_id: Mapped[UUID] = mapped_column(Uuid(as_uuid=True), ForeignKey("organizations.id"), index=True)
     monthly_work_package_id: Mapped[UUID] = mapped_column(
         Uuid(as_uuid=True), ForeignKey("monthly_work_packages.id"), index=True
     )
@@ -133,9 +156,13 @@ class Invoice(Base):
 
 class MatchRecord(Base):
     __tablename__ = "match_records"
+    __table_args__ = (
+        CheckConstraint("confidence >= 0 AND confidence <= 100", name="ck_match_records_confidence"),
+    )
 
     id: Mapped[UUID] = mapped_column(Uuid(as_uuid=True), default=uuid4, primary_key=True)
-    organization_id: Mapped[UUID] = mapped_column(Uuid(as_uuid=True), index=True)
+    channel_id: Mapped[UUID] = mapped_column(Uuid(as_uuid=True), default=DEFAULT_CHANNEL_ID, index=True)
+    organization_id: Mapped[UUID] = mapped_column(Uuid(as_uuid=True), ForeignKey("organizations.id"), index=True)
     monthly_work_package_id: Mapped[UUID] = mapped_column(
         Uuid(as_uuid=True), ForeignKey("monthly_work_packages.id"), index=True
     )
@@ -155,7 +182,8 @@ class AccountingLine(Base):
     __tablename__ = "accounting_lines"
 
     id: Mapped[UUID] = mapped_column(Uuid(as_uuid=True), default=uuid4, primary_key=True)
-    organization_id: Mapped[UUID] = mapped_column(Uuid(as_uuid=True), index=True)
+    channel_id: Mapped[UUID] = mapped_column(Uuid(as_uuid=True), default=DEFAULT_CHANNEL_ID, index=True)
+    organization_id: Mapped[UUID] = mapped_column(Uuid(as_uuid=True), ForeignKey("organizations.id"), index=True)
     monthly_work_package_id: Mapped[UUID] = mapped_column(
         Uuid(as_uuid=True), ForeignKey("monthly_work_packages.id"), index=True
     )
@@ -174,7 +202,8 @@ class MatchingRule(Base):
     __tablename__ = "matching_rules"
 
     id: Mapped[UUID] = mapped_column(Uuid(as_uuid=True), default=uuid4, primary_key=True)
-    organization_id: Mapped[UUID] = mapped_column(Uuid(as_uuid=True), index=True)
+    channel_id: Mapped[UUID] = mapped_column(Uuid(as_uuid=True), default=DEFAULT_CHANNEL_ID, index=True)
+    organization_id: Mapped[UUID] = mapped_column(Uuid(as_uuid=True), ForeignKey("organizations.id"), index=True)
     enterprise_id: Mapped[Optional[UUID]] = mapped_column(Uuid(as_uuid=True), ForeignKey("enterprises.id"), nullable=True)
     scope: Mapped[str] = mapped_column(String(24))
     summary_keywords: Mapped[list] = mapped_column(JSON, default=list)
@@ -191,7 +220,8 @@ class MonthlyStatement(Base):
     __tablename__ = "monthly_statements"
 
     id: Mapped[UUID] = mapped_column(Uuid(as_uuid=True), default=uuid4, primary_key=True)
-    organization_id: Mapped[UUID] = mapped_column(Uuid(as_uuid=True), index=True)
+    channel_id: Mapped[UUID] = mapped_column(Uuid(as_uuid=True), default=DEFAULT_CHANNEL_ID, index=True)
+    organization_id: Mapped[UUID] = mapped_column(Uuid(as_uuid=True), ForeignKey("organizations.id"), index=True)
     monthly_work_package_id: Mapped[UUID] = mapped_column(
         Uuid(as_uuid=True), ForeignKey("monthly_work_packages.id"), index=True
     )
@@ -207,7 +237,8 @@ class TaxFilingDraft(Base):
     __tablename__ = "tax_filing_drafts"
 
     id: Mapped[UUID] = mapped_column(Uuid(as_uuid=True), default=uuid4, primary_key=True)
-    organization_id: Mapped[UUID] = mapped_column(Uuid(as_uuid=True), index=True)
+    channel_id: Mapped[UUID] = mapped_column(Uuid(as_uuid=True), default=DEFAULT_CHANNEL_ID, index=True)
+    organization_id: Mapped[UUID] = mapped_column(Uuid(as_uuid=True), ForeignKey("organizations.id"), index=True)
     monthly_work_package_id: Mapped[UUID] = mapped_column(
         Uuid(as_uuid=True), ForeignKey("monthly_work_packages.id"), index=True
     )
@@ -221,7 +252,8 @@ class Report(Base):
     __tablename__ = "reports"
 
     id: Mapped[UUID] = mapped_column(Uuid(as_uuid=True), default=uuid4, primary_key=True)
-    organization_id: Mapped[UUID] = mapped_column(Uuid(as_uuid=True), index=True)
+    channel_id: Mapped[UUID] = mapped_column(Uuid(as_uuid=True), default=DEFAULT_CHANNEL_ID, index=True)
+    organization_id: Mapped[UUID] = mapped_column(Uuid(as_uuid=True), ForeignKey("organizations.id"), index=True)
     monthly_work_package_id: Mapped[UUID] = mapped_column(
         Uuid(as_uuid=True), ForeignKey("monthly_work_packages.id"), index=True
     )
@@ -237,7 +269,8 @@ class AuditLog(Base):
     __tablename__ = "audit_logs"
 
     id: Mapped[UUID] = mapped_column(Uuid(as_uuid=True), default=uuid4, primary_key=True)
-    organization_id: Mapped[UUID] = mapped_column(Uuid(as_uuid=True), index=True)
+    channel_id: Mapped[UUID] = mapped_column(Uuid(as_uuid=True), default=DEFAULT_CHANNEL_ID, index=True)
+    organization_id: Mapped[UUID] = mapped_column(Uuid(as_uuid=True), ForeignKey("organizations.id"), index=True)
     monthly_work_package_id: Mapped[Optional[UUID]] = mapped_column(
         Uuid(as_uuid=True), ForeignKey("monthly_work_packages.id"), nullable=True
     )

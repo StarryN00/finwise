@@ -17,6 +17,7 @@ class MonthlyPackageRead(BaseModel):
     model_config = ConfigDict(from_attributes=True)
 
     id: UUID
+    channel_id: UUID
     organization_id: UUID
     enterprise_id: UUID
     period_year: int
