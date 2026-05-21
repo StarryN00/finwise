@@ -171,6 +171,9 @@ def _statement_decimal(data: dict[str, Any], field_name: str) -> Decimal:
     if value in (None, ""):
         return Decimal("0")
     try:
-        return Decimal(str(value))
+        decimal_value = Decimal(str(value))
     except (InvalidOperation, ValueError) as exc:
         raise ValidationError(f"Financial statement field '{field_name}' must be numeric.") from exc
+    if not decimal_value.is_finite():
+        raise ValidationError(f"Financial statement field '{field_name}' must be a finite number.")
+    return decimal_value

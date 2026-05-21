@@ -44,6 +44,7 @@ class Enterprise(Base):
 
 class InitialFinancialSnapshot(Base):
     __tablename__ = "initial_financial_snapshots"
+    __table_args__ = (UniqueConstraint("organization_id", "enterprise_id"),)
 
     id: Mapped[UUID] = mapped_column(Uuid(as_uuid=True), default=uuid4, primary_key=True)
     channel_id: Mapped[UUID] = mapped_column(Uuid(as_uuid=True), default=DEFAULT_CHANNEL_ID, index=True)

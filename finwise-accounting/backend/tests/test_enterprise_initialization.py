@@ -280,6 +280,30 @@ def test_invalid_balance_sheet_value_returns_client_error_through_api(db_session
     assert response.status_code in {400, 422}
 
 
+def test_non_finite_balance_sheet_value_returns_client_error_through_api(db_session):
+    client = create_test_client()
+    enterprise_response = client.post(
+        "/api/enterprises",
+        json={
+            "name": "苏州非有限数有限公司",
+            "unified_social_credit_code": "91320500NAN00001",
+            "taxpayer_type": "GENERAL",
+            "industry": "制造业",
+        },
+    )
+    enterprise_id = enterprise_response.json()["id"]
+
+    response = client.post(
+        f"/api/enterprises/{enterprise_id}/initial-snapshot",
+        json={
+            "balance_sheet_data": {"资产总计": "NaN", "负债合计": 120000, "所有者权益合计": 380000},
+            "income_statement_data": {"营业收入": 200000, "净利润": 30000},
+        },
+    )
+
+    assert response.status_code in {400, 422}
+
+
 def test_duplicate_initial_snapshot_returns_409_through_api(db_session):
     client = create_test_client()
     enterprise_response = client.post(
@@ -301,3 +325,25 @@ def test_duplicate_initial_snapshot_returns_409_through_api(db_session):
     response = client.post(f"/api/enterprises/{enterprise_id}/initial-snapshot", json=payload)
 
     assert response.status_code == 409
+
+
+def test_initial_snapshot_rejects_duplicate_enterprise_at_database_level(db_session):
+    enterprise = create_enterprise(db_session)
+    first_snapshot = InitialFinancialSnapshot(
+        organization_id=enterprise.organization_id,
+        enterprise_id=enterprise.id,
+        balance_sheet_data={"资产总计": 500000, "负债合计": 120000, "所有者权益合计": 380000},
+        income_statement_data={"营业收入": 200000, "净利润": 30000},
+        validation_result={"balanced": True},
+    )
+    second_snapshot = InitialFinancialSnapshot(
+        organization_id=enterprise.organization_id,
+        enterprise_id=enterprise.id,
+        balance_sheet_data={"资产总计": 600000, "负债合计": 200000, "所有者权益合计": 400000},
+        income_statement_data={"营业收入": 300000, "净利润": 50000},
+        validation_result={"balanced": True},
+    )
+    db_session.add_all([first_snapshot, second_snapshot])
+
+    with pytest.raises(IntegrityError):
+        db_session.commit()
