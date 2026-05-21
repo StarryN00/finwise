@@ -8,12 +8,12 @@ modify the legacy root `backend/` or `frontend/` applications.
 
 ```bash
 cd backend
-python -m pytest -q
+python3 -m pytest -q
 uvicorn app.main:app --reload
 ```
 
 The FastAPI backend starts with a `/health` endpoint and SQLite defaults for
-local development.
+local development. Use `python3` for local smoke tests on macOS.
 
 ## Frontend
 
