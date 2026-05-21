@@ -4,7 +4,7 @@ from app.main import create_app
 
 
 def test_health_endpoint_returns_ok():
-    client = TestClient(create_app())
+    client = TestClient(create_app(init_db_on_startup=False))
 
     response = client.get("/health")
 

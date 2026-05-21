@@ -41,7 +41,7 @@ def create_test_client():
     session = TestingSession()
     ensure_default_organization(session)
 
-    app = create_app()
+    app = create_app(init_db_on_startup=False)
 
     def override_get_db():
         yield session
