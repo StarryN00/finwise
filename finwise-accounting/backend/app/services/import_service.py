@@ -2,9 +2,11 @@ from __future__ import annotations
 
 from datetime import date, datetime
 from decimal import Decimal, InvalidOperation
+from numbers import Real
 from uuid import UUID
 
 import pandas as pd
+from sqlalchemy.exc import SQLAlchemyError
 from sqlalchemy.orm import Session
 
 from app.core.org_context import get_current_organization_id
@@ -68,6 +70,24 @@ def to_decimal(value) -> Decimal:
 def to_date(value) -> date:
     if _is_blank(value):
         raise ValueError("missing date value")
+    if isinstance(value, datetime):
+        return value.date()
+    if isinstance(value, date):
+        return value
+    if isinstance(value, Real) and not isinstance(value, bool):
+        raise ValueError(f"numeric date values are not supported: {value}")
+    if isinstance(value, str):
+        normalized = value.strip()
+        if not normalized:
+            raise ValueError("missing date value")
+        if normalized.isdigit():
+            if len(normalized) != 8:
+                raise ValueError(f"invalid date value: {value}")
+            try:
+                return datetime.strptime(normalized, "%Y%m%d").date()
+            except ValueError as exc:
+                raise ValueError(f"invalid date value: {value}") from exc
+        value = normalized
     try:
         timestamp = pd.to_datetime(value, errors="coerce")
     except (TypeError, ValueError) as exc:
@@ -110,8 +130,7 @@ def import_bank_rows(db: Session, *, monthly_work_package_id: UUID, rows: list[d
         except (ImportValidationError, TypeError, ValueError) as exc:
             errors.append({"row": index, "error": str(exc), "raw": _json_safe_row(row)})
 
-    db.commit()
-    return {"created": created, "errors": errors}
+    return _commit_import(db, created=created, errors=errors)
 
 
 def import_invoice_rows(db: Session, *, monthly_work_package_id: UUID, direction: str, rows: list[dict]) -> dict:
@@ -130,7 +149,7 @@ def import_invoice_rows(db: Session, *, monthly_work_package_id: UUID, direction
                 organization_id=organization_id,
                 monthly_work_package_id=monthly_work_package_id,
                 invoice_direction=invoice_direction,
-                invoice_number=str(pick(row, INVOICE_COLUMNS["invoice_number"])),
+                invoice_number=_required_string(row, INVOICE_COLUMNS["invoice_number"], "invoice_number"),
                 invoice_date=to_date(pick(row, INVOICE_COLUMNS["invoice_date"])),
                 amount=_required_decimal(row, INVOICE_COLUMNS["amount"], "amount"),
                 tax_amount=_required_decimal(row, INVOICE_COLUMNS["tax_amount"], "tax_amount"),
@@ -144,8 +163,7 @@ def import_invoice_rows(db: Session, *, monthly_work_package_id: UUID, direction
         except (TypeError, ValueError) as exc:
             errors.append({"row": index, "error": str(exc), "raw": _json_safe_row(row)})
 
-    db.commit()
-    return {"created": created, "errors": errors}
+    return _commit_import(db, created=created, errors=errors)
 
 
 def _get_monthly_package(db: Session, monthly_work_package_id: UUID) -> MonthlyWorkPackage:
@@ -169,6 +187,26 @@ def _required_decimal(row: dict, aliases: list[str], field_name: str) -> Decimal
     if _is_blank(value):
         raise ValueError(f"missing required decimal value: {field_name}")
     return to_decimal(value)
+
+
+def _required_string(row: dict, aliases: list[str], field_name: str) -> str:
+    value = pick(row, aliases)
+    if _is_blank(value):
+        raise ValueError(f"missing required text value: {field_name}")
+    return str(value).strip()
+
+
+def _commit_import(db: Session, *, created: int, errors: list[dict]) -> dict:
+    try:
+        db.commit()
+    except SQLAlchemyError as exc:
+        db.rollback()
+        return {
+            "created": 0,
+            "errors": errors,
+            "batch_errors": [{"error": str(exc)}],
+        }
+    return {"created": created, "errors": errors, "batch_errors": []}
 
 
 def _json_safe_row(row: dict) -> dict:

@@ -4,7 +4,7 @@ from datetime import datetime
 from typing import Any
 from uuid import UUID
 
-from pydantic import BaseModel, ConfigDict
+from pydantic import BaseModel, ConfigDict, Field
 
 
 class ImportBatchRead(BaseModel):
@@ -30,6 +30,11 @@ class ImportRowError(BaseModel):
     raw: dict[str, Any]
 
 
+class ImportBatchError(BaseModel):
+    error: str
+
+
 class ImportResult(BaseModel):
     created: int
     errors: list[ImportRowError]
+    batch_errors: list[ImportBatchError] = Field(default_factory=list)

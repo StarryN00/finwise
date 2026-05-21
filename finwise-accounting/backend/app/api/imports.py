@@ -33,11 +33,27 @@ def read_upload_rows(file: UploadFile) -> list[dict]:
     with NamedTemporaryFile(suffix=suffix, delete=True) as tmp:
         tmp.write(file.file.read())
         tmp.flush()
-        if suffix == ".csv":
-            frame = pd.read_csv(tmp.name)
-        else:
-            frame = pd.read_excel(tmp.name)
+        try:
+            frame = _read_import_frame(tmp.name, suffix)
+        except Exception as exc:
+            raise HTTPException(
+                status_code=status.HTTP_400_BAD_REQUEST,
+                detail=f"Could not read import file: {exc}",
+            ) from exc
     return frame.to_dict(orient="records")
+
+
+def _read_import_frame(path: str, suffix: str) -> pd.DataFrame:
+    if suffix == ".csv":
+        last_error: Exception | None = None
+        for encoding in ("utf-8", "gb18030", "gbk"):
+            try:
+                return pd.read_csv(path, encoding=encoding)
+            except UnicodeDecodeError as exc:
+                last_error = exc
+        if last_error is not None:
+            raise last_error
+    return pd.read_excel(path)
 
 
 @router.post("/bank", response_model=ImportResult)
@@ -78,9 +94,9 @@ def import_output_invoices_endpoint(package_id: UUID, file: UploadFile = File(..
 def _handle_import_errors(action: Callable[[], dict]):
     try:
         return action()
+    except HTTPException:
+        raise
     except MonthlyPackageNotFoundError as exc:
         raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail=str(exc)) from exc
     except ImportValidationError as exc:
-        raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail=str(exc)) from exc
-    except (pd.errors.EmptyDataError, ValueError) as exc:
         raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail=str(exc)) from exc
