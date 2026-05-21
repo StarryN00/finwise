@@ -1,5 +1,6 @@
 from uuid import UUID
 
+import pandas as pd
 import pytest
 
 from app.models import BankTransaction, Enterprise, Invoice, MonthlyWorkPackage
@@ -73,6 +74,20 @@ def test_import_bank_rows_reports_invalid_date_without_crashing(db_session):
     assert db_session.query(BankTransaction).count() == 0
 
 
+def test_import_bank_rows_reports_nat_date_without_crashing(db_session):
+    package = make_package(db_session)
+
+    result = import_bank_rows(
+        db_session,
+        monthly_work_package_id=package.id,
+        rows=[{"交易日期": pd.NaT, "摘要": "收到货款", "贷方金额": "11300.00"}],
+    )
+
+    assert result["created"] == 0
+    assert result["errors"][0]["row"] == 1
+    assert db_session.query(BankTransaction).count() == 0
+
+
 def test_import_invoice_rows_reports_nan_amount_without_crashing(db_session):
     package = make_package(db_session)
 
@@ -81,6 +96,21 @@ def test_import_invoice_rows_reports_nan_amount_without_crashing(db_session):
         monthly_work_package_id=package.id,
         direction="INPUT",
         rows=[{"发票号码": "0002", "开票日期": "2026-05-07", "金额": float("nan"), "税额": "1300", "价税合计": "11300"}],
+    )
+
+    assert result["created"] == 0
+    assert result["errors"][0]["row"] == 1
+    assert db_session.query(Invoice).count() == 0
+
+
+def test_import_invoice_rows_reports_missing_amount_without_creating_invoice(db_session):
+    package = make_package(db_session)
+
+    result = import_invoice_rows(
+        db_session,
+        monthly_work_package_id=package.id,
+        direction="INPUT",
+        rows=[{"发票号码": "0003", "开票日期": "2026-05-07", "税额": "1300", "价税合计": "11300"}],
     )
 
     assert result["created"] == 0

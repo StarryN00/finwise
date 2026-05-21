@@ -69,9 +69,15 @@ def to_date(value) -> date:
     if _is_blank(value):
         raise ValueError("missing date value")
     try:
-        return pd.to_datetime(value).date()
+        timestamp = pd.to_datetime(value, errors="coerce")
     except (TypeError, ValueError) as exc:
         raise ValueError(f"invalid date value: {value}") from exc
+    if pd.isna(timestamp):
+        raise ValueError(f"invalid date value: {value}")
+    parsed_date = timestamp.date()
+    if not isinstance(parsed_date, date):
+        raise ValueError(f"invalid date value: {value}")
+    return parsed_date
 
 
 def import_bank_rows(db: Session, *, monthly_work_package_id: UUID, rows: list[dict]) -> dict:
@@ -126,9 +132,9 @@ def import_invoice_rows(db: Session, *, monthly_work_package_id: UUID, direction
                 invoice_direction=invoice_direction,
                 invoice_number=str(pick(row, INVOICE_COLUMNS["invoice_number"])),
                 invoice_date=to_date(pick(row, INVOICE_COLUMNS["invoice_date"])),
-                amount=to_decimal(pick(row, INVOICE_COLUMNS["amount"])),
-                tax_amount=to_decimal(pick(row, INVOICE_COLUMNS["tax_amount"])),
-                total_amount=to_decimal(pick(row, INVOICE_COLUMNS["total_amount"])),
+                amount=_required_decimal(row, INVOICE_COLUMNS["amount"], "amount"),
+                tax_amount=_required_decimal(row, INVOICE_COLUMNS["tax_amount"], "tax_amount"),
+                total_amount=_required_decimal(row, INVOICE_COLUMNS["total_amount"], "total_amount"),
                 seller_name=pick(row, INVOICE_COLUMNS["seller_name"]),
                 buyer_name=pick(row, INVOICE_COLUMNS["buyer_name"]),
                 raw_row_data=_json_safe_row(row),
@@ -150,7 +156,19 @@ def _get_monthly_package(db: Session, monthly_work_package_id: UUID) -> MonthlyW
 
 
 def _is_blank(value) -> bool:
-    return value in (None, "")
+    if value in (None, ""):
+        return True
+    try:
+        return bool(pd.isna(value))
+    except (TypeError, ValueError):
+        return False
+
+
+def _required_decimal(row: dict, aliases: list[str], field_name: str) -> Decimal:
+    value = pick(row, aliases)
+    if _is_blank(value):
+        raise ValueError(f"missing required decimal value: {field_name}")
+    return to_decimal(value)
 
 
 def _json_safe_row(row: dict) -> dict:

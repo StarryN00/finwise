@@ -37,7 +37,7 @@ def read_upload_rows(file: UploadFile) -> list[dict]:
             frame = pd.read_csv(tmp.name)
         else:
             frame = pd.read_excel(tmp.name)
-    return frame.fillna("").to_dict(orient="records")
+    return frame.to_dict(orient="records")
 
 
 @router.post("/bank", response_model=ImportResult)
