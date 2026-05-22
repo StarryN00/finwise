@@ -30,11 +30,80 @@
         </el-button>
       </div>
     </article>
+
+    <article class="output-card tax-module" :class="{ disabled: !activePackage }">
+      <div class="tax-module__header">
+        <div>
+          <h2 class="section-title">辅助申报表</h2>
+          <p class="caption">生成草稿后可在线核对，再下载电子税务申报辅助 Excel。</p>
+        </div>
+        <StatusTag :status="activePackage?.taxDraftStatus || 'DATA_INSUFFICIENT'" />
+      </div>
+
+      <div class="tax-flow">
+        <div class="tax-flow__step" :class="{ done: activePackage?.taxDraftId }">
+          <span>1</span>
+          <strong>生成</strong>
+          <small>汇总进销项明细</small>
+        </div>
+        <div class="tax-flow__step" :class="{ done: activePackage?.taxDraftId }">
+          <span>2</span>
+          <strong>查看/修改</strong>
+          <small>核对申报口径</small>
+        </div>
+        <div class="tax-flow__step" :class="{ done: activePackage?.taxDraftStatus === 'EXPORTED' }">
+          <span>3</span>
+          <strong>下载</strong>
+          <small>导出辅助 Excel</small>
+        </div>
+      </div>
+
+      <div class="tax-actions">
+        <el-button :disabled="!activePackage" :loading="loadingAction === 'tax'" type="primary" @click="generateTaxDraft">
+          {{ activePackage?.taxDraftId ? '刷新申报草稿' : '生成申报草稿' }}
+        </el-button>
+        <el-button :disabled="!activePackage?.taxDraftId" :loading="loadingAction === 'taxDraftLoad'" @click="openTaxDraftEditor">
+          查看/修改草稿
+        </el-button>
+        <el-button :disabled="!activePackage?.taxDraftId" :loading="loadingAction === 'taxExport'" @click="exportTaxDraft">
+          下载申报 Excel
+        </el-button>
+      </div>
+    </article>
   </section>
+
+  <el-dialog v-model="taxDraftDialogVisible" title="申报草稿核对" width="640px">
+    <div class="draft-context">
+      <span>{{ activePackage?.company || '当前企业' }}</span>
+      <strong>{{ activePackage?.period || '-' }}</strong>
+    </div>
+    <el-form label-position="top" class="draft-form">
+      <el-form-item label="销项销售额">
+        <el-input v-model="taxDraftForm.output_amount" />
+      </el-form-item>
+      <el-form-item label="销项税额">
+        <el-input v-model="taxDraftForm.output_tax" />
+      </el-form-item>
+      <el-form-item label="进项金额">
+        <el-input v-model="taxDraftForm.input_amount" />
+      </el-form-item>
+      <el-form-item label="进项税额">
+        <el-input v-model="taxDraftForm.input_tax" />
+      </el-form-item>
+    </el-form>
+    <div v-if="taxDraftWarnings.length" class="draft-warning">
+      {{ taxDraftWarnings.join('；') }}
+    </div>
+    <template #footer>
+      <el-button :disabled="!activePackage?.taxDraftId" @click="openTaxDraftPreview">打开在线预览</el-button>
+      <el-button @click="taxDraftDialogVisible = false">取消</el-button>
+      <el-button type="primary" :loading="loadingAction === 'taxDraftSave'" @click="saveTaxDraftEdits">保存草稿</el-button>
+    </template>
+  </el-dialog>
 </template>
 
 <script setup>
-import { computed, ref } from 'vue'
+import { computed, reactive, ref } from 'vue'
 import { ElMessage } from 'element-plus'
 import { api } from '../api/client'
 import StatusTag from '../components/StatusTag.vue'
@@ -42,6 +111,14 @@ import { useWorkspaceStore } from '../stores/workspace'
 
 const workspace = useWorkspaceStore()
 const loadingAction = ref('')
+const taxDraftDialogVisible = ref(false)
+const taxDraftWarnings = ref([])
+const taxDraftForm = reactive({
+  output_amount: '',
+  output_tax: '',
+  input_amount: '',
+  input_tax: '',
+})
 const activePackage = computed(() => workspace.activePackage)
 const outputStateText = computed(() => {
   if (!activePackage.value) return '未创建'
@@ -64,25 +141,6 @@ const outputs = [
     viewable: true,
     viewDisabled: () => !activePackage.value?.statementId,
     viewHandler: () => openStatementView(),
-  },
-  {
-    key: 'tax',
-    title: '申报辅助 Excel',
-    description: '增值税及附加税复制表',
-    status: () => activePackage.value?.taxDraftStatus || 'DATA_INSUFFICIENT',
-    action: '生成申报草稿',
-    disabled: () => !activePackage.value,
-    handler: () => runAction('tax', () => workspace.generateVatDraft(activePackage.value.id), '申报草稿已生成'),
-  },
-  {
-    key: 'export',
-    title: '导出申报文件',
-    description: '下载电子税务申报辅助 Excel',
-    status: () => activePackage.value?.taxDraftId ? 'READY_TO_EXPORT' : 'DATA_INSUFFICIENT',
-    action: '导出 Excel',
-    disabled: () => !activePackage.value?.taxDraftId,
-    handler: () => runAction('export', () => workspace.exportTaxDraft(activePackage.value.taxDraftId), '导出文件已生成'),
-    viewable: false,
   },
   {
     key: 'report',
@@ -110,9 +168,65 @@ async function runAction(key, action, successText) {
   }
 }
 
+function generateTaxDraft() {
+  if (!activePackage.value?.id) return
+  return runAction('tax', () => workspace.generateVatDraft(activePackage.value.id), '申报草稿已生成')
+}
+
+function exportTaxDraft() {
+  if (!activePackage.value?.taxDraftId) return
+  return runAction('taxExport', () => workspace.exportTaxDraft(activePackage.value.taxDraftId), '申报 Excel 已下载')
+}
+
+async function openTaxDraftEditor() {
+  if (!activePackage.value?.taxDraftId) return
+  loadingAction.value = 'taxDraftLoad'
+  try {
+    const response = await api.tax.getDraft(activePackage.value.taxDraftId)
+    Object.assign(taxDraftForm, {
+      output_amount: response.data.data.output_amount || '0.00',
+      output_tax: response.data.data.output_tax || '0.00',
+      input_amount: response.data.data.input_amount || '0.00',
+      input_tax: response.data.data.input_tax || '0.00',
+    })
+    taxDraftWarnings.value = response.data.data.warnings || []
+    taxDraftDialogVisible.value = true
+  } catch (error) {
+    ElMessage.error(error?.response?.data?.detail || error?.message || '申报草稿加载失败')
+  } finally {
+    loadingAction.value = ''
+  }
+}
+
+async function saveTaxDraftEdits() {
+  if (!activePackage.value?.taxDraftId) return
+  loadingAction.value = 'taxDraftSave'
+  try {
+    const response = await api.tax.updateDraft(activePackage.value.taxDraftId, { ...taxDraftForm })
+    Object.assign(taxDraftForm, {
+      output_amount: response.data.data.output_amount,
+      output_tax: response.data.data.output_tax,
+      input_amount: response.data.data.input_amount,
+      input_tax: response.data.data.input_tax,
+    })
+    taxDraftWarnings.value = response.data.data.warnings || []
+    await workspace.loadWorkspace()
+    ElMessage.success('申报草稿已保存')
+  } catch (error) {
+    ElMessage.error(error?.response?.data?.detail || error?.message || '申报草稿保存失败')
+  } finally {
+    loadingAction.value = ''
+  }
+}
+
 function openStatementView() {
   if (!activePackage.value?.id) return
   window.open(api.statements.viewUrl(activePackage.value.id), '_blank', 'noopener')
+}
+
+function openTaxDraftPreview() {
+  if (!activePackage.value?.taxDraftId) return
+  window.open(api.tax.viewDraftUrl(activePackage.value.taxDraftId), '_blank', 'noopener')
 }
 
 function openHealthReportView() {
@@ -145,7 +259,7 @@ function openHealthReportView() {
 
 .output-grid {
   display: grid;
-  grid-template-columns: repeat(4, minmax(0, 1fr));
+  grid-template-columns: repeat(3, minmax(0, 1fr));
   gap: 16px;
 }
 
@@ -178,9 +292,111 @@ function openHealthReportView() {
   margin-left: 0;
 }
 
+.tax-module {
+  gap: 16px;
+}
+
+.tax-module__header {
+  display: flex;
+  align-items: flex-start;
+  justify-content: space-between;
+  gap: 16px;
+}
+
+.tax-flow {
+  display: grid;
+  grid-template-columns: repeat(3, minmax(0, 1fr));
+  gap: 10px;
+}
+
+.tax-flow__step {
+  display: grid;
+  gap: 4px;
+  min-height: 76px;
+  padding: 12px;
+  border: 1px solid var(--fw-line);
+  border-radius: 8px;
+  background: var(--fw-surface-muted);
+}
+
+.tax-flow__step span {
+  display: inline-grid;
+  place-items: center;
+  width: 22px;
+  height: 22px;
+  border-radius: 50%;
+  color: var(--fw-text-muted);
+  background: #eef2f7;
+  font-size: 12px;
+  font-weight: 700;
+}
+
+.tax-flow__step strong {
+  font-size: 13px;
+}
+
+.tax-flow__step small {
+  color: var(--fw-text-muted);
+  line-height: 1.4;
+}
+
+.tax-flow__step.done {
+  border-color: #b9dcff;
+  background: #eef6ff;
+}
+
+.tax-flow__step.done span {
+  color: #fff;
+  background: var(--fw-primary);
+}
+
+.tax-actions {
+  display: grid;
+  grid-template-columns: 1fr 1fr 1fr;
+  gap: 10px;
+}
+
+.tax-actions :deep(.el-button) {
+  width: 100%;
+  margin-left: 0;
+}
+
+.draft-context {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+  margin-bottom: 16px;
+  padding: 12px;
+  border: 1px solid var(--fw-line);
+  border-radius: 8px;
+  background: var(--fw-surface-muted);
+}
+
+.draft-context span {
+  color: var(--fw-text-muted);
+}
+
+.draft-form {
+  display: grid;
+  grid-template-columns: 1fr 1fr;
+  gap: 0 16px;
+}
+
+.draft-warning {
+  padding: 10px 12px;
+  border: 1px solid #fed7aa;
+  border-radius: 8px;
+  color: #9a3412;
+  background: #fff7ed;
+}
+
 @media (max-width: 960px) {
   .operation-context,
-  .output-grid {
+  .output-grid,
+  .tax-flow,
+  .tax-actions,
+  .draft-form {
     grid-template-columns: 1fr;
   }
 }

@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 from datetime import datetime
+from decimal import Decimal
 from typing import Any, Optional
 from uuid import UUID
 
@@ -18,3 +19,10 @@ class TaxFilingDraftRead(BaseModel):
     status: str
     export_path: Optional[str]
     created_at: datetime
+
+
+class TaxFilingDraftUpdate(BaseModel):
+    output_amount: Decimal
+    output_tax: Decimal
+    input_amount: Decimal
+    input_tax: Decimal

@@ -33,8 +33,11 @@ export const api = {
     viewUrl: (packageId) => `/api/monthly-packages/${packageId}/statements/latest/html`,
   },
   tax: {
+    getDraft: (draftId) => apiClient.get(`/tax-drafts/${draftId}`),
     generateVatDraft: (packageId) => apiClient.post(`/monthly-packages/${packageId}/tax/vat-draft`),
+    updateDraft: (draftId, payload) => apiClient.patch(`/tax-drafts/${draftId}`, payload),
     exportDraft: (draftId) => apiClient.post(`/tax-drafts/${draftId}/export`, undefined, { responseType: 'blob' }),
+    viewDraftUrl: (draftId) => `/api/tax-drafts/${draftId}/html`,
   },
   reports: {
     generateHealth: (packageId) => apiClient.post(`/monthly-packages/${packageId}/reports/health`),

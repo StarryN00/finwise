@@ -14,4 +14,15 @@ describe('OutputCenterView', () => {
     expect(source).toContain('openStatementView')
     expect(source).toContain('openHealthReportView')
   })
+
+  it('keeps tax draft generation, review, and export in one filing module', () => {
+    expect(source).toContain('辅助申报表')
+    expect(source).toContain('生成申报草稿')
+    expect(source).toContain('查看/修改草稿')
+    expect(source).toContain('下载申报 Excel')
+    expect(source).toContain('openTaxDraftEditor')
+    expect(source).toContain('saveTaxDraftEdits')
+    expect(source).toContain('申报草稿核对')
+    expect(source).not.toContain('导出申报文件')
+  })
 })

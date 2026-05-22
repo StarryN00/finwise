@@ -16,6 +16,22 @@ from app.services.statement_service import MonthlyPackageNotFoundError, generate
 
 router = APIRouter(tags=["statements"])
 
+STATEMENT_FIELD_LABELS = {
+    "bank_credit_total": "银行收入合计",
+    "bank_debit_total": "银行支出合计",
+    "cash_net_movement": "现金净流入",
+    "vat_payable_estimate": "应纳增值税估算",
+    "revenue": "营业收入",
+    "output_tax": "销项税额",
+    "cost": "营业成本",
+    "input_tax": "进项税额",
+    "expense": "期间费用",
+    "gross_profit": "毛利",
+    "operating_profit": "营业利润",
+    "balance_sheet": "资产负债表差异",
+    "income_statement": "利润表差异",
+}
+
 
 @router.post("/api/monthly-packages/{package_id}/statements/generate", response_model=MonthlyStatementRead)
 def generate_statement_endpoint(package_id: UUID, db: Session = Depends(get_db)):
@@ -106,7 +122,17 @@ def _render_dict_table(data: dict) -> str:
     if not data:
         return "<p>暂无数据</p>"
     rows = "\n".join(
-        f"<tr><td>{escape(str(key))}</td><td>{escape(str(value))}</td></tr>"
+        f"<tr><td>{escape(_statement_label(str(key)))}</td><td>{_render_statement_value(value)}</td></tr>"
         for key, value in data.items()
     )
     return f"<table><thead><tr><th>项目</th><th>金额/说明</th></tr></thead><tbody>{rows}</tbody></table>"
+
+
+def _statement_label(key: str) -> str:
+    return STATEMENT_FIELD_LABELS.get(key, key)
+
+
+def _render_statement_value(value) -> str:
+    if isinstance(value, dict):
+        return escape("；".join(f"{_statement_label(str(key))}: {item}" for key, item in value.items()))
+    return escape(str(value))

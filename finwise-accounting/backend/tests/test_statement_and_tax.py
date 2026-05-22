@@ -167,6 +167,8 @@ def test_latest_statement_html_endpoint_renders_online_preview(db_session):
     assert "苏州报表测试企业" in response.text
     assert "每月账目与报表" in response.text
     assert "利润表估算" in response.text
+    assert "营业收入" in response.text
+    assert "revenue" not in response.text
 
 
 def test_generate_tax_filing_draft_persists_invoice_totals(db_session):
@@ -181,6 +183,105 @@ def test_generate_tax_filing_draft_persists_invoice_totals(db_session):
     assert as_decimal(draft.data["surcharge_estimate"]) == Decimal("936.00")
     assert draft.status == "DRAFT"
     assert db_session.query(TaxFilingDraft).count() == 1
+
+
+def test_generate_tax_filing_draft_uses_imported_invoice_totals_before_matching(db_session):
+    package = make_package(db_session)
+    add_invoice(
+        db_session,
+        package,
+        direction="OUTPUT",
+        number="OUT-UNMATCHED",
+        amount=Decimal("100000"),
+        tax_amount=Decimal("13000"),
+        confirmed=False,
+    )
+    add_invoice(
+        db_session,
+        package,
+        direction="INPUT",
+        number="IN-UNMATCHED",
+        amount=Decimal("40000"),
+        tax_amount=Decimal("5200"),
+        confirmed=False,
+    )
+    db_session.commit()
+
+    draft = generate_tax_filing_draft(db_session, monthly_work_package_id=package.id)
+
+    assert as_decimal(draft.data["output_amount"]) == Decimal("100000.00")
+    assert as_decimal(draft.data["output_tax"]) == Decimal("13000.00")
+    assert as_decimal(draft.data["input_amount"]) == Decimal("40000.00")
+    assert as_decimal(draft.data["input_tax"]) == Decimal("5200.00")
+    assert as_decimal(draft.data["vat_payable"]) == Decimal("7800.00")
+    assert draft.data["warnings"] == ["未匹配发票2张"]
+
+
+def test_tax_filing_draft_html_endpoint_renders_online_preview(db_session):
+    package = make_package(db_session)
+    add_invoice(
+        db_session,
+        package,
+        direction="OUTPUT",
+        number="OUT-UNMATCHED",
+        amount=Decimal("100000"),
+        tax_amount=Decimal("13000"),
+        confirmed=False,
+    )
+    db_session.commit()
+    draft = generate_tax_filing_draft(db_session, monthly_work_package_id=package.id)
+    app = create_app(init_db_on_startup=False)
+
+    def override_get_db():
+        yield db_session
+
+    app.dependency_overrides[get_db] = override_get_db
+    client = TestClient(app, raise_server_exceptions=False)
+
+    response = client.get(f"/api/tax-drafts/{draft.id}/html")
+
+    assert response.status_code == 200
+    assert "苏州报表测试企业" in response.text
+    assert "增值税申报草稿" in response.text
+    assert "销项销售额" in response.text
+    assert "100000.00" in response.text
+
+
+def test_update_tax_filing_draft_endpoint_recalculates_payable(db_session):
+    package = make_package(db_session)
+    add_invoice(
+        db_session,
+        package,
+        direction="OUTPUT",
+        number="OUT-UNMATCHED",
+        amount=Decimal("100000"),
+        tax_amount=Decimal("13000"),
+        confirmed=False,
+    )
+    db_session.commit()
+    draft = generate_tax_filing_draft(db_session, monthly_work_package_id=package.id)
+    app = create_app(init_db_on_startup=False)
+
+    def override_get_db():
+        yield db_session
+
+    app.dependency_overrides[get_db] = override_get_db
+    client = TestClient(app, raise_server_exceptions=False)
+
+    response = client.patch(
+        f"/api/tax-drafts/{draft.id}",
+        json={
+            "output_amount": "100000",
+            "output_tax": "13000",
+            "input_amount": "20000",
+            "input_tax": "2600",
+        },
+    )
+
+    assert response.status_code == 200
+    assert response.json()["data"]["vat_payable"] == "10400.00"
+    assert response.json()["data"]["surcharge_estimate"] == "1248.00"
+    assert response.json()["data"]["warnings"] == ["未匹配发票1张"]
 
 
 def test_export_tax_filing_draft_workbook_contains_copyable_rows(db_session, tmp_path):
@@ -204,6 +305,6 @@ def test_export_tax_filing_draft_workbook_contains_copyable_rows(db_session, tmp
     workbook = load_workbook(export_path)
     rows = list(workbook.active.iter_rows(values_only=True))
     assert rows[0] == ("字段", "金额", "说明")
-    assert ("销项销售额", "100000.00", "本期销项不含税销售额") in rows
-    assert ("本期应纳增值税", "7800.00", "销项税额减进项税额") in rows
+    assert ("销项销售额", "130000.00", "本期销项不含税销售额") in rows
+    assert ("本期应纳增值税", "11700.00", "销项税额减进项税额") in rows
     assert ("异常提醒", "未匹配发票1张", "导出前请人工核对") in rows

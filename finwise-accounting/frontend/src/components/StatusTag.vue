@@ -1,4 +1,6 @@
 <script setup>
+import { computed } from 'vue'
+
 const props = defineProps({
   status: {
     type: String,
@@ -17,7 +19,7 @@ const statusMap = {
   DATA_INSUFFICIENT: ['数据不足', 'danger'],
 }
 
-const resolved = statusMap[props.status] || [props.status, 'info']
+const resolved = computed(() => statusMap[props.status] || [props.status, 'info'])
 </script>
 
 <template>
