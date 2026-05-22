@@ -47,6 +47,23 @@ class AccountingLineConfirmRequest(BaseModel):
     save_as_rule: bool = False
 
 
+class UnmatchedConfirmRequest(BaseModel):
+    source_type: str
+    source_id: UUID
+    business_type: str
+    save_as_rule: bool = False
+
+
+class MatchingRuleCreate(BaseModel):
+    enterprise_id: UUID
+    summary_keywords: list[str]
+    suggested_business_type: str
+    counterparty_pattern: Optional[str] = None
+    min_amount: Optional[Decimal] = None
+    max_amount: Optional[Decimal] = None
+    invoice_direction: Optional[str] = None
+
+
 class MatchingRuleRead(BaseModel):
     model_config = ConfigDict(from_attributes=True)
 

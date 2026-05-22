@@ -9,7 +9,7 @@ export const api = {
   enterprises: {
     list: () => apiClient.get('/enterprises'),
     create: (payload) => apiClient.post('/enterprises', payload),
-    initialize: (enterpriseId, payload) => apiClient.post(`/enterprises/${enterpriseId}/initialization`, payload),
+    initialize: (enterpriseId, payload) => apiClient.post(`/enterprises/${enterpriseId}/initial-snapshot`, payload),
   },
   packages: {
     create: (enterpriseId, payload) => apiClient.post(`/enterprises/${enterpriseId}/monthly-packages`, payload),
@@ -23,6 +23,7 @@ export const api = {
     run: (packageId) => apiClient.post(`/monthly-packages/${packageId}/matching/run`),
     confirmMatch: (matchId) => apiClient.post(`/matches/${matchId}/confirm`),
     confirmLine: (lineId, payload) => apiClient.post(`/accounting-lines/${lineId}/confirm`, payload),
+    confirmUnmatched: (packageId, payload) => apiClient.post(`/monthly-packages/${packageId}/confirm-unmatched`, payload),
   },
   statements: {
     generate: (packageId) => apiClient.post(`/monthly-packages/${packageId}/statements/generate`),
@@ -33,6 +34,11 @@ export const api = {
   },
   reports: {
     generateHealth: (packageId) => apiClient.post(`/monthly-packages/${packageId}/reports/health`),
+  },
+  rules: {
+    list: (enterpriseId) => apiClient.get('/rules', { params: enterpriseId ? { enterprise_id: enterpriseId } : {} }),
+    create: (payload) => apiClient.post('/rules', payload),
+    remove: (ruleId) => apiClient.delete(`/rules/${ruleId}`),
   },
   workspace: {
     snapshot: () => apiClient.get('/workspace'),

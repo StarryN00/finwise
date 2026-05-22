@@ -1,5 +1,10 @@
 <template>
-  <DataTableShell title="企业名册" description="苏州客户的月度资料、确认和报告状态" action-label="新增企业">
+  <DataTableShell
+    title="企业名册"
+    description="苏州客户的月度资料、确认和报告状态"
+    action-label="新增企业"
+    @action="router.push('/enterprises/init')"
+  >
     <template #filters>
       <el-input v-model="keyword" placeholder="搜索企业" clearable style="width: 220px" />
     </template>
@@ -24,11 +29,13 @@
 
 <script setup>
 import { computed, ref } from 'vue'
+import { useRouter } from 'vue-router'
 import DataTableShell from '../components/DataTableShell.vue'
 import StatusTag from '../components/StatusTag.vue'
 import { useWorkspaceStore } from '../stores/workspace'
 
 const workspace = useWorkspaceStore()
+const router = useRouter()
 const keyword = ref('')
 
 const filteredEnterprises = computed(() => {

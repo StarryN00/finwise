@@ -17,7 +17,12 @@
     </div>
     <div class="panel">
       <h2 class="section-title">确认进度</h2>
-      <MetricCard label="待人工确认" value="3" subtext="包含未匹配流水、发票和规则分类" tone="warning" />
+      <MetricCard
+        label="待人工确认"
+        :value="String(workspace.activePackage?.pending ?? 0)"
+        subtext="包含未匹配流水、发票和规则分类"
+        tone="warning"
+      />
     </div>
   </section>
 </template>

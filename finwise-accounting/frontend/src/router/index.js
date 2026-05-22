@@ -33,7 +33,8 @@ const routes = [
   },
   {
     path: '/rules',
-    redirect: '/account-details',
+    name: 'rules',
+    component: () => import('../views/RulesView.vue'),
   },
 ]
 

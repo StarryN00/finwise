@@ -11,7 +11,12 @@
   </section>
   <el-alert v-if="workspace.loadError" type="error" :title="workspace.loadError" show-icon />
 
-  <DataTableShell title="月度工作包" description="按企业跟踪导入、匹配、申报与报告状态" action-label="导入资料">
+  <DataTableShell
+    title="月度工作包"
+    description="按企业跟踪导入、匹配、申报与报告状态"
+    action-label="导入资料"
+    @action="router.push('/enterprises/init')"
+  >
     <template #filters>
       <el-select v-model="statusFilter" placeholder="状态" style="width: 148px">
         <el-option label="全部状态" value="ALL" />
@@ -40,12 +45,14 @@
 
 <script setup>
 import { computed, ref } from 'vue'
+import { useRouter } from 'vue-router'
 import DataTableShell from '../components/DataTableShell.vue'
 import MetricCard from '../components/MetricCard.vue'
 import StatusTag from '../components/StatusTag.vue'
 import { useWorkspaceStore } from '../stores/workspace'
 
 const workspace = useWorkspaceStore()
+const router = useRouter()
 const statusFilter = ref('ALL')
 
 const filteredPackages = computed(() => {

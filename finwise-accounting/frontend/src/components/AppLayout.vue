@@ -1,20 +1,57 @@
 <script setup>
 import { Plus } from '@element-plus/icons-vue'
-import { computed } from 'vue'
+import { ElMessage } from 'element-plus'
+import { computed, reactive, ref, watch } from 'vue'
 import { useRoute } from 'vue-router'
+import { useWorkspaceStore } from '../stores/workspace'
 
 const route = useRoute()
+const workspace = useWorkspaceStore()
 const navItems = [
   { label: '工作台', path: '/' },
   { label: '企业名册', path: '/enterprises' },
   { label: '月度工作包', path: '/monthly-workspace' },
   { label: '账目明细', path: '/account-details' },
-  { label: '申报辅助', path: '/output-center' },
   { label: '输出中心', path: '/output-center' },
   { label: '规则设置', path: '/rules' },
 ]
 
 const isActive = computed(() => (item) => item.path === route.path)
+const createDialogVisible = ref(false)
+const isSubmitting = ref(false)
+const now = new Date()
+const packageForm = reactive({
+  enterpriseId: '',
+  periodYear: now.getFullYear(),
+  periodMonth: now.getMonth() + 1,
+})
+
+watch(
+  () => workspace.enterprises,
+  (enterprises) => {
+    if (!packageForm.enterpriseId && enterprises.length) {
+      packageForm.enterpriseId = enterprises[0].id
+    }
+  },
+  { immediate: true },
+)
+
+async function createPackage() {
+  if (!packageForm.enterpriseId) {
+    ElMessage.warning('请先选择企业')
+    return
+  }
+  isSubmitting.value = true
+  try {
+    await workspace.createMonthlyPackage(packageForm.enterpriseId, packageForm.periodYear, packageForm.periodMonth)
+    createDialogVisible.value = false
+    ElMessage.success('月度工作包已创建')
+  } catch (error) {
+    ElMessage.error(error?.response?.data?.detail || error?.message || '创建工作包失败')
+  } finally {
+    isSubmitting.value = false
+  }
+}
 </script>
 
 <template>
@@ -47,12 +84,36 @@ const isActive = computed(() => (item) => item.path === route.path)
           <p class="caption">苏州代账公司 · Phase 1</p>
           <h1 class="page-title">月度记账与申报工作台</h1>
         </div>
-        <el-button type="primary" :icon="Plus">创建本月工作包</el-button>
+        <el-button type="primary" :icon="Plus" @click="createDialogVisible = true">创建本月工作包</el-button>
       </header>
       <main class="app-content">
         <slot />
       </main>
     </div>
+    <el-dialog v-model="createDialogVisible" title="创建月度工作包" width="420px">
+      <el-form label-width="92px">
+        <el-form-item label="企业">
+          <el-select v-model="packageForm.enterpriseId" placeholder="选择企业" filterable>
+            <el-option
+              v-for="enterprise in workspace.enterprises"
+              :key="enterprise.id"
+              :label="enterprise.name"
+              :value="enterprise.id"
+            />
+          </el-select>
+        </el-form-item>
+        <el-form-item label="会计期间">
+          <div class="period-row">
+            <el-input-number v-model="packageForm.periodYear" :min="2020" :max="2100" controls-position="right" />
+            <el-input-number v-model="packageForm.periodMonth" :min="1" :max="12" controls-position="right" />
+          </div>
+        </el-form-item>
+      </el-form>
+      <template #footer>
+        <el-button @click="createDialogVisible = false">取消</el-button>
+        <el-button type="primary" :loading="isSubmitting" @click="createPackage">创建</el-button>
+      </template>
+    </el-dialog>
   </div>
 </template>
 
@@ -157,6 +218,13 @@ const isActive = computed(() => (item) => item.path === route.path)
 
 .app-topbar .caption {
   margin: 0 0 4px;
+}
+
+.period-row {
+  display: grid;
+  grid-template-columns: 1fr 1fr;
+  gap: 10px;
+  width: 100%;
 }
 
 .app-content {

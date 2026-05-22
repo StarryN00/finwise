@@ -73,6 +73,21 @@ def create_enterprise_matching_rule(
     return rule
 
 
+def list_matching_rules(db: Session, *, enterprise_id: UUID | None = None) -> list[MatchingRule]:
+    statement = select(MatchingRule).where(MatchingRule.organization_id == get_current_organization_id())
+    if enterprise_id is not None:
+        statement = statement.where(MatchingRule.enterprise_id == enterprise_id)
+    return list(db.scalars(statement.order_by(MatchingRule.created_at.desc(), MatchingRule.id)))
+
+
+def delete_matching_rule(db: Session, *, rule_id: UUID) -> None:
+    rule = db.get(MatchingRule, rule_id)
+    if rule is None or rule.organization_id != get_current_organization_id():
+        raise MatchingDomainError("Matching rule not found.")
+    db.delete(rule)
+    db.commit()
+
+
 def apply_persisted_rule(db: Session, transaction: BankTransaction, package: MonthlyWorkPackage) -> dict | None:
     rule = find_matching_rule(db, transaction, package)
     if rule is None:
@@ -153,6 +168,44 @@ def confirm_accounting_line(db: Session, *, line_id: UUID, save_as_rule: bool = 
         response["rule_id"] = rule.id
     db.commit()
     return response
+
+
+def confirm_unmatched_source(
+    db: Session,
+    *,
+    monthly_work_package_id: UUID,
+    source_type: str,
+    source_id: UUID,
+    business_type: str,
+    save_as_rule: bool = False,
+) -> dict:
+    package = _get_monthly_package(db, monthly_work_package_id)
+    normalized_source_type = source_type.upper()
+    normalized_business_type = business_type.strip().upper()
+    if not normalized_business_type:
+        raise MatchingValidationError("Business type is required.")
+
+    if normalized_source_type == "BANK_TRANSACTION":
+        result = _confirm_unmatched_transaction(
+            db,
+            package=package,
+            transaction_id=source_id,
+            business_type=normalized_business_type,
+            save_as_rule=save_as_rule,
+        )
+    elif normalized_source_type == "INVOICE":
+        result = _confirm_unmatched_invoice(
+            db,
+            package=package,
+            invoice_id=source_id,
+            business_type=normalized_business_type,
+        )
+    else:
+        raise MatchingValidationError("source_type must be BANK_TRANSACTION or INVOICE.")
+
+    refresh_package_matching_summary(db, monthly_work_package_id=package.id, confirmed_when_zero=True)
+    db.commit()
+    return result
 
 
 def run_matching(db: Session, *, monthly_work_package_id: UUID) -> dict:
@@ -256,6 +309,111 @@ def run_matching(db: Session, *, monthly_work_package_id: UUID) -> dict:
         "rule_lines": rule_lines,
         "pending_confirmations": pending_confirmations,
     }
+
+
+def _confirm_unmatched_transaction(
+    db: Session,
+    *,
+    package: MonthlyWorkPackage,
+    transaction_id: UUID,
+    business_type: str,
+    save_as_rule: bool,
+) -> dict:
+    transaction = db.get(BankTransaction, transaction_id)
+    if transaction is None or transaction.monthly_work_package_id != package.id:
+        raise MatchingDomainError("Bank transaction not found in this monthly package.")
+
+    line = db.scalar(
+        select(AccountingLine).where(
+            AccountingLine.monthly_work_package_id == package.id,
+            AccountingLine.source_type == "BANK_TRANSACTION",
+            AccountingLine.source_id == str(transaction.id),
+            AccountingLine.business_type == business_type,
+        )
+    )
+    if line is None:
+        direction = "EXPENSE" if transaction.debit_amount and transaction.debit_amount != 0 else "INCOME"
+        line = AccountingLine(
+            organization_id=package.organization_id,
+            monthly_work_package_id=package.id,
+            source_type="BANK_TRANSACTION",
+            source_id=str(transaction.id),
+            business_type=business_type,
+            direction=direction,
+            amount=_transaction_amount(transaction),
+            tax_amount=Decimal("0"),
+            include_category=direction,
+            confirmation_status="CONFIRMED",
+        )
+        db.add(line)
+        db.flush()
+    else:
+        line.confirmation_status = "CONFIRMED"
+
+    rule = None
+    if save_as_rule:
+        rule, _rule_created = _create_rule_from_accounting_line(db, line)
+
+    _add_audit_log(
+        db,
+        organization_id=package.organization_id,
+        monthly_work_package_id=package.id,
+        action="CONFIRM_UNMATCHED_BANK_TRANSACTION",
+        before_data={"source_id": str(transaction.id)},
+        after_data={
+            "accounting_line_id": str(line.id),
+            "business_type": business_type,
+            "rule_id": str(rule.id) if rule is not None else None,
+        },
+    )
+    response = {"id": line.id, "confirmation_status": line.confirmation_status, "source_type": "BANK_TRANSACTION"}
+    if rule is not None:
+        response["rule_id"] = rule.id
+    return response
+
+
+def _confirm_unmatched_invoice(
+    db: Session,
+    *,
+    package: MonthlyWorkPackage,
+    invoice_id: UUID,
+    business_type: str,
+) -> dict:
+    invoice = db.get(Invoice, invoice_id)
+    if invoice is None or invoice.monthly_work_package_id != package.id:
+        raise MatchingDomainError("Invoice not found in this monthly package.")
+
+    record = db.scalar(
+        select(MatchRecord).where(
+            MatchRecord.monthly_work_package_id == package.id,
+            MatchRecord.invoice_id == invoice.id,
+            MatchRecord.bank_transaction_id.is_(None),
+        )
+    )
+    if record is None:
+        record = MatchRecord(
+            organization_id=package.organization_id,
+            monthly_work_package_id=package.id,
+            invoice_id=invoice.id,
+            match_method="MANUAL_INVOICE_ONLY",
+            confidence=100,
+            explanation=f"人工确认为{business_type}，暂无对应流水",
+            confirmation_status="CONFIRMED",
+        )
+        db.add(record)
+        db.flush()
+    else:
+        record.confirmation_status = "CONFIRMED"
+
+    _add_audit_log(
+        db,
+        organization_id=package.organization_id,
+        monthly_work_package_id=package.id,
+        action="CONFIRM_UNMATCHED_INVOICE",
+        before_data={"source_id": str(invoice.id)},
+        after_data={"match_id": str(record.id), "business_type": business_type},
+    )
+    return {"id": record.id, "confirmation_status": record.confirmation_status, "source_type": "INVOICE"}
 
 
 def _get_monthly_package(db: Session, monthly_work_package_id: UUID) -> MonthlyWorkPackage:
