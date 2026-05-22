@@ -25,7 +25,9 @@
             </el-select>
           </el-form-item>
           <el-form-item label="所属行业" prop="industry">
-            <el-input v-model="form.industry" placeholder="例如：制造业、软件和信息技术服务业" clearable />
+            <el-select v-model="form.industry" placeholder="请选择所属行业" filterable>
+              <el-option v-for="industry in industryOptions" :key="industry" :label="industry" :value="industry" />
+            </el-select>
           </el-form-item>
         </div>
       </section>
@@ -34,10 +36,14 @@
         <h3>补充信息</h3>
         <div class="form-grid compact">
           <el-form-item label="省份">
-            <el-input v-model="form.province" clearable />
+            <el-select v-model="form.province" placeholder="请选择省份" filterable @change="syncCityForProvince">
+              <el-option v-for="province in provinceOptions" :key="province" :label="province" :value="province" />
+            </el-select>
           </el-form-item>
           <el-form-item label="城市">
-            <el-input v-model="form.city" clearable />
+            <el-select v-model="form.city" placeholder="请选择城市" filterable>
+              <el-option v-for="city in cityOptions" :key="city" :label="city" :value="city" />
+            </el-select>
           </el-form-item>
           <el-form-item label="联系人">
             <el-input v-model="form.contactName" placeholder="可选，仅用于内部备注" clearable />
@@ -126,6 +132,26 @@ const files = reactive({
   incomeStatement: '',
 })
 
+const industryOptions = [
+  '制造业',
+  '批发和零售业',
+  '软件和信息技术服务业',
+  '科学研究和技术服务业',
+  '租赁和商务服务业',
+  '建筑业',
+  '交通运输、仓储和邮政业',
+  '居民服务、修理和其他服务业',
+]
+
+const provinceCityMap = {
+  江苏省: ['苏州市', '昆山市', '南京市', '无锡市', '常州市', '南通市'],
+  上海市: ['上海市'],
+  浙江省: ['杭州市', '宁波市', '嘉兴市', '湖州市', '绍兴市'],
+  安徽省: ['合肥市', '芜湖市', '马鞍山市', '滁州市'],
+}
+
+const provinceOptions = Object.keys(provinceCityMap)
+
 const form = reactive({
   name: '',
   unifiedSocialCreditCode: '',
@@ -154,15 +180,15 @@ const requiredText = (message) => (_rule, value, callback) => {
 }
 
 const rules = {
-  name: [{ validator: requiredText('请输入企业名称'), trigger: 'blur' }],
-  unifiedSocialCreditCode: [{ validator: requiredText('请输入营业执照编号'), trigger: 'blur' }],
+  name: [{ required: true, validator: requiredText('请输入企业名称'), trigger: 'blur' }],
+  unifiedSocialCreditCode: [{ required: true, validator: requiredText('请输入营业执照编号'), trigger: 'blur' }],
   taxpayerType: [{ required: true, message: '请选择纳税人类型', trigger: 'change' }],
-  industry: [{ validator: requiredText('请输入所属行业'), trigger: 'blur' }],
-  assetsTotal: [{ validator: requiredText('请输入资产总计'), trigger: 'blur' }],
-  liabilitiesTotal: [{ validator: requiredText('请输入负债合计'), trigger: 'blur' }],
-  equityTotal: [{ validator: requiredText('请输入所有者权益合计'), trigger: 'blur' }],
-  revenue: [{ validator: requiredText('请输入营业收入'), trigger: 'blur' }],
-  netProfit: [{ validator: requiredText('请输入净利润'), trigger: 'blur' }],
+  industry: [{ required: true, validator: requiredText('请输入所属行业'), trigger: 'blur' }],
+  assetsTotal: [{ required: true, validator: requiredText('请输入资产总计'), trigger: 'blur' }],
+  liabilitiesTotal: [{ required: true, validator: requiredText('请输入负债合计'), trigger: 'blur' }],
+  equityTotal: [{ required: true, validator: requiredText('请输入所有者权益合计'), trigger: 'blur' }],
+  revenue: [{ required: true, validator: requiredText('请输入营业收入'), trigger: 'blur' }],
+  netProfit: [{ required: true, validator: requiredText('请输入净利润'), trigger: 'blur' }],
 }
 
 const balanceStatus = computed(() => {
@@ -177,12 +203,21 @@ const balanceStatus = computed(() => {
     : { text: '需复核平衡关系', type: 'danger' }
 })
 
+const cityOptions = computed(() => provinceCityMap[form.province] || [])
+
 function rememberBalanceFile(file) {
   files.balanceSheet = file.name
 }
 
 function rememberIncomeFile(file) {
   files.incomeStatement = file.name
+}
+
+function syncCityForProvince() {
+  const availableCities = cityOptions.value
+  if (!availableCities.includes(form.city)) {
+    form.city = availableCities[0] || ''
+  }
 }
 
 async function submitEnterprise() {
