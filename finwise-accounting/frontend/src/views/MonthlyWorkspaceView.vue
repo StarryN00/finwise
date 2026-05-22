@@ -1,8 +1,21 @@
 <template>
-  <section class="step-grid">
-    <article v-for="(step, index) in steps" :key="step" class="step-card">
-      <span>{{ index + 1 }}</span>
-      <strong>{{ step }}</strong>
+  <section class="workflow-timeline" aria-label="月度工作流程">
+    <article
+      v-for="(step, index) in workflowSteps"
+      :key="step.title"
+      class="timeline-step"
+      :class="{
+        'is-done': step.status === 'done',
+        'is-current': step.status === 'current',
+        'is-todo': step.status === 'todo',
+      }"
+    >
+      <span class="step-marker">{{ index + 1 }}</span>
+      <div class="step-copy">
+        <strong>{{ step.title }}</strong>
+        <small>{{ step.hint }}</small>
+      </div>
+      <span class="step-state">{{ step.statusLabel }}</span>
     </article>
   </section>
 
@@ -18,15 +31,23 @@
     <div class="panel upload-panel">
       <h2 class="section-title">补充资料</h2>
       <p class="caption">选择当前工作包需要的资料，上传后会自动解析并刷新缺失清单。</p>
-      <div class="upload-actions">
+      <div class="upload-list">
         <input ref="bankInput" class="file-input" type="file" accept=".xlsx,.xls,.csv" @change="uploadBankStatement" />
         <input ref="inputInvoiceInput" class="file-input" type="file" accept=".xlsx,.xls,.csv" @change="uploadInputInvoices" />
         <input ref="outputInvoiceInput" class="file-input" type="file" accept=".xlsx,.xls,.csv" @change="uploadOutputInvoices" />
-        <el-button :loading="uploadingType === 'bank'" @click="bankInput?.click()">上传银行流水</el-button>
-        <el-button :loading="uploadingType === 'input'" @click="inputInvoiceInput?.click()">上传进项明细</el-button>
-        <el-button :loading="uploadingType === 'output'" @click="outputInvoiceInput?.click()">上传销项明细</el-button>
+        <div v-for="item in uploadItems" :key="item.type" class="upload-row">
+          <div class="upload-item-main">
+            <strong>{{ item.label }}</strong>
+            <small>{{ item.description }}</small>
+            <p v-if="uploadResults[item.type]" class="upload-result">{{ uploadResults[item.type] }}</p>
+            <p v-if="uploadErrors[item.type]" class="upload-item-error">{{ uploadErrors[item.type] }}</p>
+          </div>
+          <span class="upload-state" :class="{ 'is-ready': item.done }">{{ item.done ? '已导入' : '待补充' }}</span>
+          <el-button :loading="uploadingType === item.type" @click="openFilePicker(item.type)">
+            {{ item.action }}
+          </el-button>
+        </div>
       </div>
-      <p v-if="lastUploadResult" class="upload-result">{{ lastUploadResult }}</p>
     </div>
     <div class="panel">
       <h2 class="section-title">确认进度</h2>
@@ -41,19 +62,62 @@
 </template>
 
 <script setup>
-import { ref } from 'vue'
+import { computed, reactive, ref } from 'vue'
 import { ElMessage } from 'element-plus'
 import { api } from '../api/client'
 import MetricCard from '../components/MetricCard.vue'
 import { useWorkspaceStore } from '../stores/workspace'
 
 const workspace = useWorkspaceStore()
-const steps = ['导入资料', '解析结果', '匹配确认', '账目明细', '预估报表', '申报辅助', '老板简报']
 const uploadingType = ref('')
-const lastUploadResult = ref('')
+const uploadResults = reactive({ bank: '', input: '', output: '' })
+const uploadErrors = reactive({ bank: '', input: '', output: '' })
 const bankInput = ref(null)
 const inputInvoiceInput = ref(null)
 const outputInvoiceInput = ref(null)
+
+const workflowSteps = computed(() => {
+  const hasAllSourceData = isChecklistDone('银行流水') && isChecklistDone('销项明细') && isChecklistDone('进项明细')
+  const hasParsedRows = hasAllSourceData && workspace.accountRows.length > 0
+  const hasConfirmed = hasParsedRows && isChecklistDone('人工确认')
+  const hasHealthReport = isChecklistDone('健康报告数据')
+  const hasTaxDraft = Boolean(workspace.activePackage?.taxDraftId)
+  const definitions = [
+    { title: '导入资料', done: hasAllSourceData, hint: hasAllSourceData ? '三类资料已齐' : '等待补充资料' },
+    { title: '解析结果', done: hasParsedRows, hint: hasParsedRows ? '已生成结构化数据' : '上传后自动解析' },
+    { title: '匹配确认', done: hasConfirmed, hint: hasConfirmed ? '无需人工处理' : `${workspace.activePackage?.pending ?? 0} 项待确认` },
+    { title: '账目明细', done: hasConfirmed, hint: hasConfirmed ? '流水发票已汇总' : '等待确认完成' },
+    { title: '预估报表', done: hasTaxDraft || hasHealthReport, hint: hasTaxDraft ? '已生成申报草稿' : '确认后生成' },
+    { title: '申报辅助', done: hasTaxDraft, hint: hasTaxDraft ? '可导出申报表' : '等待报表数据' },
+    { title: '老板简报', done: hasHealthReport, hint: hasHealthReport ? '健康报告已生成' : '等待完整数据' },
+  ]
+  const currentIndex = definitions.findIndex((step) => !step.done)
+  return definitions.map((step, index) => stepState(step.title, step.done, index === currentIndex, step.hint))
+})
+
+const uploadItems = computed(() => [
+  {
+    type: 'bank',
+    label: '银行流水',
+    description: '支持 .xlsx/.xls/.csv，需包含日期、摘要、收入/支出金额等列',
+    action: '上传银行流水',
+    done: isChecklistDone('银行流水'),
+  },
+  {
+    type: 'input',
+    label: '进项明细',
+    description: '电子税务局导出的进项发票明细',
+    action: '上传进项明细',
+    done: isChecklistDone('进项明细'),
+  },
+  {
+    type: 'output',
+    label: '销项明细',
+    description: '电子税务局导出的销项发票明细',
+    action: '上传销项明细',
+    done: isChecklistDone('销项明细'),
+  },
+])
 
 function uploadBankStatement(event) {
   return uploadSelectedFile(event, 'bank', (packageId, formData) => api.imports.bank(packageId, formData))
@@ -84,59 +148,183 @@ async function uploadPackageFile(type, file, action) {
     return
   }
   uploadingType.value = type
-  lastUploadResult.value = ''
+  uploadResults[type] = ''
+  uploadErrors[type] = ''
   try {
     const formData = new FormData()
     formData.append('file', file)
     const response = await action(activePackage.id, formData)
     const created = response.data.created ?? 0
-    const errors = response.data.errors?.length ?? 0
-    lastUploadResult.value = `${file.name}：导入 ${created} 条，错误 ${errors} 条`
+    const errors = response.data.errors ?? []
+    const batchErrors = response.data.batch_errors ?? []
+    uploadResults[type] = `${file.name}：导入 ${created} 条，错误 ${errors.length + batchErrors.length} 条`
+    if (errors.length || batchErrors.length || created === 0) {
+      uploadErrors[type] = formatUploadError(type, errors, batchErrors, created)
+    }
     await workspace.loadWorkspace()
-    ElMessage.success('资料已上传并解析')
+    if (uploadErrors[type]) {
+      ElMessage.warning('资料已上传，但有内容未能识别')
+    } else {
+      ElMessage.success('资料已上传并解析')
+    }
   } catch (error) {
-    ElMessage.error(error?.response?.data?.detail || error?.message || '资料上传失败')
+    uploadErrors[type] = formatUploadError(type, error)
+    ElMessage.error('资料上传失败，请查看页面错误提示')
   } finally {
     uploadingType.value = ''
   }
 }
+
+function openFilePicker(type) {
+  const inputByType = {
+    bank: bankInput.value,
+    input: inputInvoiceInput.value,
+    output: outputInvoiceInput.value,
+  }
+  inputByType[type]?.click()
+}
+
+function stepState(title, done, current, hint) {
+  const status = done ? 'done' : current ? 'current' : 'todo'
+  const statusLabel = done ? '已完成' : current ? '进行中' : '未开始'
+  return { title, status, statusLabel, hint }
+}
+
+function isChecklistDone(label) {
+  return Boolean(workspace.missingChecklist.find((item) => item.label === label)?.done)
+}
+
+function formatUploadError(type, errorOrRows, batchErrors = [], created = 0) {
+  const prefix = type === 'bank' ? '银行流水解析失败' : type === 'input' ? '进项明细解析失败' : '销项明细解析失败'
+  if (Array.isArray(errorOrRows)) {
+    const rowMessages = errorOrRows.slice(0, 3).map((item) => `第 ${item.row} 行：${translateImportError(item.error)}`)
+    const batchMessages = batchErrors.slice(0, 3).map((item) => translateImportError(item.error))
+    const messages = [...batchMessages, ...rowMessages]
+    if (messages.length) {
+      return `${prefix}：${messages.join('；')}`
+    }
+    if (created === 0) {
+      return `${prefix}：未识别到可导入数据。请确认表头包含交易日期、摘要、收入金额、支出金额等必要列，或换用标准导出模板。`
+    }
+  }
+  const detail = errorOrRows?.response?.data?.detail || errorOrRows?.message || '资料上传失败'
+  return `${prefix}：${translateImportError(detail)}`
+}
+
+function translateImportError(message) {
+  const text = Array.isArray(message)
+    ? message.map((item) => item.msg || item.message || JSON.stringify(item)).join('；')
+    : typeof message === 'object' && message !== null
+      ? JSON.stringify(message)
+      : String(message)
+  return text
+    .replace('Only .csv, .xlsx, and .xls files are supported.', '仅支持 .csv、.xlsx、.xls 文件')
+    .replace('Could not read import file:', '无法读取导入文件：')
+    .replace('missing date value', '缺少交易日期')
+    .replace('missing debit or credit amount', '缺少收入金额或支出金额')
+    .replace('missing required decimal value:', '缺少必要金额字段：')
+    .replace('missing required text value:', '缺少必要文本字段：')
+}
 </script>
 
 <style scoped>
-.step-grid {
+.workflow-timeline {
   display: grid;
   grid-template-columns: repeat(7, minmax(0, 1fr));
-  gap: 10px;
+  gap: 0;
+  padding: 16px 18px;
+  border: 1px solid var(--fw-line);
+  border-radius: var(--fw-radius);
+  background: var(--fw-surface);
 }
 
-.step-card,
 .panel {
   border: 1px solid var(--fw-line);
   border-radius: var(--fw-radius);
   background: var(--fw-surface);
 }
 
-.step-card {
-  min-height: 82px;
-  padding: 12px;
+.timeline-step {
+  position: relative;
+  display: grid;
+  grid-template-columns: 34px minmax(0, 1fr);
+  align-items: start;
+  min-height: 76px;
+  padding-right: 16px;
 }
 
-.step-card span {
+.timeline-step::before {
+  position: absolute;
+  top: 15px;
+  left: 34px;
+  right: 8px;
+  height: 2px;
+  background: var(--fw-line);
+  content: '';
+}
+
+.timeline-step:last-child::before {
+  display: none;
+}
+
+.step-marker {
+  position: relative;
+  z-index: 1;
   display: grid;
   place-items: center;
-  width: 26px;
-  height: 26px;
-  border-radius: var(--fw-radius-sm);
-  color: var(--fw-brand-dark);
-  background: var(--fw-brand-soft);
+  width: 30px;
+  height: 30px;
+  border: 1px solid var(--fw-line);
+  border-radius: 999px;
+  color: var(--fw-text-muted);
+  background: #fff;
   font-size: 12px;
   font-weight: 800;
 }
 
-.step-card strong {
+.step-copy {
+  min-width: 0;
+}
+
+.step-copy strong {
   display: block;
-  margin-top: 10px;
   font-size: 13px;
+}
+
+.step-copy small {
+  display: block;
+  margin-top: 5px;
+  color: var(--fw-text-muted);
+  line-height: 1.4;
+}
+
+.step-state {
+  grid-column: 2;
+  width: fit-content;
+  margin-top: 8px;
+  padding: 2px 8px;
+  border-radius: 999px;
+  color: var(--fw-text-muted);
+  background: #f3f6fb;
+  font-size: 12px;
+}
+
+.timeline-step.is-done .step-marker,
+.timeline-step.is-done .step-state {
+  color: #fff;
+  border-color: #2f9461;
+  background: #2f9461;
+}
+
+.timeline-step.is-current .step-marker,
+.timeline-step.is-current .step-state {
+  color: var(--fw-brand-dark);
+  border-color: var(--fw-brand);
+  background: var(--fw-brand-soft);
+}
+
+.timeline-step.is-done::before {
+  background: #2f9461;
 }
 
 .workspace-grid {
@@ -161,33 +349,104 @@ async function uploadPackageFile(type, file, action) {
   margin: 8px 0 0;
 }
 
-.upload-actions {
+.upload-list {
   display: grid;
   gap: 10px;
   margin-top: 16px;
+}
+
+.upload-row {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) 64px 126px;
+  align-items: center;
+  gap: 12px;
+  padding: 12px;
+  border: 1px solid var(--fw-line);
+  border-radius: var(--fw-radius-sm);
+  background: #fbfcfe;
+}
+
+.upload-item-main {
+  min-width: 0;
+}
+
+.upload-item-main strong {
+  display: block;
+  font-size: 14px;
+}
+
+.upload-item-main small {
+  display: block;
+  margin-top: 4px;
+  color: var(--fw-text-muted);
+  line-height: 1.4;
+}
+
+.upload-state {
+  color: #9a5d00;
+  font-size: 12px;
+  text-align: center;
+}
+
+.upload-state.is-ready {
+  color: #2f9461;
 }
 
 .file-input {
   display: none;
 }
 
-.upload-actions :deep(.el-button) {
+.upload-row :deep(.el-button) {
   width: 100%;
 }
 
 .upload-result {
-  margin: 14px 0 0;
+  margin: 8px 0 0;
   color: var(--fw-text-muted);
   font-size: 13px;
 }
 
+.upload-item-error {
+  margin: 8px 0 0;
+  padding: 8px 10px;
+  border: 1px solid #f6c7c7;
+  border-radius: var(--fw-radius-sm);
+  color: #9d1f1f;
+  background: #fff5f5;
+  font-size: 13px;
+  line-height: 1.45;
+}
+
 @media (max-width: 1100px) {
-  .step-grid {
+  .workflow-timeline {
     grid-template-columns: repeat(3, minmax(0, 1fr));
+    gap: 12px 0;
   }
 
   .workspace-grid {
     grid-template-columns: 1fr;
+  }
+}
+
+@media (max-width: 720px) {
+  .workflow-timeline {
+    grid-template-columns: 1fr;
+  }
+
+  .timeline-step::before {
+    left: 15px;
+    top: 34px;
+    bottom: 8px;
+    width: 2px;
+    height: auto;
+  }
+
+  .upload-row {
+    grid-template-columns: 1fr;
+  }
+
+  .upload-state {
+    text-align: left;
   }
 }
 </style>

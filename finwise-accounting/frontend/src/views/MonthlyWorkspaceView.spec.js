@@ -15,4 +15,18 @@ describe('MonthlyWorkspaceView', () => {
     expect(source).toContain('进项明细')
     expect(source).toContain('销项明细')
   })
+
+  it('renders the monthly workflow as a status timeline', () => {
+    expect(source).toContain('workflow-timeline')
+    expect(source).toContain("step.status === 'done'")
+    expect(source).toContain("step.status === 'current'")
+    expect(source).toContain("step.status === 'todo'")
+  })
+
+  it('shows aligned document rows and persistent upload errors', () => {
+    expect(source).toContain('upload-row')
+    expect(source).toContain('upload-item-error')
+    expect(source).toContain('formatUploadError')
+    expect(source).toContain('uploadErrors')
+  })
 })
