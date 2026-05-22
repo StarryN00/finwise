@@ -32,7 +32,8 @@ describe('MonthlyWorkspaceView', () => {
 
   it('shows the active enterprise context and next workflow actions', () => {
     expect(source).toContain('active-package-context')
-    expect(source).toContain('当前处理企业')
+    expect(source).toContain('当前操作主体')
+    expect(source).toContain('PackageContextBar')
     expect(source).toContain('next-action-panel')
     expect(source).toContain('nextActions')
     expect(source).toContain('generateVatDraft')

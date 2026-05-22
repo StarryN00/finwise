@@ -50,6 +50,6 @@ export const api = {
     remove: (ruleId) => apiClient.delete(`/rules/${ruleId}`),
   },
   workspace: {
-    snapshot: () => apiClient.get('/workspace'),
+    snapshot: (packageId) => apiClient.get('/workspace', { params: packageId ? { package_id: packageId } : {} }),
   },
 }

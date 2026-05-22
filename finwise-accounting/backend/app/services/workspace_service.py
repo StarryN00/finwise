@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 from decimal import Decimal
+from uuid import UUID
 
 from sqlalchemy import select
 from sqlalchemy.orm import Session
@@ -8,7 +9,7 @@ from sqlalchemy.orm import Session
 from app.models import AccountingLine, BankTransaction, Enterprise, Invoice, MatchRecord, MonthlyStatement, MonthlyWorkPackage, Report, TaxFilingDraft
 
 
-def get_workspace_snapshot(db: Session) -> dict:
+def get_workspace_snapshot(db: Session, selected_package_id: UUID | None = None) -> dict:
     enterprises = list(db.scalars(select(Enterprise).order_by(Enterprise.created_at.desc(), Enterprise.id)))
     packages = list(db.scalars(select(MonthlyWorkPackage).order_by(MonthlyWorkPackage.period_year.desc(), MonthlyWorkPackage.period_month.desc())))
     package_by_enterprise = {}
@@ -17,19 +18,28 @@ def get_workspace_snapshot(db: Session) -> dict:
 
     enterprise_rows = [_enterprise_row(db, enterprise, package_by_enterprise.get(enterprise.id)) for enterprise in enterprises]
     work_package_rows = [_package_row(db, package) for package in packages]
-    latest_package = packages[0] if packages else None
-    account_rows = _account_rows(db, latest_package) if latest_package else []
-    checklist = _missing_checklist(db, latest_package) if latest_package else []
+    selected_package = _selected_package(packages, selected_package_id)
+    account_rows = _account_rows(db, selected_package) if selected_package else []
+    checklist = _missing_checklist(db, selected_package) if selected_package else []
 
     return {
-        "currentPeriod": _period(latest_package) if latest_package else "",
+        "currentPeriod": _period(selected_package) if selected_package else "",
         "activeOrganization": "默认代账机构",
+        "selectedPackageId": str(selected_package.id) if selected_package else "",
         "metrics": _metrics(enterprise_rows, work_package_rows),
         "enterprises": enterprise_rows,
         "workPackages": work_package_rows,
         "accountRows": account_rows,
         "missingChecklist": checklist,
     }
+
+
+def _selected_package(packages: list[MonthlyWorkPackage], selected_package_id: UUID | None) -> MonthlyWorkPackage | None:
+    if not packages:
+        return None
+    if selected_package_id is None:
+        return packages[0]
+    return next((package for package in packages if package.id == selected_package_id), packages[0])
 
 
 def _enterprise_row(db: Session, enterprise: Enterprise, package: MonthlyWorkPackage | None) -> dict:

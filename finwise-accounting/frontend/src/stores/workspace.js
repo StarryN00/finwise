@@ -12,26 +12,35 @@ export const useWorkspaceStore = defineStore('workspace', {
     workPackages: [],
     accountRows: [],
     missingChecklist: [],
+    selectedPackageId: '',
   }),
   getters: {
-    activePackage: (state) => state.workPackages[0] || null,
+    activePackage: (state) => state.workPackages.find((item) => item.id === state.selectedPackageId) || state.workPackages[0] || null,
   },
   actions: {
-    async loadWorkspace() {
+    async loadWorkspace(packageId = this.selectedPackageId) {
       this.isLoading = true
       this.loadError = ''
       try {
-        const response = await api.workspace.snapshot()
+        const response = await api.workspace.snapshot(packageId)
         Object.assign(this, response.data)
+        if (!this.selectedPackageId && this.workPackages.length) {
+          this.selectedPackageId = this.workPackages[0].id
+        }
       } catch (error) {
         this.loadError = error?.message || '工作台数据加载失败'
       } finally {
         this.isLoading = false
       }
     },
+    async selectPackage(packageId) {
+      this.selectedPackageId = packageId
+      await this.loadWorkspace(packageId)
+    },
     async createMonthlyPackage(enterpriseId, periodYear, periodMonth) {
-      await api.packages.create(enterpriseId, { period_year: periodYear, period_month: periodMonth })
-      await this.loadWorkspace()
+      const response = await api.packages.create(enterpriseId, { period_year: periodYear, period_month: periodMonth })
+      this.selectedPackageId = response.data.id
+      await this.loadWorkspace(response.data.id)
     },
     async runMatching(packageId) {
       await api.matching.run(packageId)

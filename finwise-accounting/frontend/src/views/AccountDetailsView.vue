@@ -1,4 +1,9 @@
 <template>
+  <PackageContextBar
+    aria-label="当前操作主体"
+    status-label="待确认事项"
+    :status-value="`${workspace.activePackage?.pending ?? 0} 项`"
+  />
   <DataTableShell
     title="账目明细"
     description="流水、发票与待确认事项的统一工作表"
@@ -62,6 +67,7 @@
 import { computed, ref } from 'vue'
 import { ElMessage } from 'element-plus'
 import DataTableShell from '../components/DataTableShell.vue'
+import PackageContextBar from '../components/PackageContextBar.vue'
 import StatusTag from '../components/StatusTag.vue'
 import { useWorkspaceStore } from '../stores/workspace'
 

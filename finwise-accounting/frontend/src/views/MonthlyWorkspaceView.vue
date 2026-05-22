@@ -1,18 +1,10 @@
 <template>
-  <section class="active-package-context">
-    <div>
-      <span class="context-label">当前处理企业</span>
-      <strong>{{ activePackage?.company || '暂无月度工作包' }}</strong>
-    </div>
-    <div>
-      <span class="context-label">工作期间</span>
-      <strong>{{ activePackage?.period || '-' }}</strong>
-    </div>
-    <div>
-      <span class="context-label">当前阶段</span>
-      <strong>{{ currentStep.title }}</strong>
-    </div>
-  </section>
+  <PackageContextBar
+    class="active-package-context"
+    aria-label="当前操作主体"
+    status-label="当前阶段"
+    :status-value="currentStep.title"
+  />
 
   <section class="workflow-timeline" aria-label="月度工作流程">
     <article
@@ -101,6 +93,7 @@ import { useRouter } from 'vue-router'
 import { ElMessage } from 'element-plus'
 import { api } from '../api/client'
 import MetricCard from '../components/MetricCard.vue'
+import PackageContextBar from '../components/PackageContextBar.vue'
 import { useWorkspaceStore } from '../stores/workspace'
 
 const workspace = useWorkspaceStore()
@@ -327,27 +320,13 @@ function translateImportError(message) {
 </script>
 
 <style scoped>
-.active-package-context,
 .next-action-panel {
   display: grid;
-  grid-template-columns: repeat(3, minmax(0, 1fr));
   gap: 16px;
   padding: 16px;
   border: 1px solid var(--fw-line);
   border-radius: var(--fw-radius);
   background: var(--fw-surface);
-}
-
-.active-package-context strong {
-  display: block;
-  margin-top: 6px;
-  color: var(--fw-text);
-  font-size: 16px;
-}
-
-.context-label {
-  color: var(--fw-text-muted);
-  font-size: 12px;
 }
 
 .workflow-timeline {
@@ -567,7 +546,6 @@ function translateImportError(message) {
 }
 
 @media (max-width: 720px) {
-  .active-package-context,
   .next-action-panel {
     grid-template-columns: 1fr;
   }

@@ -201,6 +201,50 @@ def test_workspace_rows_expose_confirmation_handles():
     assert invoice_row["sourceId"] == str(invoice.id)
 
 
+def test_workspace_snapshot_can_focus_selected_package():
+    client, db_session = make_context()
+    first_enterprise, first_package = make_package(db_session)
+    first_transaction = add_unmatched_bank_transaction(db_session, first_package)
+    second_enterprise = Enterprise(
+        organization_id=ORG,
+        name="苏州第二主体有限公司",
+        unified_social_credit_code="91320500FLOW000002",
+        taxpayer_type="GENERAL",
+        industry="服务业",
+    )
+    db_session.add(second_enterprise)
+    db_session.flush()
+    second_package = MonthlyWorkPackage(
+        organization_id=ORG,
+        enterprise_id=second_enterprise.id,
+        period_year=2026,
+        period_month=4,
+    )
+    db_session.add(second_package)
+    db_session.commit()
+    second_transaction = BankTransaction(
+        organization_id=ORG,
+        monthly_work_package_id=second_package.id,
+        transaction_date=date(2026, 4, 8),
+        summary="第二主体流水",
+        debit_amount=Decimal("0.00"),
+        credit_amount=Decimal("200.00"),
+        counterparty_name="第二主体客户",
+    )
+    db_session.add(second_transaction)
+    db_session.commit()
+
+    response = client.get(f"/api/workspace?package_id={second_package.id}")
+
+    assert response.status_code == 200
+    payload = response.json()
+    assert payload["selectedPackageId"] == str(second_package.id)
+    assert payload["currentPeriod"] == "2026-04"
+    assert [row["sourceId"] for row in payload["accountRows"]] == [str(second_transaction.id)]
+    assert str(first_transaction.id) not in [row["sourceId"] for row in payload["accountRows"]]
+    assert payload["workPackages"][0]["company"] == first_enterprise.name
+
+
 def test_confirm_unmatched_bank_transaction_creates_confirmed_line_and_rule():
     client, db_session = make_context()
     _enterprise, package = make_package(db_session)

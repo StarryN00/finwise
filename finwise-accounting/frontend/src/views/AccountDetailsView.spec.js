@@ -9,6 +9,8 @@ const source = readFileSync(resolve(__dirname, 'AccountDetailsView.vue'), 'utf8'
 describe('AccountDetailsView', () => {
   it('renders a unified account detail table with party and completeness fields', () => {
     expect(source).toContain('统一视图')
+    expect(source).toContain('PackageContextBar')
+    expect(source).toContain('当前操作主体')
     expect(source).toContain('缺失发票')
     expect(source).toContain('缺失转账')
     expect(source).toContain('sourceCompleteness')
@@ -18,6 +20,7 @@ describe('AccountDetailsView', () => {
     expect(source).toContain('购买方')
     expect(source).toContain('备注')
     expect(source).toContain('AI 智能匹配')
+    expect(source).toContain('account-toolbar__actions')
     expect(source).toContain('runAiMatching')
     expect(source).not.toContain('流水视图')
     expect(source).not.toContain('发票视图')
