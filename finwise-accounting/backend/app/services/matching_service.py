@@ -162,7 +162,10 @@ def run_matching(db: Session, *, monthly_work_package_id: UUID) -> dict:
         )
     )
 
-    used_transaction_ids, used_invoice_ids, existing_pairs = _existing_match_state(db, monthly_work_package_id)
+    used_transaction_ids, used_invoice_ids, existing_pairs = _existing_final_match_state(db, monthly_work_package_id)
+    pending_transaction_ids, pending_invoice_ids = _pending_match_entity_ids(db, monthly_work_package_id)
+    used_transaction_ids.update(pending_transaction_ids)
+    used_invoice_ids.update(pending_invoice_ids)
     exact_matches = 0
 
     for transaction in transactions:
@@ -245,11 +248,16 @@ def _get_monthly_package(db: Session, monthly_work_package_id: UUID) -> MonthlyW
     return package
 
 
-def _existing_match_state(db: Session, monthly_work_package_id: UUID) -> tuple[set[UUID], set[UUID], set[tuple[UUID, UUID]]]:
+def _existing_final_match_state(db: Session, monthly_work_package_id: UUID) -> tuple[set[UUID], set[UUID], set[tuple[UUID, UUID]]]:
     used_transaction_ids: set[UUID] = set()
     used_invoice_ids: set[UUID] = set()
     existing_pairs: set[tuple[UUID, UUID]] = set()
-    records = db.scalars(select(MatchRecord).where(MatchRecord.monthly_work_package_id == monthly_work_package_id))
+    records = db.scalars(
+        select(MatchRecord).where(
+            MatchRecord.monthly_work_package_id == monthly_work_package_id,
+            MatchRecord.confirmation_status.in_(("AUTO_CONFIRMED", "CONFIRMED")),
+        )
+    )
     for record in records:
         if record.bank_transaction_id is not None:
             used_transaction_ids.add(record.bank_transaction_id)
@@ -274,9 +282,9 @@ def _find_exact_invoice(
         and amount_for_direction(transaction, invoice) == invoice.total_amount
         and days_between(transaction.transaction_date, invoice.invoice_date) <= 7
     ]
-    if not candidates:
+    if len(candidates) != 1:
         return None
-    return min(candidates, key=lambda invoice: (days_between(transaction.transaction_date, invoice.invoice_date), invoice.id))
+    return candidates[0]
 
 
 def _existing_accounting_line_state(db: Session, monthly_work_package_id: UUID) -> tuple[set[tuple[str, str, str]], set[UUID]]:
@@ -309,7 +317,10 @@ def refresh_package_matching_summary(
     db.flush()
     transactions = list(db.scalars(select(BankTransaction).where(BankTransaction.monthly_work_package_id == package.id)))
     invoices = list(db.scalars(select(Invoice).where(Invoice.monthly_work_package_id == package.id)))
-    used_transaction_ids, used_invoice_ids, _existing_pairs = _existing_match_state(db, package.id)
+    used_transaction_ids, used_invoice_ids, _existing_pairs = _existing_final_match_state(db, package.id)
+    pending_transaction_ids, pending_invoice_ids = _pending_match_entity_ids(db, package.id)
+    used_transaction_ids.update(pending_transaction_ids)
+    used_invoice_ids.update(pending_invoice_ids)
     _line_keys, line_transaction_ids = _existing_accounting_line_state(db, package.id)
     used_transaction_ids.update(line_transaction_ids)
 
@@ -317,16 +328,37 @@ def refresh_package_matching_summary(
         AccountingLine.monthly_work_package_id == monthly_work_package_id,
         AccountingLine.confirmation_status == "PENDING",
     ).count()
+    pending_match_count = db.query(MatchRecord).filter(
+        MatchRecord.monthly_work_package_id == monthly_work_package_id,
+        MatchRecord.confirmation_status == "PENDING",
+    ).count()
 
     unmatched_transaction_count = sum(1 for transaction in transactions if transaction.id not in used_transaction_ids)
     unmatched_invoice_count = sum(1 for invoice in invoices if invoice.id not in used_invoice_ids)
-    pending_confirmation_count = pending_line_count + unmatched_transaction_count + unmatched_invoice_count
+    pending_confirmation_count = pending_line_count + pending_match_count + unmatched_transaction_count + unmatched_invoice_count
     package.pending_confirmation_count = pending_confirmation_count
     if pending_confirmation_count == 0:
         package.matching_status = "CONFIRMED" if confirmed_when_zero else "COMPLETED"
     else:
         package.matching_status = "PENDING_CONFIRMATION"
     return pending_confirmation_count
+
+
+def _pending_match_entity_ids(db: Session, monthly_work_package_id: UUID) -> tuple[set[UUID], set[UUID]]:
+    transaction_ids: set[UUID] = set()
+    invoice_ids: set[UUID] = set()
+    records = db.scalars(
+        select(MatchRecord).where(
+            MatchRecord.monthly_work_package_id == monthly_work_package_id,
+            MatchRecord.confirmation_status == "PENDING",
+        )
+    )
+    for record in records:
+        if record.bank_transaction_id is not None:
+            transaction_ids.add(record.bank_transaction_id)
+        if record.invoice_id is not None:
+            invoice_ids.add(record.invoice_id)
+    return transaction_ids, invoice_ids
 
 
 def _persisted_rule_matches(rule: MatchingRule, transaction: BankTransaction) -> bool:
@@ -381,6 +413,17 @@ def _create_rule_from_accounting_line(db: Session, line: AccountingLine) -> Matc
     if not keyword:
         raise MatchingValidationError("Bank transaction summary is required to save a rule.")
 
+    existing_rule = _find_equivalent_rule(
+        db,
+        organization_id=package.organization_id,
+        enterprise_id=package.enterprise_id,
+        summary_keywords=[keyword],
+        counterparty_pattern=transaction.counterparty_name,
+        suggested_business_type=line.business_type,
+    )
+    if existing_rule is not None:
+        return existing_rule
+
     rule = MatchingRule(
         channel_id=line.channel_id,
         organization_id=package.organization_id,
@@ -394,6 +437,30 @@ def _create_rule_from_accounting_line(db: Session, line: AccountingLine) -> Matc
     db.add(rule)
     db.flush()
     return rule
+
+
+def _find_equivalent_rule(
+    db: Session,
+    *,
+    organization_id: UUID,
+    enterprise_id: UUID,
+    summary_keywords: list[str],
+    counterparty_pattern: str | None,
+    suggested_business_type: str,
+) -> MatchingRule | None:
+    rules = db.scalars(
+        select(MatchingRule).where(
+            MatchingRule.organization_id == organization_id,
+            MatchingRule.enterprise_id == enterprise_id,
+            MatchingRule.scope == "ENTERPRISE",
+            MatchingRule.counterparty_pattern == counterparty_pattern,
+            MatchingRule.suggested_business_type == suggested_business_type,
+        )
+    )
+    for rule in rules:
+        if (rule.summary_keywords or []) == summary_keywords:
+            return rule
+    return None
 
 
 def _extract_summary_keyword(summary: str | None) -> str:

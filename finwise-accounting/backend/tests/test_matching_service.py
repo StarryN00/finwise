@@ -10,7 +10,9 @@ from app.api.deps import get_db
 from app.main import create_app
 from app.services.matching_service import (
     MonthlyPackageNotFoundError,
+    confirm_accounting_line,
     create_enterprise_matching_rule,
+    refresh_package_matching_summary,
     run_matching,
 )
 
@@ -158,6 +160,20 @@ def test_exact_match_only_within_seven_days(db_session):
 
     assert result["exact_matches"] == 0
     assert result["pending_confirmations"] == 2
+    assert db_session.query(MatchRecord).count() == 0
+
+
+def test_ambiguous_exact_candidates_are_not_auto_confirmed(db_session):
+    package = make_package(db_session, code_suffix="14")
+    add_transaction(db_session, package, transaction_date=date(2026, 5, 8))
+    add_invoice(db_session, package, invoice_number="INV-A", invoice_date=date(2026, 5, 6))
+    add_invoice(db_session, package, invoice_number="INV-B", invoice_date=date(2026, 5, 7))
+    db_session.commit()
+
+    result = run_matching(db_session, monthly_work_package_id=package.id)
+
+    assert result["exact_matches"] == 0
+    assert result["pending_confirmations"] == 3
     assert db_session.query(MatchRecord).count() == 0
 
 
@@ -313,6 +329,40 @@ def test_confirm_accounting_line_with_save_as_rule_creates_matching_rule(db_sess
     assert rule.summary_keywords == ["云服务"]
     assert rule.counterparty_pattern == "阿里云计算有限公司"
     assert rule.suggested_business_type == "CLOUD_SERVICE"
+
+
+def test_repeated_save_as_rule_confirmation_reuses_existing_rule(db_session):
+    package = make_package(db_session, code_suffix="15")
+    transaction = add_transaction(
+        db_session,
+        package,
+        transaction_date=date(2026, 5, 12),
+        summary="支付云服务订阅费",
+        credit_amount=Decimal("0"),
+        debit_amount=Decimal("880"),
+        counterparty_name="阿里云计算有限公司",
+    )
+    db_session.flush()
+    line = AccountingLine(
+        organization_id=ORG,
+        monthly_work_package_id=package.id,
+        source_type="BANK_TRANSACTION",
+        source_id=str(transaction.id),
+        business_type="CLOUD_SERVICE",
+        direction="EXPENSE",
+        amount=Decimal("880"),
+        tax_amount=Decimal("0"),
+        include_category="EXPENSE",
+        confirmation_status="PENDING",
+    )
+    db_session.add(line)
+    db_session.commit()
+
+    first = confirm_accounting_line(db_session, line_id=line.id, save_as_rule=True)
+    second = confirm_accounting_line(db_session, line_id=line.id, save_as_rule=True)
+
+    assert first["rule_id"] == second["rule_id"]
+    assert db_session.query(MatchingRule).count() == 1
 
 
 def test_confirmed_rule_is_reused_for_later_similar_transaction(db_session):
@@ -473,6 +523,33 @@ def test_matching_is_idempotent_for_matches_and_rule_lines(db_session):
     assert second["rule_lines"] == 0
     assert db_session.query(MatchRecord).count() == 1
     assert db_session.query(AccountingLine).count() == 1
+
+
+def test_pending_match_record_counts_until_confirmed(db_session):
+    package = make_package(db_session, code_suffix="16")
+    transaction = add_transaction(db_session, package)
+    invoice = add_invoice(db_session, package)
+    db_session.flush()
+    match = MatchRecord(
+        organization_id=ORG,
+        monthly_work_package_id=package.id,
+        bank_transaction_id=transaction.id,
+        invoice_id=invoice.id,
+        match_method="MANUAL_CANDIDATE",
+        confidence=80,
+        explanation="人工候选",
+        confirmation_status="PENDING",
+    )
+    db_session.add(match)
+    db_session.commit()
+
+    pending = refresh_package_matching_summary(db_session, monthly_work_package_id=package.id)
+    db_session.commit()
+
+    db_session.refresh(package)
+    assert pending == 1
+    assert package.pending_confirmation_count == 1
+    assert package.matching_status == "PENDING_CONFIRMATION"
 
 
 def test_missing_package_raises_domain_not_found_error(db_session):
