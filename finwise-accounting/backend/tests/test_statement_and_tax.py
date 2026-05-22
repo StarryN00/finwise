@@ -2,8 +2,11 @@ from datetime import date
 from decimal import Decimal
 from uuid import UUID
 
+from fastapi.testclient import TestClient
 from openpyxl import load_workbook
 
+from app.api.deps import get_db
+from app.main import create_app
 from app.models import AccountingLine, BankTransaction, Enterprise, Invoice, MatchRecord, MonthlyWorkPackage, TaxFilingDraft
 from app.services.statement_service import generate_monthly_statement
 from app.services.tax_service import calculate_vat_draft, export_tax_filing_draft, generate_tax_filing_draft
@@ -143,6 +146,27 @@ def test_generate_monthly_statement_from_confirmed_data(db_session):
     assert as_decimal(statement.estimated_income_statement["expense"]) == Decimal("800.00")
     assert as_decimal(statement.estimated_income_statement["operating_profit"]) == Decimal("59200.00")
     assert as_decimal(statement.estimated_balance_sheet["cash_net_movement"]) == Decimal("65800.00")
+
+
+def test_latest_statement_html_endpoint_renders_online_preview(db_session):
+    package = make_package(db_session)
+    add_invoice(db_session, package, direction="OUTPUT", number="OUT-1", amount=Decimal("100000"), tax_amount=Decimal("13000"))
+    db_session.commit()
+    generate_monthly_statement(db_session, monthly_work_package_id=package.id)
+    app = create_app(init_db_on_startup=False)
+
+    def override_get_db():
+        yield db_session
+
+    app.dependency_overrides[get_db] = override_get_db
+    client = TestClient(app, raise_server_exceptions=False)
+
+    response = client.get(f"/api/monthly-packages/{package.id}/statements/latest/html")
+
+    assert response.status_code == 200
+    assert "苏州报表测试企业" in response.text
+    assert "每月账目与报表" in response.text
+    assert "利润表估算" in response.text
 
 
 def test_generate_tax_filing_draft_persists_invoice_totals(db_session):

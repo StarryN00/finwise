@@ -5,7 +5,7 @@ from decimal import Decimal
 from sqlalchemy import select
 from sqlalchemy.orm import Session
 
-from app.models import AccountingLine, BankTransaction, Enterprise, Invoice, MatchRecord, MonthlyWorkPackage, Report, TaxFilingDraft
+from app.models import AccountingLine, BankTransaction, Enterprise, Invoice, MatchRecord, MonthlyStatement, MonthlyWorkPackage, Report, TaxFilingDraft
 
 
 def get_workspace_snapshot(db: Session) -> dict:
@@ -50,6 +50,7 @@ def _enterprise_row(db: Session, enterprise: Enterprise, package: MonthlyWorkPac
 
 def _package_row(db: Session, package: MonthlyWorkPackage) -> dict:
     enterprise = db.get(Enterprise, package.enterprise_id)
+    statement = db.scalar(select(MonthlyStatement).where(MonthlyStatement.monthly_work_package_id == package.id).order_by(MonthlyStatement.created_at.desc()))
     tax_draft = db.scalar(select(TaxFilingDraft).where(TaxFilingDraft.monthly_work_package_id == package.id).order_by(TaxFilingDraft.created_at.desc()))
     report = db.scalar(select(Report).where(Report.monthly_work_package_id == package.id).order_by(Report.created_at.desc()))
     status = package.matching_status if package.matching_status not in {"NOT_STARTED", "COMPLETED"} else package.data_status
@@ -62,6 +63,7 @@ def _package_row(db: Session, package: MonthlyWorkPackage) -> dict:
         "period": _period(package),
         "status": status,
         "pending": package.pending_confirmation_count,
+        "statementId": str(statement.id) if statement else "",
         "tax": _format_amount(tax_draft.data.get("vat_payable")) if tax_draft else "-",
         "taxDraftId": str(tax_draft.id) if tax_draft else "",
         "taxDraftStatus": tax_draft.status if tax_draft else "",

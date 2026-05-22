@@ -30,6 +30,7 @@ export const api = {
   },
   statements: {
     generate: (packageId) => apiClient.post(`/monthly-packages/${packageId}/statements/generate`),
+    viewUrl: (packageId) => `/api/monthly-packages/${packageId}/statements/latest/html`,
   },
   tax: {
     generateVatDraft: (packageId) => apiClient.post(`/monthly-packages/${packageId}/tax/vat-draft`),
@@ -37,6 +38,7 @@ export const api = {
   },
   reports: {
     generateHealth: (packageId) => apiClient.post(`/monthly-packages/${packageId}/reports/health`),
+    viewHealthUrl: (reportId) => `/api/reports/${reportId}/html`,
   },
   rules: {
     list: (enterpriseId) => apiClient.get('/rules', { params: enterpriseId ? { enterprise_id: enterpriseId } : {} }),

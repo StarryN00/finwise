@@ -2,6 +2,10 @@ from datetime import date
 from decimal import Decimal
 from uuid import UUID
 
+from fastapi.testclient import TestClient
+
+from app.api.deps import get_db
+from app.main import create_app
 from app.models import Enterprise, MonthlyStatement, MonthlyWorkPackage, TaxFilingDraft
 from app.reports.health_diagnosis import build_health_diagnosis
 from app.reports.monthly_brief import render_monthly_brief_html
@@ -119,3 +123,38 @@ def test_generate_health_report_persists_html_snapshot(db_session, tmp_path):
     assert enterprise.name in html
     assert "执行摘要与关键结论" in html
     assert "税务风险" in html
+
+
+def test_report_html_endpoint_serves_online_health_report(db_session, tmp_path):
+    enterprise, package = make_package(db_session)
+    db_session.add(
+        MonthlyStatement(
+            organization_id=ORG,
+            monthly_work_package_id=package.id,
+            estimated_balance_sheet={"total_assets": "48000000.00"},
+            estimated_income_statement={"revenue": "1200000.00"},
+        )
+    )
+    db_session.add(
+        TaxFilingDraft(
+            organization_id=ORG,
+            monthly_work_package_id=package.id,
+            data={"vat_payable": "7800.00"},
+            status="DRAFT",
+        )
+    )
+    db_session.commit()
+    report = generate_health_report(db_session, monthly_work_package_id=package.id, output_dir=tmp_path)
+    app = create_app(init_db_on_startup=False)
+
+    def override_get_db():
+        yield db_session
+
+    app.dependency_overrides[get_db] = override_get_db
+    client = TestClient(app, raise_server_exceptions=False)
+
+    response = client.get(f"/api/reports/{report.id}/html")
+
+    assert response.status_code == 200
+    assert enterprise.name in response.text
+    assert "执行摘要与关键结论" in response.text
