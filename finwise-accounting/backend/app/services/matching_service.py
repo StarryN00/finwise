@@ -105,16 +105,18 @@ def confirm_match(db: Session, *, match_id: UUID) -> dict:
     if match is None:
         raise MatchingDomainError("Match record not found.")
 
+    status_changed = match.confirmation_status != "CONFIRMED"
     before = {"confirmation_status": match.confirmation_status}
     match.confirmation_status = "CONFIRMED"
-    _add_audit_log(
-        db,
-        organization_id=match.organization_id,
-        monthly_work_package_id=match.monthly_work_package_id,
-        action="CONFIRM_MATCH",
-        before_data=before,
-        after_data={"confirmation_status": match.confirmation_status},
-    )
+    if status_changed:
+        _add_audit_log(
+            db,
+            organization_id=match.organization_id,
+            monthly_work_package_id=match.monthly_work_package_id,
+            action="CONFIRM_MATCH",
+            before_data=before,
+            after_data={"confirmation_status": match.confirmation_status},
+        )
     refresh_package_matching_summary(db, monthly_work_package_id=match.monthly_work_package_id, confirmed_when_zero=True)
     response = {"id": match.id, "confirmation_status": match.confirmation_status}
     db.commit()
@@ -126,17 +128,25 @@ def confirm_accounting_line(db: Session, *, line_id: UUID, save_as_rule: bool = 
     if line is None:
         raise MatchingDomainError("Accounting line not found.")
 
-    rule = _create_rule_from_accounting_line(db, line) if save_as_rule else None
+    rule = None
+    rule_created = False
+    if save_as_rule:
+        rule, rule_created = _create_rule_from_accounting_line(db, line)
+    status_changed = line.confirmation_status != "CONFIRMED"
     before = {"confirmation_status": line.confirmation_status}
     line.confirmation_status = "CONFIRMED"
-    _add_audit_log(
-        db,
-        organization_id=line.organization_id,
-        monthly_work_package_id=line.monthly_work_package_id,
-        action="CONFIRM_ACCOUNTING_LINE",
-        before_data=before,
-        after_data={"confirmation_status": line.confirmation_status},
-    )
+    if status_changed or rule_created:
+        _add_audit_log(
+            db,
+            organization_id=line.organization_id,
+            monthly_work_package_id=line.monthly_work_package_id,
+            action="CONFIRM_ACCOUNTING_LINE",
+            before_data=before,
+            after_data={
+                "confirmation_status": line.confirmation_status,
+                "rule_id": str(rule.id) if rule is not None else None,
+            },
+        )
     refresh_package_matching_summary(db, monthly_work_package_id=line.monthly_work_package_id, confirmed_when_zero=True)
     response = {"id": line.id, "confirmation_status": line.confirmation_status}
     if rule is not None:
@@ -171,7 +181,14 @@ def run_matching(db: Session, *, monthly_work_package_id: UUID) -> dict:
     for transaction in transactions:
         if transaction.id in used_transaction_ids:
             continue
-        invoice = _find_exact_invoice(transaction, invoices, used_invoice_ids, existing_pairs)
+        invoice = _find_exact_invoice(
+            transaction,
+            transactions,
+            invoices,
+            used_transaction_ids,
+            used_invoice_ids,
+            existing_pairs,
+        )
         if invoice is None:
             continue
 
@@ -270,11 +287,30 @@ def _existing_final_match_state(db: Session, monthly_work_package_id: UUID) -> t
 
 def _find_exact_invoice(
     transaction: BankTransaction,
+    transactions: list[BankTransaction],
     invoices: list[Invoice],
+    used_transaction_ids: set[UUID],
     used_invoice_ids: set[UUID],
     existing_pairs: set[tuple[UUID, UUID]],
 ) -> Invoice | None:
-    candidates = [
+    invoice_candidates = _invoice_candidates_for_transaction(transaction, invoices, used_invoice_ids, existing_pairs)
+    if len(invoice_candidates) != 1:
+        return None
+    invoice = invoice_candidates[0]
+
+    transaction_candidates = _transaction_candidates_for_invoice(invoice, transactions, used_transaction_ids, existing_pairs)
+    if len(transaction_candidates) != 1:
+        return None
+    return invoice
+
+
+def _invoice_candidates_for_transaction(
+    transaction: BankTransaction,
+    invoices: list[Invoice],
+    used_invoice_ids: set[UUID],
+    existing_pairs: set[tuple[UUID, UUID]],
+) -> list[Invoice]:
+    return [
         invoice
         for invoice in invoices
         if invoice.id not in used_invoice_ids
@@ -282,9 +318,22 @@ def _find_exact_invoice(
         and amount_for_direction(transaction, invoice) == invoice.total_amount
         and days_between(transaction.transaction_date, invoice.invoice_date) <= 7
     ]
-    if len(candidates) != 1:
-        return None
-    return candidates[0]
+
+
+def _transaction_candidates_for_invoice(
+    invoice: Invoice,
+    transactions: list[BankTransaction],
+    used_transaction_ids: set[UUID],
+    existing_pairs: set[tuple[UUID, UUID]],
+) -> list[BankTransaction]:
+    return [
+        transaction
+        for transaction in transactions
+        if transaction.id not in used_transaction_ids
+        and (transaction.id, invoice.id) not in existing_pairs
+        and amount_for_direction(transaction, invoice) == invoice.total_amount
+        and days_between(transaction.transaction_date, invoice.invoice_date) <= 7
+    ]
 
 
 def _existing_accounting_line_state(db: Session, monthly_work_package_id: UUID) -> tuple[set[tuple[str, str, str]], set[UUID]]:
@@ -395,7 +444,7 @@ def _direction_for_persisted_rule(rule: MatchingRule, transaction: BankTransacti
     return "INCOME"
 
 
-def _create_rule_from_accounting_line(db: Session, line: AccountingLine) -> MatchingRule:
+def _create_rule_from_accounting_line(db: Session, line: AccountingLine) -> tuple[MatchingRule, bool]:
     if line.source_type != "BANK_TRANSACTION":
         raise MatchingValidationError("Only bank transaction accounting lines can be saved as rules.")
 
@@ -422,7 +471,7 @@ def _create_rule_from_accounting_line(db: Session, line: AccountingLine) -> Matc
         suggested_business_type=line.business_type,
     )
     if existing_rule is not None:
-        return existing_rule
+        return existing_rule, False
 
     rule = MatchingRule(
         channel_id=line.channel_id,
@@ -436,7 +485,7 @@ def _create_rule_from_accounting_line(db: Session, line: AccountingLine) -> Matc
     )
     db.add(rule)
     db.flush()
-    return rule
+    return rule, True
 
 
 def _find_equivalent_rule(

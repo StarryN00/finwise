@@ -22,6 +22,21 @@ def initialize_database() -> None:
                 "ON initial_financial_snapshots (organization_id, enterprise_id)"
             )
         )
+        connection.execute(
+            text(
+                "CREATE UNIQUE INDEX IF NOT EXISTS "
+                "uq_match_records_package_transaction_invoice_idx "
+                "ON match_records (monthly_work_package_id, bank_transaction_id, invoice_id) "
+                "WHERE bank_transaction_id IS NOT NULL AND invoice_id IS NOT NULL"
+            )
+        )
+        connection.execute(
+            text(
+                "CREATE UNIQUE INDEX IF NOT EXISTS "
+                "uq_accounting_lines_package_source_business_idx "
+                "ON accounting_lines (monthly_work_package_id, source_type, source_id, business_type)"
+            )
+        )
     with SessionLocal() as db:
         ensure_default_organization(db)
 

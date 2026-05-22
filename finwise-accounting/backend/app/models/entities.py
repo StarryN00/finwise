@@ -158,6 +158,12 @@ class Invoice(Base):
 class MatchRecord(Base):
     __tablename__ = "match_records"
     __table_args__ = (
+        UniqueConstraint(
+            "monthly_work_package_id",
+            "bank_transaction_id",
+            "invoice_id",
+            name="uq_match_records_package_transaction_invoice",
+        ),
         CheckConstraint("confidence >= 0 AND confidence <= 100", name="ck_match_records_confidence"),
     )
 
@@ -181,6 +187,15 @@ class MatchRecord(Base):
 
 class AccountingLine(Base):
     __tablename__ = "accounting_lines"
+    __table_args__ = (
+        UniqueConstraint(
+            "monthly_work_package_id",
+            "source_type",
+            "source_id",
+            "business_type",
+            name="uq_accounting_lines_package_source_business",
+        ),
+    )
 
     id: Mapped[UUID] = mapped_column(Uuid(as_uuid=True), default=uuid4, primary_key=True)
     channel_id: Mapped[UUID] = mapped_column(Uuid(as_uuid=True), default=DEFAULT_CHANNEL_ID, index=True)

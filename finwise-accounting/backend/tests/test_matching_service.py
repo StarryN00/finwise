@@ -4,8 +4,18 @@ from uuid import UUID
 
 import pytest
 from fastapi.testclient import TestClient
+from sqlalchemy.exc import IntegrityError
 
-from app.models import AccountingLine, BankTransaction, Enterprise, Invoice, MatchRecord, MatchingRule, MonthlyWorkPackage
+from app.models import (
+    AccountingLine,
+    AuditLog,
+    BankTransaction,
+    Enterprise,
+    Invoice,
+    MatchRecord,
+    MatchingRule,
+    MonthlyWorkPackage,
+)
 from app.api.deps import get_db
 from app.main import create_app
 from app.services.matching_service import (
@@ -168,6 +178,20 @@ def test_ambiguous_exact_candidates_are_not_auto_confirmed(db_session):
     add_transaction(db_session, package, transaction_date=date(2026, 5, 8))
     add_invoice(db_session, package, invoice_number="INV-A", invoice_date=date(2026, 5, 6))
     add_invoice(db_session, package, invoice_number="INV-B", invoice_date=date(2026, 5, 7))
+    db_session.commit()
+
+    result = run_matching(db_session, monthly_work_package_id=package.id)
+
+    assert result["exact_matches"] == 0
+    assert result["pending_confirmations"] == 3
+    assert db_session.query(MatchRecord).count() == 0
+
+
+def test_exact_match_requires_unique_transaction_candidate_for_invoice(db_session):
+    package = make_package(db_session, code_suffix="17")
+    add_transaction(db_session, package, transaction_date=date(2026, 5, 8), summary="收到A客户货款")
+    add_transaction(db_session, package, transaction_date=date(2026, 5, 9), summary="收到B客户货款")
+    add_invoice(db_session, package, invoice_number="INV-ONE", invoice_date=date(2026, 5, 6))
     db_session.commit()
 
     result = run_matching(db_session, monthly_work_package_id=package.id)
@@ -365,6 +389,38 @@ def test_repeated_save_as_rule_confirmation_reuses_existing_rule(db_session):
     assert db_session.query(MatchingRule).count() == 1
 
 
+def test_repeated_accounting_line_confirmation_does_not_duplicate_audit_log(db_session):
+    package = make_package(db_session, code_suffix="18")
+    transaction = add_transaction(
+        db_session,
+        package,
+        transaction_date=date(2026, 5, 12),
+        summary="银行手续费",
+        credit_amount=Decimal("0"),
+        debit_amount=Decimal("25"),
+    )
+    db_session.flush()
+    line = AccountingLine(
+        organization_id=ORG,
+        monthly_work_package_id=package.id,
+        source_type="BANK_TRANSACTION",
+        source_id=str(transaction.id),
+        business_type="BANK_FEE",
+        direction="EXPENSE",
+        amount=Decimal("25"),
+        tax_amount=Decimal("0"),
+        include_category="EXPENSE",
+        confirmation_status="PENDING",
+    )
+    db_session.add(line)
+    db_session.commit()
+
+    confirm_accounting_line(db_session, line_id=line.id)
+    confirm_accounting_line(db_session, line_id=line.id)
+
+    assert db_session.query(AuditLog).filter(AuditLog.action == "CONFIRM_ACCOUNTING_LINE").count() == 1
+
+
 def test_confirmed_rule_is_reused_for_later_similar_transaction(db_session):
     package = make_package(db_session, code_suffix="11")
     transaction = add_transaction(
@@ -523,6 +579,71 @@ def test_matching_is_idempotent_for_matches_and_rule_lines(db_session):
     assert second["rule_lines"] == 0
     assert db_session.query(MatchRecord).count() == 1
     assert db_session.query(AccountingLine).count() == 1
+
+
+def test_duplicate_match_record_pair_is_rejected_by_database(db_session):
+    package = make_package(db_session, code_suffix="19")
+    transaction = add_transaction(db_session, package)
+    invoice = add_invoice(db_session, package)
+    db_session.flush()
+    db_session.add_all(
+        [
+            MatchRecord(
+                organization_id=ORG,
+                monthly_work_package_id=package.id,
+                bank_transaction_id=transaction.id,
+                invoice_id=invoice.id,
+                match_method="AUTO_EXACT",
+                confidence=95,
+                explanation="金额一致且日期在7天内",
+                confirmation_status="AUTO_CONFIRMED",
+            ),
+            MatchRecord(
+                organization_id=ORG,
+                monthly_work_package_id=package.id,
+                bank_transaction_id=transaction.id,
+                invoice_id=invoice.id,
+                match_method="AUTO_EXACT",
+                confidence=95,
+                explanation="金额一致且日期在7天内",
+                confirmation_status="AUTO_CONFIRMED",
+            ),
+        ]
+    )
+
+    with pytest.raises(IntegrityError):
+        db_session.commit()
+    db_session.rollback()
+
+
+def test_duplicate_accounting_line_source_is_rejected_by_database(db_session):
+    package = make_package(db_session, code_suffix="20")
+    transaction = add_transaction(
+        db_session,
+        package,
+        transaction_date=date(2026, 5, 12),
+        summary="银行手续费",
+        credit_amount=Decimal("0"),
+        debit_amount=Decimal("25"),
+    )
+    db_session.flush()
+    line_kwargs = {
+        "organization_id": ORG,
+        "monthly_work_package_id": package.id,
+        "source_type": "BANK_TRANSACTION",
+        "source_id": str(transaction.id),
+        "business_type": "BANK_FEE",
+        "direction": "EXPENSE",
+        "amount": Decimal("25"),
+        "tax_amount": Decimal("0"),
+        "include_category": "EXPENSE",
+        "confirmation_status": "PENDING",
+    }
+    db_session.add_all([AccountingLine(**line_kwargs), AccountingLine(**line_kwargs)])
+
+    with pytest.raises(IntegrityError):
+        db_session.commit()
+    db_session.rollback()
 
 
 def test_pending_match_record_counts_until_confirmed(db_session):
