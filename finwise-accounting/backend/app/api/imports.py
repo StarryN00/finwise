@@ -12,6 +12,8 @@ from sqlalchemy.orm import Session
 from app.api.deps import get_db
 from app.schemas.import_batch import ImportResult
 from app.services.import_service import (
+    BANK_COLUMNS,
+    INVOICE_COLUMNS,
     ImportValidationError,
     MonthlyPackageNotFoundError,
     import_bank_rows,
@@ -57,12 +59,9 @@ def _read_import_frame(path: str, suffix: str) -> pd.DataFrame:
     if _has_required_import_columns(frame):
         return _drop_summary_rows(frame)
 
-    preview = _read_excel_preferred_sheet(path, header=None, nrows=12)
-    for row_index in range(len(preview)):
-        headers = {str(value).strip() for value in preview.iloc[row_index].dropna().tolist()}
-        if _looks_like_bank_header(headers) or _looks_like_invoice_header(headers):
-            detected = _read_excel_preferred_sheet(path, header=row_index)
-            return _drop_summary_rows(detected)
+    detected = _detect_excel_import_frame(path)
+    if detected is not None:
+        return detected
     return frame
 
 
@@ -72,17 +71,66 @@ def _read_excel_preferred_sheet(path: str, **kwargs) -> pd.DataFrame:
     return pd.read_excel(path, sheet_name=sheet_name, **kwargs)
 
 
+def _detect_excel_import_frame(path: str) -> pd.DataFrame | None:
+    workbook = pd.ExcelFile(path)
+    candidates = []
+    for sheet_name in workbook.sheet_names:
+        preview = pd.read_excel(path, sheet_name=sheet_name, header=None, nrows=30)
+        for row_index in range(len(preview)):
+            headers = {str(value).strip() for value in preview.iloc[row_index].dropna().tolist()}
+            score = _import_header_score(headers)
+            if score >= 6:
+                candidates.append((score, sheet_name, row_index))
+
+    if not candidates:
+        return None
+
+    _score, sheet_name, row_index = max(candidates, key=lambda item: item[0])
+    detected = pd.read_excel(path, sheet_name=sheet_name, header=row_index)
+    return _drop_summary_rows(detected)
+
+
 def _has_required_import_columns(frame: pd.DataFrame) -> bool:
     columns = {str(column).strip() for column in frame.columns}
     return _looks_like_bank_header(columns) or _looks_like_invoice_header(columns)
 
 
 def _looks_like_bank_header(columns: set[str]) -> bool:
-    return "摘要" in columns and ("交易日期" in columns or "会计日期" in columns)
+    return _import_header_score(columns) >= 6
 
 
 def _looks_like_invoice_header(columns: set[str]) -> bool:
-    return "开票日期" in columns and ("发票号码" in columns or "数电发票号码" in columns)
+    return _has_any(columns, INVOICE_COLUMNS["invoice_date"]) and _has_any(columns, INVOICE_COLUMNS["invoice_number"])
+
+
+def _import_header_score(columns: set[str]) -> int:
+    score = 0
+    if _has_any(columns, BANK_COLUMNS["transaction_date"]):
+        score += 3
+    if _has_any(columns, BANK_COLUMNS["summary"]):
+        score += 2
+    if _has_any(columns, BANK_COLUMNS["debit_amount"]) and _has_any(columns, BANK_COLUMNS["credit_amount"]):
+        score += 4
+    elif _has_any(columns, BANK_COLUMNS["single_amount"]):
+        score += 4
+    if _has_any(columns, BANK_COLUMNS["balance"]):
+        score += 1
+    if _has_any(columns, BANK_COLUMNS["counterparty_name"]) or _has_any(columns, BANK_COLUMNS["counterparty_account"]):
+        score += 1
+    return score
+
+
+def _has_any(columns: set[str], aliases: list[str]) -> bool:
+    normalized_columns = {_normalize_header(column) for column in columns}
+    for alias in aliases:
+        normalized_alias = _normalize_header(alias)
+        if any(normalized_alias == column or normalized_alias in column for column in normalized_columns):
+            return True
+    return False
+
+
+def _normalize_header(value: str) -> str:
+    return str(value).strip().replace("\n", "").replace(" ", "")
 
 
 def _drop_summary_rows(frame: pd.DataFrame) -> pd.DataFrame:
