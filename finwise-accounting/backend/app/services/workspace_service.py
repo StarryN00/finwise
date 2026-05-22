@@ -75,6 +75,22 @@ def _package_row(db: Session, package: MonthlyWorkPackage) -> dict:
 def _account_rows(db: Session, package: MonthlyWorkPackage) -> list[dict]:
     rows = []
     matches = list(db.scalars(select(MatchRecord).where(MatchRecord.monthly_work_package_id == package.id)))
+    enterprise = db.get(Enterprise, package.enterprise_id)
+    enterprise_name = enterprise.name if enterprise else "本企业"
+    transactions = list(
+        db.scalars(
+            select(BankTransaction)
+            .where(BankTransaction.monthly_work_package_id == package.id)
+            .order_by(BankTransaction.transaction_date, BankTransaction.id)
+        )
+    )
+    invoices = list(
+        db.scalars(
+            select(Invoice).where(Invoice.monthly_work_package_id == package.id).order_by(Invoice.invoice_date, Invoice.id)
+        )
+    )
+    transaction_by_id = {transaction.id: transaction for transaction in transactions}
+    invoice_by_id = {invoice.id: invoice for invoice in invoices}
     match_by_transaction = {record.bank_transaction_id: record for record in matches if record.bank_transaction_id is not None}
     match_by_invoice = {record.invoice_id: record for record in matches if record.invoice_id is not None}
     lines = list(db.scalars(select(AccountingLine).where(AccountingLine.monthly_work_package_id == package.id)))
@@ -83,9 +99,28 @@ def _account_rows(db: Session, package: MonthlyWorkPackage) -> list[dict]:
         if line.source_type == "BANK_TRANSACTION":
             line_by_transaction.setdefault(line.source_id, line)
 
-    for transaction in db.scalars(select(BankTransaction).where(BankTransaction.monthly_work_package_id == package.id).order_by(BankTransaction.transaction_date, BankTransaction.id)):
+    emitted_transaction_ids = set()
+    emitted_invoice_ids = set()
+    emitted_line_ids = set()
+
+    for record in sorted(matches, key=lambda item: (item.created_at, item.id)):
+        transaction = transaction_by_id.get(record.bank_transaction_id) if record.bank_transaction_id else None
+        invoice = invoice_by_id.get(record.invoice_id) if record.invoice_id else None
+        if transaction is not None and invoice is not None:
+            rows.append(_merged_source_row(record, transaction, invoice, enterprise_name=enterprise_name))
+            emitted_transaction_ids.add(transaction.id)
+            emitted_invoice_ids.add(invoice.id)
+        elif invoice is not None:
+            rows.append(_invoice_only_row(record, invoice, enterprise_name=enterprise_name))
+            emitted_invoice_ids.add(invoice.id)
+
+    for transaction in transactions:
+        if transaction.id in emitted_transaction_ids:
+            continue
         record = match_by_transaction.get(transaction.id)
         line = line_by_transaction.get(str(transaction.id))
+        if line is not None:
+            emitted_line_ids.add(line.id)
         status = _record_status(record) if record else (line.confirmation_status if line else "PENDING_CONFIRMATION")
         business_type = record.match_method if record else (line.business_type if line else "待确认")
         rows.append(
@@ -95,11 +130,18 @@ def _account_rows(db: Session, package: MonthlyWorkPackage) -> list[dict]:
                 "type": "流水",
                 "date": transaction.transaction_date.isoformat(),
                 "summary": transaction.summary,
+                "remark": transaction.summary or "-",
                 "status": status,
                 "confidence": record.confidence if record else (90 if line else 0),
                 "businessType": business_type,
                 "amount": _format_amount((transaction.credit_amount or Decimal("0")) or (transaction.debit_amount or Decimal("0"))),
                 "tax": "-",
+                "payer": _bank_payer(transaction, enterprise_name),
+                "payee": _bank_payee(transaction, enterprise_name),
+                "seller": "-",
+                "buyer": "-",
+                "invoiceNumber": "-",
+                "sourceCompleteness": "缺失发票主体",
                 "confirmType": _confirm_type(record, line, fallback="unmatched"),
                 "confirmId": _confirm_id(record, line),
                 "sourceType": "BANK_TRANSACTION",
@@ -107,7 +149,9 @@ def _account_rows(db: Session, package: MonthlyWorkPackage) -> list[dict]:
             }
         )
 
-    for invoice in db.scalars(select(Invoice).where(Invoice.monthly_work_package_id == package.id).order_by(Invoice.invoice_date, Invoice.id)):
+    for invoice in invoices:
+        if invoice.id in emitted_invoice_ids:
+            continue
         record = match_by_invoice.get(invoice.id)
         rows.append(
             {
@@ -116,11 +160,18 @@ def _account_rows(db: Session, package: MonthlyWorkPackage) -> list[dict]:
                 "type": "发票",
                 "date": invoice.invoice_date.isoformat(),
                 "summary": f"{invoice.invoice_direction} {invoice.invoice_number}",
+                "remark": _invoice_remark(invoice),
                 "status": _record_status(record),
                 "confidence": record.confidence if record else 0,
                 "businessType": "销项发票" if invoice.invoice_direction == "OUTPUT" else "进项发票",
                 "amount": _format_amount(invoice.total_amount),
                 "tax": _format_amount(invoice.tax_amount),
+                "payer": "-",
+                "payee": "-",
+                "seller": invoice.seller_name or "-",
+                "buyer": invoice.buyer_name or "-",
+                "invoiceNumber": invoice.invoice_number,
+                "sourceCompleteness": "缺失转账主体",
                 "confirmType": "match" if record else "unmatched",
                 "confirmId": str(record.id) if record else "",
                 "sourceType": "INVOICE",
@@ -129,6 +180,8 @@ def _account_rows(db: Session, package: MonthlyWorkPackage) -> list[dict]:
         )
 
     for line in sorted(lines, key=lambda item: (item.created_at, item.id)):
+        if line.id in emitted_line_ids:
+            continue
         rows.append(
             {
                 "id": str(line.id),
@@ -136,11 +189,18 @@ def _account_rows(db: Session, package: MonthlyWorkPackage) -> list[dict]:
                 "type": "账目",
                 "date": "-",
                 "summary": line.business_type,
+                "remark": line.business_type,
                 "status": line.confirmation_status,
                 "confidence": 0,
                 "businessType": line.business_type,
                 "amount": _format_amount(line.amount),
                 "tax": _format_amount(line.tax_amount),
+                "payer": "-",
+                "payee": "-",
+                "seller": "-",
+                "buyer": "-",
+                "invoiceNumber": "-",
+                "sourceCompleteness": "人工账目",
                 "confirmType": "accountingLine",
                 "confirmId": str(line.id),
                 "sourceType": line.source_type,
@@ -148,6 +208,67 @@ def _account_rows(db: Session, package: MonthlyWorkPackage) -> list[dict]:
             }
         )
     return rows
+
+
+def _merged_source_row(
+    record: MatchRecord,
+    transaction: BankTransaction,
+    invoice: Invoice,
+    *,
+    enterprise_name: str,
+) -> dict:
+    return {
+        "id": str(record.id),
+        "packageId": str(record.monthly_work_package_id),
+        "type": "流水+发票",
+        "date": min(transaction.transaction_date, invoice.invoice_date).isoformat(),
+        "summary": transaction.summary or f"{invoice.invoice_direction} {invoice.invoice_number}",
+        "remark": _combined_remark(transaction, invoice),
+        "status": _record_status(record),
+        "confidence": record.confidence,
+        "businessType": record.match_method,
+        "amount": _format_amount((transaction.credit_amount or Decimal("0")) or (transaction.debit_amount or Decimal("0"))),
+        "tax": _format_amount(invoice.tax_amount),
+        "payer": _bank_payer(transaction, enterprise_name),
+        "payee": _bank_payee(transaction, enterprise_name),
+        "seller": invoice.seller_name or "-",
+        "buyer": invoice.buyer_name or "-",
+        "invoiceNumber": invoice.invoice_number,
+        "sourceCompleteness": "流水+发票",
+        "confirmType": "match",
+        "confirmId": str(record.id),
+        "sourceType": "MATCH",
+        "sourceId": str(record.id),
+        "bankTransactionId": str(transaction.id),
+        "invoiceId": str(invoice.id),
+    }
+
+
+def _invoice_only_row(record: MatchRecord, invoice: Invoice, *, enterprise_name: str) -> dict:
+    return {
+        "id": str(record.id),
+        "packageId": str(record.monthly_work_package_id),
+        "type": "发票",
+        "date": invoice.invoice_date.isoformat(),
+        "summary": f"{invoice.invoice_direction} {invoice.invoice_number}",
+        "remark": _invoice_remark(invoice),
+        "status": _record_status(record),
+        "confidence": record.confidence,
+        "businessType": record.match_method,
+        "amount": _format_amount(invoice.total_amount),
+        "tax": _format_amount(invoice.tax_amount),
+        "payer": "-",
+        "payee": "-",
+        "seller": invoice.seller_name or "-",
+        "buyer": invoice.buyer_name or enterprise_name,
+        "invoiceNumber": invoice.invoice_number,
+        "sourceCompleteness": "缺失转账主体",
+        "confirmType": "match",
+        "confirmId": str(record.id),
+        "sourceType": "INVOICE",
+        "sourceId": str(invoice.id),
+        "invoiceId": str(invoice.id),
+    }
 
 
 def _missing_checklist(db: Session, package: MonthlyWorkPackage | None) -> list[dict]:
@@ -197,6 +318,40 @@ def _confirm_id(record: MatchRecord | None, line: AccountingLine | None) -> str:
     if line is not None:
         return str(line.id)
     return ""
+
+
+def _bank_payer(transaction: BankTransaction, enterprise_name: str) -> str:
+    if transaction.debit_amount and transaction.debit_amount != 0:
+        return enterprise_name
+    if transaction.credit_amount and transaction.credit_amount != 0:
+        return transaction.counterparty_name or "-"
+    return "-"
+
+
+def _bank_payee(transaction: BankTransaction, enterprise_name: str) -> str:
+    if transaction.debit_amount and transaction.debit_amount != 0:
+        return transaction.counterparty_name or "-"
+    if transaction.credit_amount and transaction.credit_amount != 0:
+        return enterprise_name
+    return "-"
+
+
+def _invoice_remark(invoice: Invoice) -> str:
+    for key in ("备注", "remark", "摘要"):
+        value = invoice.raw_row_data.get(key) if invoice.raw_row_data else None
+        if value not in (None, ""):
+            return str(value)
+    return "-"
+
+
+def _combined_remark(transaction: BankTransaction, invoice: Invoice) -> str:
+    parts = []
+    if transaction.summary:
+        parts.append(transaction.summary)
+    invoice_remark = _invoice_remark(invoice)
+    if invoice_remark != "-" and invoice_remark not in parts:
+        parts.append(invoice_remark)
+    return " / ".join(parts) if parts else "-"
 
 
 def _period(package: MonthlyWorkPackage | None) -> str:

@@ -5,15 +5,18 @@
     action-label="运行匹配"
     @action="runMatching"
   >
-    <el-tabs v-model="activeTab" class="account-tabs">
-      <el-tab-pane label="流水视图" name="bank" />
-      <el-tab-pane label="发票视图" name="invoice" />
-      <el-tab-pane label="待确认清单" name="pending" />
-    </el-tabs>
+    <div class="account-toolbar">
+      <el-segmented v-model="activeFilter" :options="filterOptions" />
+    </div>
     <el-table v-loading="workspace.isLoading" :data="rows" stripe>
-      <el-table-column prop="type" label="类型" width="90" />
+      <el-table-column prop="sourceCompleteness" label="统一视图" width="120" />
       <el-table-column prop="date" label="日期" width="120" />
-      <el-table-column prop="summary" label="摘要" min-width="180" />
+      <el-table-column prop="summary" label="摘要" min-width="180" show-overflow-tooltip />
+      <el-table-column prop="remark" label="备注" min-width="180" show-overflow-tooltip />
+      <el-table-column prop="payer" label="付款方" min-width="160" show-overflow-tooltip />
+      <el-table-column prop="payee" label="收款方" min-width="160" show-overflow-tooltip />
+      <el-table-column prop="seller" label="销售方" min-width="160" show-overflow-tooltip />
+      <el-table-column prop="buyer" label="购买方" min-width="160" show-overflow-tooltip />
       <el-table-column label="状态" width="130">
         <template #default="{ row }"><StatusTag :status="row.status" /></template>
       </el-table-column>
@@ -61,7 +64,7 @@ import StatusTag from '../components/StatusTag.vue'
 import { useWorkspaceStore } from '../stores/workspace'
 
 const workspace = useWorkspaceStore()
-const activeTab = ref('bank')
+const activeFilter = ref('all')
 const confirmDialogVisible = ref(false)
 const isConfirming = ref(false)
 const currentRow = ref(null)
@@ -71,15 +74,28 @@ const confirmForm = ref({
 })
 
 const canSaveRule = computed(() => currentRow.value?.sourceType === 'BANK_TRANSACTION')
+const filterOptions = [
+  { label: '全部', value: 'all' },
+  { label: '待确认', value: 'pending' },
+  { label: '缺失发票', value: 'missingInvoice' },
+  { label: '缺失转账', value: 'missingBank' },
+  { label: '已完整', value: 'complete' },
+]
 
 const rows = computed(() => {
-  if (activeTab.value === 'pending') {
+  if (activeFilter.value === 'pending') {
     return workspace.accountRows.filter((row) => row.status !== 'CONFIRMED')
   }
-  if (activeTab.value === 'invoice') {
-    return workspace.accountRows.filter((row) => row.type === '发票')
+  if (activeFilter.value === 'missingInvoice') {
+    return workspace.accountRows.filter((row) => row.sourceCompleteness === '缺失发票主体')
   }
-  return workspace.accountRows.filter((row) => row.type === '流水')
+  if (activeFilter.value === 'missingBank') {
+    return workspace.accountRows.filter((row) => row.sourceCompleteness === '缺失转账主体')
+  }
+  if (activeFilter.value === 'complete') {
+    return workspace.accountRows.filter((row) => row.sourceCompleteness === '流水+发票')
+  }
+  return workspace.accountRows
 })
 
 async function runMatching() {
@@ -142,7 +158,9 @@ function defaultBusinessType(row) {
 </script>
 
 <style scoped>
-.account-tabs {
-  padding: 0 16px;
+.account-toolbar {
+  display: flex;
+  align-items: center;
+  padding: 0 16px 12px;
 }
 </style>

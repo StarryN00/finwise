@@ -96,6 +96,88 @@ def add_unmatched_invoice(db_session, package):
     return invoice
 
 
+def test_workspace_rows_merge_bank_and_invoice_sources():
+    client, db_session = make_context()
+    enterprise, package = make_package(db_session)
+    matched_transaction = BankTransaction(
+        organization_id=ORG,
+        monthly_work_package_id=package.id,
+        transaction_date=date(2026, 5, 8),
+        summary="收到客户货款 备注A",
+        debit_amount=Decimal("0.00"),
+        credit_amount=Decimal("1130.00"),
+        counterparty_name="苏州客户有限公司",
+    )
+    unmatched_transaction = BankTransaction(
+        organization_id=ORG,
+        monthly_work_package_id=package.id,
+        transaction_date=date(2026, 5, 10),
+        summary="支付零星采购",
+        debit_amount=Decimal("500.00"),
+        credit_amount=Decimal("0.00"),
+        counterparty_name="苏州供应商有限公司",
+    )
+    matched_invoice = Invoice(
+        organization_id=ORG,
+        monthly_work_package_id=package.id,
+        invoice_direction="OUTPUT",
+        invoice_number="OUT-MATCHED",
+        invoice_date=date(2026, 5, 9),
+        amount=Decimal("1000.00"),
+        tax_amount=Decimal("130.00"),
+        total_amount=Decimal("1130.00"),
+        seller_name=enterprise.name,
+        buyer_name="苏州客户有限公司",
+        raw_row_data={"备注": "发票备注A"},
+    )
+    unmatched_invoice = Invoice(
+        organization_id=ORG,
+        monthly_work_package_id=package.id,
+        invoice_direction="INPUT",
+        invoice_number="IN-ONLY",
+        invoice_date=date(2026, 5, 11),
+        amount=Decimal("800.00"),
+        tax_amount=Decimal("48.00"),
+        total_amount=Decimal("848.00"),
+        seller_name="苏州票方有限公司",
+        buyer_name=enterprise.name,
+        raw_row_data={"备注": "票据备注B"},
+    )
+    db_session.add_all([matched_transaction, unmatched_transaction, matched_invoice, unmatched_invoice])
+    db_session.commit()
+    run_matching(db_session, monthly_work_package_id=package.id)
+
+    response = client.get("/api/workspace")
+
+    assert response.status_code == 200
+    rows = response.json()["accountRows"]
+    merged_row = next(row for row in rows if row["invoiceNumber"] == "OUT-MATCHED")
+    assert merged_row["type"] == "流水+发票"
+    assert merged_row["sourceCompleteness"] == "流水+发票"
+    assert merged_row["payer"] == "苏州客户有限公司"
+    assert merged_row["payee"] == enterprise.name
+    assert merged_row["seller"] == enterprise.name
+    assert merged_row["buyer"] == "苏州客户有限公司"
+    assert merged_row["remark"] == "收到客户货款 备注A / 发票备注A"
+    assert merged_row["amount"] == "1,130.00"
+    assert merged_row["tax"] == "130.00"
+
+    bank_only_row = next(row for row in rows if row["sourceId"] == str(unmatched_transaction.id))
+    assert bank_only_row["sourceCompleteness"] == "缺失发票主体"
+    assert bank_only_row["payer"] == enterprise.name
+    assert bank_only_row["payee"] == "苏州供应商有限公司"
+    assert bank_only_row["seller"] == "-"
+    assert bank_only_row["buyer"] == "-"
+
+    invoice_only_row = next(row for row in rows if row["sourceId"] == str(unmatched_invoice.id))
+    assert invoice_only_row["sourceCompleteness"] == "缺失转账主体"
+    assert invoice_only_row["payer"] == "-"
+    assert invoice_only_row["payee"] == "-"
+    assert invoice_only_row["seller"] == "苏州票方有限公司"
+    assert invoice_only_row["buyer"] == enterprise.name
+    assert invoice_only_row["remark"] == "票据备注B"
+
+
 def test_workspace_rows_expose_confirmation_handles():
     client, db_session = make_context()
     _enterprise, package = make_package(db_session)
