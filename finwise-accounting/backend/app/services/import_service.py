@@ -15,17 +15,17 @@ from app.models import BankTransaction, Invoice, MonthlyWorkPackage
 
 
 BANK_COLUMNS = {
-    "transaction_date": ["交易日期", "日期", "交易时间"],
+    "transaction_date": ["交易日期", "日期", "交易时间", "会计日期"],
     "summary": ["摘要", "交易说明", "用途", "摘要说明"],
-    "debit_amount": ["借方金额", "支出金额", "借记金额"],
-    "credit_amount": ["贷方金额", "收入金额", "贷记金额"],
+    "debit_amount": ["借方金额", "支出金额", "借记金额", "借方发生额（支出）"],
+    "credit_amount": ["贷方金额", "收入金额", "贷记金额", "贷方发生额（收入）"],
     "balance": ["余额", "账户余额", "当前余额"],
     "counterparty_name": ["对方户名", "对手方名称", "对方账户名"],
     "counterparty_account": ["对方账号", "对方账户", "对手方账号"],
 }
 
 INVOICE_COLUMNS = {
-    "invoice_number": ["发票号码", "发票代码", "发票编码"],
+    "invoice_number": ["发票号码", "数电发票号码", "发票代码", "发票编码"],
     "invoice_date": ["开票日期", "日期"],
     "amount": ["金额", "不含税金额", "合计金额"],
     "tax_amount": ["税额", "税款"],
@@ -93,6 +93,10 @@ def to_date(value) -> date:
             except ValueError as exc:
                 raise ValueError(f"invalid date value: {value}") from exc
         matched = SEPARATOR_DATE_RE.fullmatch(normalized)
+        if matched is None and " " in normalized:
+            date_part, _time_part = normalized.split(" ", 1)
+            matched = SEPARATOR_DATE_RE.fullmatch(date_part)
+            normalized = date_part
         if matched is None:
             raise ValueError(f"invalid date value: {value}")
         try:
@@ -122,7 +126,7 @@ def import_bank_rows(db: Session, *, monthly_work_package_id: UUID, rows: list[d
             transaction = BankTransaction(
                 organization_id=organization_id,
                 monthly_work_package_id=monthly_work_package_id,
-                transaction_date=to_date(pick(row, BANK_COLUMNS["transaction_date"])),
+                transaction_date=to_date(_normalize_accounting_date(row, pick(row, BANK_COLUMNS["transaction_date"]))),
                 summary=str(pick(row, BANK_COLUMNS["summary"], "")),
                 debit_amount=debit_amount,
                 credit_amount=credit_amount,
@@ -186,6 +190,16 @@ def _is_blank(value) -> bool:
         return bool(pd.isna(value))
     except (TypeError, ValueError):
         return False
+
+
+def _normalize_accounting_date(row: dict, value):
+    if "会计日期" not in row or _is_blank(row.get("会计日期")):
+        return value
+    if isinstance(value, Real) and not isinstance(value, bool):
+        numeric_text = str(int(value))
+        if len(numeric_text) == 8:
+            return numeric_text
+    return value
 
 
 def _required_decimal(row: dict, aliases: list[str], field_name: str) -> Decimal:

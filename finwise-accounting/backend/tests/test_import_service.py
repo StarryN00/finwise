@@ -48,6 +48,31 @@ def test_import_bank_rows_maps_common_columns(db_session):
     assert transaction.raw_row_data["摘要"] == "收到货款"
 
 
+def test_import_bank_rows_accepts_real_accounting_statement_columns(db_session):
+    package = make_package(db_session)
+
+    result = import_bank_rows(
+        db_session,
+        monthly_work_package_id=package.id,
+        rows=[
+            {
+                "会计日期": 20260313,
+                "摘要": "缴税626031311716014148",
+                "借方发生额（支出）": "150.00",
+                "贷方发生额（收入）": "0.00",
+                "账户余额": "818346.89",
+                "对方户名": "银行",
+            }
+        ],
+    )
+
+    transaction = db_session.query(BankTransaction).one()
+    assert result["created"] == 1
+    assert result["errors"] == []
+    assert transaction.transaction_date.isoformat() == "2026-03-13"
+    assert transaction.debit_amount == 150
+
+
 def test_import_invoice_rows_maps_input_and_output(db_session):
     package = make_package(db_session)
 
@@ -62,6 +87,30 @@ def test_import_invoice_rows_maps_input_and_output(db_session):
     assert result["created"] == 1
     assert result["errors"] == []
     assert invoice.invoice_direction == "OUTPUT"
+
+
+def test_import_invoice_rows_accepts_digital_invoice_number(db_session):
+    package = make_package(db_session)
+
+    result = import_invoice_rows(
+        db_session,
+        monthly_work_package_id=package.id,
+        direction="OUTPUT",
+        rows=[
+            {
+                "数电发票号码": "26322000002259829066",
+                "开票日期": "2026-03-24 17:23:49",
+                "金额": "71681.42",
+                "税额": "9318.58",
+                "价税合计": "81000.00",
+            }
+        ],
+    )
+
+    invoice = db_session.query(Invoice).one()
+    assert result["created"] == 1
+    assert result["errors"] == []
+    assert invoice.invoice_number == "26322000002259829066"
 
 
 def test_import_bank_rows_reports_invalid_date_without_crashing(db_session):

@@ -3,7 +3,7 @@
     <template #filters>
       <el-input v-model="keyword" placeholder="搜索企业" clearable style="width: 220px" />
     </template>
-    <el-table :data="filteredEnterprises" stripe>
+    <el-table v-loading="workspace.isLoading" :data="filteredEnterprises" stripe>
       <el-table-column prop="name" label="企业名称" min-width="220" />
       <el-table-column prop="taxpayerType" label="纳税人类型" width="140" />
       <el-table-column prop="latestMonth" label="最新月份" width="120" />

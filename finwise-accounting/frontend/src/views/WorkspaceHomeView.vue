@@ -9,6 +9,7 @@
       :tone="metric.tone"
     />
   </section>
+  <el-alert v-if="workspace.loadError" type="error" :title="workspace.loadError" show-icon />
 
   <DataTableShell title="月度工作包" description="按企业跟踪导入、匹配、申报与报告状态" action-label="导入资料">
     <template #filters>
@@ -19,7 +20,7 @@
         <el-option label="数据不足" value="DATA_INSUFFICIENT" />
       </el-select>
     </template>
-    <el-table :data="filteredPackages" stripe>
+    <el-table v-loading="workspace.isLoading" :data="filteredPackages" stripe>
       <el-table-column prop="company" label="企业名称" min-width="220" />
       <el-table-column prop="period" label="期间" width="110" />
       <el-table-column label="状态" width="130">

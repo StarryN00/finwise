@@ -53,7 +53,42 @@ def _read_import_frame(path: str, suffix: str) -> pd.DataFrame:
                 last_error = exc
         if last_error is not None:
             raise last_error
-    return pd.read_excel(path)
+    frame = _read_excel_preferred_sheet(path)
+    if _has_required_import_columns(frame):
+        return _drop_summary_rows(frame)
+
+    preview = _read_excel_preferred_sheet(path, header=None, nrows=12)
+    for row_index in range(len(preview)):
+        headers = {str(value).strip() for value in preview.iloc[row_index].dropna().tolist()}
+        if _looks_like_bank_header(headers) or _looks_like_invoice_header(headers):
+            detected = _read_excel_preferred_sheet(path, header=row_index)
+            return _drop_summary_rows(detected)
+    return frame
+
+
+def _read_excel_preferred_sheet(path: str, **kwargs) -> pd.DataFrame:
+    workbook = pd.ExcelFile(path)
+    sheet_name = "发票基础信息" if "发票基础信息" in workbook.sheet_names else workbook.sheet_names[0]
+    return pd.read_excel(path, sheet_name=sheet_name, **kwargs)
+
+
+def _has_required_import_columns(frame: pd.DataFrame) -> bool:
+    columns = {str(column).strip() for column in frame.columns}
+    return _looks_like_bank_header(columns) or _looks_like_invoice_header(columns)
+
+
+def _looks_like_bank_header(columns: set[str]) -> bool:
+    return "摘要" in columns and ("交易日期" in columns or "会计日期" in columns)
+
+
+def _looks_like_invoice_header(columns: set[str]) -> bool:
+    return "开票日期" in columns and ("发票号码" in columns or "数电发票号码" in columns)
+
+
+def _drop_summary_rows(frame: pd.DataFrame) -> pd.DataFrame:
+    if "序号" in frame.columns:
+        frame = frame[frame["序号"].astype(str) != "合计行"]
+    return frame.dropna(how="all")
 
 
 @router.post("/bank", response_model=ImportResult)

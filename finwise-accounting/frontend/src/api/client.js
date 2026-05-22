@@ -34,4 +34,7 @@ export const api = {
   reports: {
     generateHealth: (packageId) => apiClient.post(`/monthly-packages/${packageId}/reports/health`),
   },
+  workspace: {
+    snapshot: () => apiClient.get('/workspace'),
+  },
 }

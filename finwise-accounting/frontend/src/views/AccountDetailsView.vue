@@ -5,7 +5,7 @@
       <el-tab-pane label="发票视图" name="invoice" />
       <el-tab-pane label="待确认清单" name="pending" />
     </el-tabs>
-    <el-table :data="rows" stripe>
+    <el-table v-loading="workspace.isLoading" :data="rows" stripe>
       <el-table-column prop="type" label="类型" width="90" />
       <el-table-column prop="date" label="日期" width="120" />
       <el-table-column prop="summary" label="摘要" min-width="180" />

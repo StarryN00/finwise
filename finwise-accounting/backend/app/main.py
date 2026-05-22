@@ -11,6 +11,7 @@ from app.api.matching import router as matching_router
 from app.api.reports import router as reports_router
 from app.api.statements import router as statements_router
 from app.api.tax import router as tax_router
+from app.api.workspace import router as workspace_router
 from app.core.database import Base, SessionLocal, engine
 from app.core.org_context import ensure_default_organization
 
@@ -62,6 +63,7 @@ def create_app(*, init_db_on_startup: bool = True) -> FastAPI:
     app.include_router(reports_router)
     app.include_router(statements_router)
     app.include_router(tax_router)
+    app.include_router(workspace_router)
 
     @app.get("/health")
     def health() -> dict[str, str]:

@@ -16,6 +16,8 @@ frontend/node_modules/
 data/
 files/
 *.json
+finwise-accounting/backend/finwise_accounting.db
+finwise-accounting/backend/storage/
 
 # Env
 .env
