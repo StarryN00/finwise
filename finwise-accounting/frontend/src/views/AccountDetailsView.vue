@@ -2,14 +2,13 @@
   <DataTableShell
     title="账目明细"
     description="流水、发票与待确认事项的统一工作表"
-    action-label="运行匹配"
-    @action="runMatching"
   >
-    <template #filters>
-      <el-button :loading="isAiMatching" @click="runAiMatching">AI 智能匹配</el-button>
-    </template>
     <div class="account-toolbar">
       <el-segmented v-model="activeFilter" :options="filterOptions" />
+      <div class="account-toolbar__actions">
+        <el-button :loading="isAiMatching" @click="runAiMatching">AI 智能匹配</el-button>
+        <el-button type="primary" @click="runMatching">运行匹配</el-button>
+      </div>
     </div>
     <el-table v-loading="workspace.isLoading" :data="rows" stripe>
       <el-table-column prop="sourceCompleteness" label="统一视图" width="120" />
@@ -182,6 +181,21 @@ function defaultBusinessType(row) {
 .account-toolbar {
   display: flex;
   align-items: center;
+  justify-content: space-between;
+  gap: 12px;
   padding: 0 16px 12px;
+}
+
+.account-toolbar__actions {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+}
+
+@media (max-width: 900px) {
+  .account-toolbar {
+    align-items: flex-start;
+    flex-direction: column;
+  }
 }
 </style>
