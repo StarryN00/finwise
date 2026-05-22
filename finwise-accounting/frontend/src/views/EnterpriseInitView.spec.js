@@ -15,4 +15,12 @@ describe('EnterpriseInitView', () => {
     expect(source).toContain('v-for="province in provinceOptions"')
     expect(source).toContain('v-for="city in cityOptions"')
   })
+
+  it('parses uploaded initial statements and backfills key subjects', () => {
+    expect(source).toContain(':on-change="parseBalanceSheet"')
+    expect(source).toContain(':on-change="parseIncomeStatement"')
+    expect(source).toContain("api.initialStatements.parse(formData)")
+    expect(source).toContain("form.assetsTotal = data.data['资产总计']")
+    expect(source).toContain("form.revenue = data.data['营业收入']")
+  })
 })

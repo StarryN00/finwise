@@ -19,6 +19,9 @@ export const api = {
     inputInvoices: (packageId, formData) => apiClient.post(`/monthly-packages/${packageId}/imports/input-invoices`, formData),
     outputInvoices: (packageId, formData) => apiClient.post(`/monthly-packages/${packageId}/imports/output-invoices`, formData),
   },
+  initialStatements: {
+    parse: (formData) => apiClient.post('/initial-statements/parse', formData),
+  },
   matching: {
     run: (packageId) => apiClient.post(`/monthly-packages/${packageId}/matching/run`),
     confirmMatch: (matchId) => apiClient.post(`/matches/${matchId}/confirm`),

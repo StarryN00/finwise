@@ -64,13 +64,15 @@
         </div>
 
         <div class="upload-pair">
-          <el-upload drag action="#" :auto-upload="false" :limit="1" :on-change="rememberBalanceFile">
+          <el-upload drag action="#" :auto-upload="false" :limit="1" :on-change="parseBalanceSheet">
             <strong>资产负债表 Excel</strong>
             <span>{{ files.balanceSheet || '选择或拖入文件' }}</span>
+            <em>{{ parseStatus.balanceSheet }}</em>
           </el-upload>
-          <el-upload drag action="#" :auto-upload="false" :limit="1" :on-change="rememberIncomeFile">
+          <el-upload drag action="#" :auto-upload="false" :limit="1" :on-change="parseIncomeStatement">
             <strong>利润表 Excel</strong>
             <span>{{ files.incomeStatement || '选择或拖入文件' }}</span>
+            <em>{{ parseStatus.incomeStatement }}</em>
           </el-upload>
         </div>
 
@@ -130,6 +132,10 @@ const isSubmitting = ref(false)
 const files = reactive({
   balanceSheet: '',
   incomeStatement: '',
+})
+const parseStatus = reactive({
+  balanceSheet: '上传后自动识别关键科目',
+  incomeStatement: '上传后自动识别关键科目',
 })
 
 const industryOptions = [
@@ -205,12 +211,38 @@ const balanceStatus = computed(() => {
 
 const cityOptions = computed(() => provinceCityMap[form.province] || [])
 
-function rememberBalanceFile(file) {
+async function parseBalanceSheet(file) {
   files.balanceSheet = file.name
+  parseStatus.balanceSheet = '正在解析...'
+  try {
+    const data = await parseStatementFile(file, 'BALANCE_SHEET')
+    form.assetsTotal = data.data['资产总计'] || form.assetsTotal
+    form.liabilitiesTotal = data.data['负债合计'] || form.liabilitiesTotal
+    form.equityTotal = data.data['所有者权益合计'] || form.equityTotal
+    form.cash = data.data['货币资金'] || form.cash
+    parseStatus.balanceSheet = statusText(data)
+    ElMessage.success('资产负债表关键科目已回填')
+  } catch (error) {
+    parseStatus.balanceSheet = '解析失败，请手动填写'
+    ElMessage.error(error?.response?.data?.detail || error?.message || '资产负债表解析失败')
+  }
 }
 
-function rememberIncomeFile(file) {
+async function parseIncomeStatement(file) {
   files.incomeStatement = file.name
+  parseStatus.incomeStatement = '正在解析...'
+  try {
+    const data = await parseStatementFile(file, 'INCOME_STATEMENT')
+    form.revenue = data.data['营业收入'] || form.revenue
+    form.cost = data.data['营业成本'] || form.cost
+    form.adminExpense = data.data['管理费用'] || form.adminExpense
+    form.netProfit = data.data['净利润'] || form.netProfit
+    parseStatus.incomeStatement = statusText(data)
+    ElMessage.success('利润表关键科目已回填')
+  } catch (error) {
+    parseStatus.incomeStatement = '解析失败，请手动填写'
+    ElMessage.error(error?.response?.data?.detail || error?.message || '利润表解析失败')
+  }
 }
 
 function syncCityForProvince() {
@@ -218,6 +250,21 @@ function syncCityForProvince() {
   if (!availableCities.includes(form.city)) {
     form.city = availableCities[0] || ''
   }
+}
+
+async function parseStatementFile(file, statementType) {
+  const formData = new FormData()
+  formData.append('statement_type', statementType)
+  formData.append('file', file.raw)
+  const response = await api.initialStatements.parse(formData)
+  return response.data
+}
+
+function statusText(result) {
+  if (!result.missing_fields.length) {
+    return '已识别全部必需科目'
+  }
+  return `缺失：${result.missing_fields.join('、')}`
 }
 
 async function submitEnterprise() {
@@ -322,14 +369,20 @@ function toNumber(value) {
 }
 
 .upload-pair strong,
-.upload-pair span {
+.upload-pair span,
+.upload-pair em {
   display: block;
 }
 
-.upload-pair span {
+.upload-pair span,
+.upload-pair em {
   margin-top: 6px;
   color: var(--fw-text-muted);
   font-size: 13px;
+}
+
+.upload-pair em {
+  font-style: normal;
 }
 
 .statement-grid {
