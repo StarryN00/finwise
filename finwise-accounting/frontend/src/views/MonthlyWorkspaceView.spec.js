@@ -29,4 +29,13 @@ describe('MonthlyWorkspaceView', () => {
     expect(source).toContain('formatUploadError')
     expect(source).toContain('uploadErrors')
   })
+
+  it('shows the active enterprise context and next workflow actions', () => {
+    expect(source).toContain('active-package-context')
+    expect(source).toContain('当前处理企业')
+    expect(source).toContain('next-action-panel')
+    expect(source).toContain('nextActions')
+    expect(source).toContain('generateVatDraft')
+    expect(source).toContain('generateHealthReport')
+  })
 })

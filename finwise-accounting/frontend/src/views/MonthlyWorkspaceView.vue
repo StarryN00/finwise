@@ -1,4 +1,19 @@
 <template>
+  <section class="active-package-context">
+    <div>
+      <span class="context-label">当前处理企业</span>
+      <strong>{{ activePackage?.company || '暂无月度工作包' }}</strong>
+    </div>
+    <div>
+      <span class="context-label">工作期间</span>
+      <strong>{{ activePackage?.period || '-' }}</strong>
+    </div>
+    <div>
+      <span class="context-label">当前阶段</span>
+      <strong>{{ currentStep.title }}</strong>
+    </div>
+  </section>
+
   <section class="workflow-timeline" aria-label="月度工作流程">
     <article
       v-for="(step, index) in workflowSteps"
@@ -59,29 +74,57 @@
       />
     </div>
   </section>
+
+  <section class="next-action-panel">
+    <div>
+      <h2 class="section-title">下一步</h2>
+      <p class="caption">{{ nextActionHint }}</p>
+    </div>
+    <div class="next-actions">
+      <el-button
+        v-for="action in nextActions"
+        :key="action.key"
+        :type="action.primary ? 'primary' : 'default'"
+        :loading="loadingAction === action.key"
+        :disabled="action.disabled"
+        @click="runNextAction(action)"
+      >
+        {{ action.label }}
+      </el-button>
+    </div>
+  </section>
 </template>
 
 <script setup>
 import { computed, reactive, ref } from 'vue'
+import { useRouter } from 'vue-router'
 import { ElMessage } from 'element-plus'
 import { api } from '../api/client'
 import MetricCard from '../components/MetricCard.vue'
 import { useWorkspaceStore } from '../stores/workspace'
 
 const workspace = useWorkspaceStore()
+const router = useRouter()
 const uploadingType = ref('')
+const loadingAction = ref('')
 const uploadResults = reactive({ bank: '', input: '', output: '' })
 const uploadErrors = reactive({ bank: '', input: '', output: '' })
 const bankInput = ref(null)
 const inputInvoiceInput = ref(null)
 const outputInvoiceInput = ref(null)
+const activePackage = computed(() => workspace.activePackage)
 
-const workflowSteps = computed(() => {
+const workflowFlags = computed(() => {
   const hasAllSourceData = isChecklistDone('银行流水') && isChecklistDone('销项明细') && isChecklistDone('进项明细')
   const hasParsedRows = hasAllSourceData && workspace.accountRows.length > 0
   const hasConfirmed = hasParsedRows && isChecklistDone('人工确认')
   const hasHealthReport = isChecklistDone('健康报告数据')
-  const hasTaxDraft = Boolean(workspace.activePackage?.taxDraftId)
+  const hasTaxDraft = Boolean(activePackage.value?.taxDraftId)
+  return { hasAllSourceData, hasParsedRows, hasConfirmed, hasHealthReport, hasTaxDraft }
+})
+
+const workflowSteps = computed(() => {
+  const { hasAllSourceData, hasParsedRows, hasConfirmed, hasHealthReport, hasTaxDraft } = workflowFlags.value
   const definitions = [
     { title: '导入资料', done: hasAllSourceData, hint: hasAllSourceData ? '三类资料已齐' : '等待补充资料' },
     { title: '解析结果', done: hasParsedRows, hint: hasParsedRows ? '已生成结构化数据' : '上传后自动解析' },
@@ -93,6 +136,44 @@ const workflowSteps = computed(() => {
   ]
   const currentIndex = definitions.findIndex((step) => !step.done)
   return definitions.map((step, index) => stepState(step.title, step.done, index === currentIndex, step.hint))
+})
+
+const currentStep = computed(() => workflowSteps.value.find((step) => step.status === 'current') || workflowSteps.value.at(-1) || { title: '暂无工作包' })
+
+const nextActionHint = computed(() => {
+  const { hasAllSourceData, hasParsedRows, hasConfirmed, hasTaxDraft, hasHealthReport } = workflowFlags.value
+  if (!activePackage.value) return '先创建本月工作包，再导入银行流水、进项和销项明细。'
+  if (!hasAllSourceData) return '请先补齐缺失资料。资料齐全后系统才能继续解析和匹配。'
+  if (!hasParsedRows) return '资料已经齐全，下一步运行匹配，生成待确认账目明细。'
+  if (!hasConfirmed) return '还有待确认明细，请进入账目明细处理未匹配流水、发票和分类。'
+  if (!hasTaxDraft) return '账目已确认，可以生成每月账目报表和申报草稿。'
+  if (!hasHealthReport) return '申报草稿已生成，可以继续生成老板看的财务健康报告。'
+  return '本月核心输出已完成，可以到输出中心导出或复核结果。'
+})
+
+const nextActions = computed(() => {
+  const { hasAllSourceData, hasParsedRows, hasConfirmed, hasTaxDraft, hasHealthReport } = workflowFlags.value
+  const packageId = activePackage.value?.id
+  if (!activePackage.value) return []
+  if (!hasAllSourceData) {
+    return [{ key: 'upload', label: '补充缺失资料', primary: true, handler: () => scrollToUploads() }]
+  }
+  if (!hasParsedRows) {
+    return [{ key: 'matching', label: '运行匹配', primary: true, handler: () => workspace.runMatching(packageId) }]
+  }
+  if (!hasConfirmed) {
+    return [{ key: 'account-details', label: '处理账目明细', primary: true, handler: () => router.push('/account-details') }]
+  }
+  if (!hasTaxDraft) {
+    return [
+      { key: 'statement', label: '生成每月账目报表', primary: false, handler: () => workspace.generateStatement(packageId) },
+      { key: 'tax', label: '生成申报草稿', primary: true, handler: () => workspace.generateVatDraft(packageId) },
+    ]
+  }
+  if (!hasHealthReport) {
+    return [{ key: 'report', label: '生成财务健康报告', primary: true, handler: () => workspace.generateHealthReport(packageId) }]
+  }
+  return [{ key: 'output', label: '查看输出中心', primary: true, handler: () => router.push('/output-center') }]
 })
 
 const uploadItems = computed(() => [
@@ -184,6 +265,24 @@ function openFilePicker(type) {
   inputByType[type]?.click()
 }
 
+async function runNextAction(action) {
+  loadingAction.value = action.key
+  try {
+    await action.handler()
+    if (!['upload', 'account-details', 'output'].includes(action.key)) {
+      ElMessage.success('操作已完成')
+    }
+  } catch (error) {
+    ElMessage.error(error?.response?.data?.detail || error?.message || '操作失败')
+  } finally {
+    loadingAction.value = ''
+  }
+}
+
+function scrollToUploads() {
+  document.querySelector('.upload-panel')?.scrollIntoView({ behavior: 'smooth', block: 'center' })
+}
+
 function stepState(title, done, current, hint) {
   const status = done ? 'done' : current ? 'current' : 'todo'
   const statusLabel = done ? '已完成' : current ? '进行中' : '未开始'
@@ -228,6 +327,29 @@ function translateImportError(message) {
 </script>
 
 <style scoped>
+.active-package-context,
+.next-action-panel {
+  display: grid;
+  grid-template-columns: repeat(3, minmax(0, 1fr));
+  gap: 16px;
+  padding: 16px;
+  border: 1px solid var(--fw-line);
+  border-radius: var(--fw-radius);
+  background: var(--fw-surface);
+}
+
+.active-package-context strong {
+  display: block;
+  margin-top: 6px;
+  color: var(--fw-text);
+  font-size: 16px;
+}
+
+.context-label {
+  color: var(--fw-text-muted);
+  font-size: 12px;
+}
+
 .workflow-timeline {
   display: grid;
   grid-template-columns: repeat(7, minmax(0, 1fr));
@@ -417,6 +539,22 @@ function translateImportError(message) {
   line-height: 1.45;
 }
 
+.next-action-panel {
+  grid-template-columns: minmax(0, 1fr) auto;
+  align-items: center;
+}
+
+.next-action-panel .caption {
+  margin: 8px 0 0;
+}
+
+.next-actions {
+  display: flex;
+  flex-wrap: wrap;
+  justify-content: flex-end;
+  gap: 10px;
+}
+
 @media (max-width: 1100px) {
   .workflow-timeline {
     grid-template-columns: repeat(3, minmax(0, 1fr));
@@ -429,6 +567,19 @@ function translateImportError(message) {
 }
 
 @media (max-width: 720px) {
+  .active-package-context,
+  .next-action-panel {
+    grid-template-columns: 1fr;
+  }
+
+  .next-actions {
+    justify-content: stretch;
+  }
+
+  .next-actions :deep(.el-button) {
+    width: 100%;
+  }
+
   .workflow-timeline {
     grid-template-columns: 1fr;
   }
