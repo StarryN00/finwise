@@ -20,6 +20,10 @@ class MonthlyPackageNotFoundError(MatchingDomainError):
     pass
 
 
+class MatchingValidationError(MatchingDomainError):
+    pass
+
+
 def amount_for_direction(transaction: BankTransaction, invoice: Invoice) -> Decimal:
     if invoice.invoice_direction == "OUTPUT":
         return transaction.credit_amount or Decimal("0")
@@ -117,11 +121,12 @@ def confirm_match(db: Session, *, match_id: UUID) -> dict:
     return response
 
 
-def confirm_accounting_line(db: Session, *, line_id: UUID) -> dict:
+def confirm_accounting_line(db: Session, *, line_id: UUID, save_as_rule: bool = False) -> dict:
     line = db.get(AccountingLine, line_id)
     if line is None:
         raise MatchingDomainError("Accounting line not found.")
 
+    rule = _create_rule_from_accounting_line(db, line) if save_as_rule else None
     before = {"confirmation_status": line.confirmation_status}
     line.confirmation_status = "CONFIRMED"
     _add_audit_log(
@@ -134,6 +139,8 @@ def confirm_accounting_line(db: Session, *, line_id: UUID) -> dict:
     )
     refresh_package_matching_summary(db, monthly_work_package_id=line.monthly_work_package_id, confirmed_when_zero=True)
     response = {"id": line.id, "confirmation_status": line.confirmation_status}
+    if rule is not None:
+        response["rule_id"] = rule.id
     db.commit()
     return response
 
@@ -354,6 +361,61 @@ def _direction_for_persisted_rule(rule: MatchingRule, transaction: BankTransacti
     if transaction.debit_amount and transaction.debit_amount != 0:
         return "EXPENSE"
     return "INCOME"
+
+
+def _create_rule_from_accounting_line(db: Session, line: AccountingLine) -> MatchingRule:
+    if line.source_type != "BANK_TRANSACTION":
+        raise MatchingValidationError("Only bank transaction accounting lines can be saved as rules.")
+
+    try:
+        transaction_id = UUID(line.source_id)
+    except ValueError as exc:
+        raise MatchingValidationError("Accounting line source is not a valid bank transaction.") from exc
+
+    transaction = db.get(BankTransaction, transaction_id)
+    if transaction is None or transaction.monthly_work_package_id != line.monthly_work_package_id:
+        raise MatchingValidationError("Accounting line source bank transaction was not found.")
+
+    package = _get_monthly_package(db, line.monthly_work_package_id)
+    keyword = _extract_summary_keyword(transaction.summary)
+    if not keyword:
+        raise MatchingValidationError("Bank transaction summary is required to save a rule.")
+
+    rule = MatchingRule(
+        channel_id=line.channel_id,
+        organization_id=package.organization_id,
+        enterprise_id=package.enterprise_id,
+        scope="ENTERPRISE",
+        summary_keywords=[keyword],
+        counterparty_pattern=transaction.counterparty_name,
+        suggested_business_type=line.business_type,
+        source="USER_CONFIRMED",
+    )
+    db.add(rule)
+    db.flush()
+    return rule
+
+
+def _extract_summary_keyword(summary: str | None) -> str:
+    normalized = (summary or "").strip()
+    if not normalized:
+        return ""
+    if len(normalized) <= 6:
+        return normalized
+
+    for prefix in ("支付", "缴纳", "收到", "收取", "代扣", "银行", "转账"):
+        if normalized.startswith(prefix) and len(normalized) > len(prefix):
+            normalized = normalized[len(prefix) :]
+            break
+
+    for suffix in ("订阅费", "服务费", "手续费", "费用", "款项", "款", "费"):
+        if normalized.endswith(suffix) and len(normalized) > len(suffix):
+            normalized = normalized[: -len(suffix)]
+            break
+
+    if len(normalized) <= 6:
+        return normalized
+    return normalized[:4]
 
 
 def _add_audit_log(

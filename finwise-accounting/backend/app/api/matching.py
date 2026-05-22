@@ -1,13 +1,16 @@
 from __future__ import annotations
 
+from typing import Optional
 from uuid import UUID
 
-from fastapi import APIRouter, Depends, HTTPException, status
+from fastapi import APIRouter, Body, Depends, HTTPException, status
 from sqlalchemy.orm import Session
 
 from app.api.deps import get_db
+from app.schemas.matching import AccountingLineConfirmRequest
 from app.services.matching_service import (
     MatchingDomainError,
+    MatchingValidationError,
     MonthlyPackageNotFoundError,
     confirm_accounting_line,
     confirm_match,
@@ -36,9 +39,19 @@ def confirm_match_endpoint(match_id: UUID, db: Session = Depends(get_db)):
 
 
 @router.post("/api/accounting-lines/{line_id}/confirm")
-def confirm_accounting_line_endpoint(line_id: UUID, db: Session = Depends(get_db)):
+def confirm_accounting_line_endpoint(
+    line_id: UUID,
+    payload: Optional[AccountingLineConfirmRequest] = Body(default=None),
+    db: Session = Depends(get_db),
+):
     try:
-        result = confirm_accounting_line(db, line_id=line_id)
+        result = confirm_accounting_line(
+            db,
+            line_id=line_id,
+            save_as_rule=payload.save_as_rule if payload is not None else False,
+        )
+    except MatchingValidationError as exc:
+        raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail=str(exc)) from exc
     except MatchingDomainError as exc:
         raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Accounting line not found.") from exc
     return result

@@ -43,6 +43,10 @@ class AccountingLineRead(BaseModel):
     created_at: datetime
 
 
+class AccountingLineConfirmRequest(BaseModel):
+    save_as_rule: bool = False
+
+
 class MatchingRuleRead(BaseModel):
     model_config = ConfigDict(from_attributes=True)
 

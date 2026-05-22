@@ -5,7 +5,7 @@ from uuid import UUID
 import pytest
 from fastapi.testclient import TestClient
 
-from app.models import AccountingLine, BankTransaction, Enterprise, Invoice, MatchRecord, MonthlyWorkPackage
+from app.models import AccountingLine, BankTransaction, Enterprise, Invoice, MatchRecord, MatchingRule, MonthlyWorkPackage
 from app.api.deps import get_db
 from app.main import create_app
 from app.services.matching_service import (
@@ -48,6 +48,7 @@ def add_transaction(
     summary="收到货款",
     debit_amount=Decimal("0"),
     credit_amount=Decimal("11300"),
+    counterparty_name=None,
 ):
     transaction = BankTransaction(
         organization_id=ORG,
@@ -56,6 +57,7 @@ def add_transaction(
         summary=summary,
         credit_amount=credit_amount,
         debit_amount=debit_amount,
+        counterparty_name=counterparty_name,
     )
     db_session.add(transaction)
     return transaction
@@ -263,6 +265,189 @@ def test_confirm_only_pending_accounting_line_updates_package_status(db_session)
     assert response.json()["confirmation_status"] == "CONFIRMED"
     assert package.pending_confirmation_count == 0
     assert package.matching_status == "CONFIRMED"
+
+
+def test_confirm_accounting_line_with_save_as_rule_creates_matching_rule(db_session):
+    package = make_package(db_session, code_suffix="10")
+    transaction = add_transaction(
+        db_session,
+        package,
+        transaction_date=date(2026, 5, 12),
+        summary="支付云服务订阅费",
+        credit_amount=Decimal("0"),
+        debit_amount=Decimal("880"),
+        counterparty_name="阿里云计算有限公司",
+    )
+    db_session.flush()
+    line = AccountingLine(
+        organization_id=ORG,
+        monthly_work_package_id=package.id,
+        source_type="BANK_TRANSACTION",
+        source_id=str(transaction.id),
+        business_type="CLOUD_SERVICE",
+        direction="EXPENSE",
+        amount=Decimal("880"),
+        tax_amount=Decimal("0"),
+        include_category="EXPENSE",
+        confirmation_status="PENDING",
+    )
+    db_session.add(line)
+    db_session.commit()
+
+    app = create_app(init_db_on_startup=False)
+
+    def override_get_db():
+        yield db_session
+
+    app.dependency_overrides[get_db] = override_get_db
+    client = TestClient(app)
+
+    response = client.post(f"/api/accounting-lines/{line.id}/confirm", json={"save_as_rule": True})
+
+    rule = db_session.query(MatchingRule).one()
+    assert response.status_code == 200
+    assert response.json()["rule_id"] == str(rule.id)
+    assert rule.enterprise_id == package.enterprise_id
+    assert rule.scope == "ENTERPRISE"
+    assert rule.source == "USER_CONFIRMED"
+    assert rule.summary_keywords == ["云服务"]
+    assert rule.counterparty_pattern == "阿里云计算有限公司"
+    assert rule.suggested_business_type == "CLOUD_SERVICE"
+
+
+def test_confirmed_rule_is_reused_for_later_similar_transaction(db_session):
+    package = make_package(db_session, code_suffix="11")
+    transaction = add_transaction(
+        db_session,
+        package,
+        transaction_date=date(2026, 5, 12),
+        summary="支付云服务订阅费",
+        credit_amount=Decimal("0"),
+        debit_amount=Decimal("880"),
+        counterparty_name="阿里云计算有限公司",
+    )
+    db_session.flush()
+    line = AccountingLine(
+        organization_id=ORG,
+        monthly_work_package_id=package.id,
+        source_type="BANK_TRANSACTION",
+        source_id=str(transaction.id),
+        business_type="CLOUD_SERVICE",
+        direction="EXPENSE",
+        amount=Decimal("880"),
+        tax_amount=Decimal("0"),
+        include_category="EXPENSE",
+        confirmation_status="PENDING",
+    )
+    db_session.add(line)
+    db_session.commit()
+
+    app = create_app(init_db_on_startup=False)
+
+    def override_get_db():
+        yield db_session
+
+    app.dependency_overrides[get_db] = override_get_db
+    client = TestClient(app)
+    client.post(f"/api/accounting-lines/{line.id}/confirm", json={"save_as_rule": True})
+
+    later_package = MonthlyWorkPackage(
+        organization_id=ORG,
+        enterprise_id=package.enterprise_id,
+        period_year=2026,
+        period_month=12,
+    )
+    db_session.add(later_package)
+    db_session.flush()
+    add_transaction(
+        db_session,
+        later_package,
+        transaction_date=date(2026, 12, 10),
+        summary="支付云服务年度订阅",
+        credit_amount=Decimal("0"),
+        debit_amount=Decimal("1280"),
+        counterparty_name="阿里云计算有限公司",
+    )
+    db_session.commit()
+
+    result = run_matching(db_session, monthly_work_package_id=later_package.id)
+
+    later_line = db_session.query(AccountingLine).filter(AccountingLine.monthly_work_package_id == later_package.id).one()
+    assert result["rule_lines"] == 1
+    assert later_line.business_type == "CLOUD_SERVICE"
+    assert later_line.include_category == "EXPENSE"
+
+
+def test_confirm_accounting_line_without_save_as_rule_does_not_create_rule(db_session):
+    package = make_package(db_session, code_suffix="12")
+    transaction = add_transaction(
+        db_session,
+        package,
+        transaction_date=date(2026, 5, 12),
+        summary="支付云服务订阅费",
+        credit_amount=Decimal("0"),
+        debit_amount=Decimal("880"),
+    )
+    db_session.flush()
+    line = AccountingLine(
+        organization_id=ORG,
+        monthly_work_package_id=package.id,
+        source_type="BANK_TRANSACTION",
+        source_id=str(transaction.id),
+        business_type="CLOUD_SERVICE",
+        direction="EXPENSE",
+        amount=Decimal("880"),
+        tax_amount=Decimal("0"),
+        include_category="EXPENSE",
+        confirmation_status="PENDING",
+    )
+    db_session.add(line)
+    db_session.commit()
+
+    app = create_app(init_db_on_startup=False)
+
+    def override_get_db():
+        yield db_session
+
+    app.dependency_overrides[get_db] = override_get_db
+    client = TestClient(app)
+
+    response = client.post(f"/api/accounting-lines/{line.id}/confirm", json={"save_as_rule": False})
+
+    assert response.status_code == 200
+    assert "rule_id" not in response.json()
+    assert db_session.query(MatchingRule).count() == 0
+
+
+def test_confirm_ineligible_accounting_line_with_save_as_rule_returns_400(db_session):
+    package = make_package(db_session, code_suffix="13")
+    line = AccountingLine(
+        organization_id=ORG,
+        monthly_work_package_id=package.id,
+        source_type="MANUAL",
+        source_id="manual-line",
+        business_type="MANUAL_ADJUSTMENT",
+        direction="EXPENSE",
+        amount=Decimal("100"),
+        tax_amount=Decimal("0"),
+        include_category="EXPENSE",
+        confirmation_status="PENDING",
+    )
+    db_session.add(line)
+    db_session.commit()
+
+    app = create_app(init_db_on_startup=False)
+
+    def override_get_db():
+        yield db_session
+
+    app.dependency_overrides[get_db] = override_get_db
+    client = TestClient(app, raise_server_exceptions=False)
+
+    response = client.post(f"/api/accounting-lines/{line.id}/confirm", json={"save_as_rule": True})
+
+    assert response.status_code == 400
+    assert db_session.query(MatchingRule).count() == 0
 
 
 def test_matching_is_idempotent_for_matches_and_rule_lines(db_session):
