@@ -1,5 +1,22 @@
 :root {
-  --fw-font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", "PingFang SC", "Microsoft YaHei", sans-serif;
-  --fw-ink: #172033;
   --fw-bg: #f6f8fb;
+  --fw-surface: #ffffff;
+  --fw-surface-muted: #f1f5f9;
+  --fw-ink: #172033;
+  --fw-ink-soft: #48566f;
+  --fw-ink-muted: #718096;
+  --fw-line: #d9e2ef;
+  --fw-line-strong: #bcc9d8;
+  --fw-brand: #1769e0;
+  --fw-brand-dark: #0f4ba8;
+  --fw-brand-soft: #e8f1ff;
+  --fw-success: #16855c;
+  --fw-success-soft: #e8f7ef;
+  --fw-warning: #b56a12;
+  --fw-warning-soft: #fff3df;
+  --fw-danger: #c24136;
+  --fw-danger-soft: #fff0ee;
+  --fw-radius: 8px;
+  --fw-radius-sm: 6px;
+  --fw-font: -apple-system, BlinkMacSystemFont, "Segoe UI", "PingFang SC", "Microsoft YaHei", sans-serif;
 }

@@ -1,16 +1,89 @@
+* {
+  box-sizing: border-box;
+}
+
+html {
+  min-width: 320px;
+  background: var(--fw-bg);
+}
+
 body {
   margin: 0;
-  font-family: var(--fw-font-family);
+  font-family: var(--fw-font);
+  font-size: 15px;
+  line-height: 1.5;
   color: var(--fw-ink);
   background: var(--fw-bg);
+}
+
+button,
+input,
+select,
+textarea {
+  font: inherit;
+}
+
+a {
+  color: inherit;
+  text-decoration: none;
 }
 
 #app {
   min-height: 100vh;
 }
 
-.app-root {
-  padding: 24px;
+.page-title {
+  margin: 0;
   font-size: 24px;
+  line-height: 1.25;
   font-weight: 800;
+  letter-spacing: 0;
+}
+
+.section-title {
+  margin: 0;
+  font-size: 18px;
+  line-height: 1.35;
+  font-weight: 800;
+  letter-spacing: 0;
+}
+
+.caption {
+  color: var(--fw-ink-muted);
+  font-size: 12px;
+  line-height: 1.45;
+}
+
+.amount {
+  font-variant-numeric: tabular-nums;
+  text-align: right;
+  white-space: nowrap;
+}
+
+.muted {
+  color: var(--fw-ink-muted);
+}
+
+.el-button {
+  border-radius: var(--fw-radius-sm);
+}
+
+.el-input__wrapper,
+.el-select__wrapper {
+  border-radius: var(--fw-radius-sm);
+}
+
+.el-table {
+  color: var(--fw-ink);
+  font-size: 14px;
+}
+
+.el-table th.el-table__cell {
+  background: var(--fw-surface-muted);
+  color: var(--fw-ink-soft);
+  font-weight: 700;
+}
+
+.el-table .cell {
+  line-height: 1.45;
 }
