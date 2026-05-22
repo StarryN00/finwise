@@ -1,7 +1,20 @@
 <script setup>
 import { Plus } from '@element-plus/icons-vue'
+import { computed } from 'vue'
+import { useRoute } from 'vue-router'
 
-const navItems = ['工作台', '企业名册', '月度工作包', '账目明细', '申报辅助', '输出中心', '规则设置']
+const route = useRoute()
+const navItems = [
+  { label: '工作台', path: '/' },
+  { label: '企业名册', path: '/enterprises' },
+  { label: '月度工作包', path: '/monthly-workspace' },
+  { label: '账目明细', path: '/account-details' },
+  { label: '申报辅助', path: '/output-center' },
+  { label: '输出中心', path: '/output-center' },
+  { label: '规则设置', path: '/rules' },
+]
+
+const isActive = computed(() => (item) => item.path === route.path)
 </script>
 
 <template>
@@ -15,10 +28,16 @@ const navItems = ['工作台', '企业名册', '月度工作包', '账目明细'
         </div>
       </div>
       <nav class="app-nav" aria-label="主导航">
-        <a v-for="item in navItems" :key="item" href="#" class="app-nav__item" :class="{ active: item === '工作台' }">
+        <router-link
+          v-for="item in navItems"
+          :key="item.label"
+          :to="item.path"
+          class="app-nav__item"
+          :class="{ active: isActive(item) }"
+        >
           <span class="app-nav__dot" />
-          <span>{{ item }}</span>
-        </a>
+          <span>{{ item.label }}</span>
+        </router-link>
       </nav>
     </aside>
 

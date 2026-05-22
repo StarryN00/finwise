@@ -6,6 +6,35 @@ const routes = [
     name: 'workspace',
     component: () => import('../views/WorkspaceHomeView.vue'),
   },
+  {
+    path: '/enterprises',
+    name: 'enterprises',
+    component: () => import('../views/EnterpriseListView.vue'),
+  },
+  {
+    path: '/enterprises/init',
+    name: 'enterprise-init',
+    component: () => import('../views/EnterpriseInitView.vue'),
+  },
+  {
+    path: '/monthly-workspace',
+    name: 'monthly-workspace',
+    component: () => import('../views/MonthlyWorkspaceView.vue'),
+  },
+  {
+    path: '/account-details',
+    name: 'account-details',
+    component: () => import('../views/AccountDetailsView.vue'),
+  },
+  {
+    path: '/output-center',
+    name: 'output-center',
+    component: () => import('../views/OutputCenterView.vue'),
+  },
+  {
+    path: '/rules',
+    redirect: '/account-details',
+  },
 ]
 
 export const router = createRouter({

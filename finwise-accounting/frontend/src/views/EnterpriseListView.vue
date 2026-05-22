@@ -1,0 +1,39 @@
+<template>
+  <DataTableShell title="企业名册" description="苏州客户的月度资料、确认和报告状态" action-label="新增企业">
+    <template #filters>
+      <el-input v-model="keyword" placeholder="搜索企业" clearable style="width: 220px" />
+    </template>
+    <el-table :data="filteredEnterprises" stripe>
+      <el-table-column prop="name" label="企业名称" min-width="220" />
+      <el-table-column prop="taxpayerType" label="纳税人类型" width="140" />
+      <el-table-column prop="latestMonth" label="最新月份" width="120" />
+      <el-table-column label="资料状态" width="130">
+        <template #default="{ row }">
+          <StatusTag :status="row.dataStatus" />
+        </template>
+      </el-table-column>
+      <el-table-column prop="pendingConfirmations" label="待确认" width="110" align="right" />
+      <el-table-column label="报告状态" width="130">
+        <template #default="{ row }">
+          <StatusTag :status="row.reportStatus" />
+        </template>
+      </el-table-column>
+    </el-table>
+  </DataTableShell>
+</template>
+
+<script setup>
+import { computed, ref } from 'vue'
+import DataTableShell from '../components/DataTableShell.vue'
+import StatusTag from '../components/StatusTag.vue'
+import { useWorkspaceStore } from '../stores/workspace'
+
+const workspace = useWorkspaceStore()
+const keyword = ref('')
+
+const filteredEnterprises = computed(() => {
+  const value = keyword.value.trim()
+  if (!value) return workspace.enterprises
+  return workspace.enterprises.filter((enterprise) => enterprise.name.includes(value))
+})
+</script>
