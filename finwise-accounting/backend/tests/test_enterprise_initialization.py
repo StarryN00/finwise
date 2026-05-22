@@ -222,6 +222,40 @@ def test_duplicate_enterprise_returns_409_through_api(db_session):
     assert response.status_code == 409
 
 
+def test_blank_enterprise_name_returns_400_through_api(db_session):
+    client = create_test_client()
+
+    response = client.post(
+        "/api/enterprises",
+        json={
+            "name": " ",
+            "unified_social_credit_code": "91320500REQ000001",
+            "taxpayer_type": "GENERAL",
+            "industry": "制造业",
+        },
+    )
+
+    assert response.status_code == 400
+    assert "Enterprise name is required" in response.json()["detail"]
+
+
+def test_blank_unified_social_credit_code_returns_400_through_api(db_session):
+    client = create_test_client()
+
+    response = client.post(
+        "/api/enterprises",
+        json={
+            "name": "苏州必填校验有限公司",
+            "unified_social_credit_code": " ",
+            "taxpayer_type": "GENERAL",
+            "industry": "制造业",
+        },
+    )
+
+    assert response.status_code == 400
+    assert "Unified social credit code is required" in response.json()["detail"]
+
+
 def test_missing_enterprise_snapshot_returns_404_through_api(db_session):
     client = create_test_client()
 

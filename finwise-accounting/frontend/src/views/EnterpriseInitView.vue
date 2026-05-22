@@ -1,68 +1,333 @@
 <template>
-  <div class="init-grid">
-    <section class="panel">
-      <h2 class="section-title">基础信息</h2>
-      <el-form label-width="110px" class="init-form">
-        <el-form-item label="企业名称"><el-input model-value="苏州样例科技有限公司" /></el-form-item>
-        <el-form-item label="纳税人类型"><el-select model-value="GENERAL"><el-option label="一般纳税人" value="GENERAL" /></el-select></el-form-item>
-        <el-form-item label="所属行业"><el-input model-value="制造业" /></el-form-item>
-      </el-form>
-    </section>
-    <section class="panel">
-      <h2 class="section-title">期初资产负债表</h2>
-      <el-upload drag action="#" :auto-upload="false">
-        <span>上传资产负债表 Excel</span>
-      </el-upload>
-    </section>
-    <section class="panel">
-      <h2 class="section-title">期初利润表</h2>
-      <el-upload drag action="#" :auto-upload="false">
-        <span>上传利润表 Excel</span>
-      </el-upload>
-    </section>
-    <section class="panel">
-      <h2 class="section-title">校验结果</h2>
-      <div class="validation-list">
-        <MetricCard label="资产负债平衡" value="通过" subtext="资产 = 负债 + 所有者权益" tone="success" />
-        <MetricCard label="利润表完整性" value="待校验" subtext="上传后自动检查关键科目" tone="warning" />
+  <section class="init-page">
+    <div class="init-header">
+      <div>
+        <p class="caption">企业初始化</p>
+        <h2 class="section-title">新增企业并建立期初财务基线</h2>
       </div>
-    </section>
-  </div>
+      <el-button type="primary" :loading="isSubmitting" @click="submitEnterprise">保存企业并建立期初数据</el-button>
+    </div>
+
+    <el-form ref="formRef" :model="form" :rules="rules" label-position="top" class="init-form">
+      <section class="panel">
+        <h3>基础信息</h3>
+        <div class="form-grid">
+          <el-form-item label="企业名称" prop="name">
+            <el-input v-model="form.name" placeholder="请输入企业全称" clearable />
+          </el-form-item>
+          <el-form-item label="营业执照编号 / 统一社会信用代码" prop="unifiedSocialCreditCode">
+            <el-input v-model="form.unifiedSocialCreditCode" placeholder="请输入营业执照编号" clearable />
+          </el-form-item>
+          <el-form-item label="纳税人类型" prop="taxpayerType">
+            <el-select v-model="form.taxpayerType" placeholder="请选择纳税人类型">
+              <el-option label="一般纳税人" value="GENERAL" />
+              <el-option label="小规模纳税人" value="SMALL_SCALE" />
+            </el-select>
+          </el-form-item>
+          <el-form-item label="所属行业" prop="industry">
+            <el-input v-model="form.industry" placeholder="例如：制造业、软件和信息技术服务业" clearable />
+          </el-form-item>
+        </div>
+      </section>
+
+      <section class="panel">
+        <h3>补充信息</h3>
+        <div class="form-grid compact">
+          <el-form-item label="省份">
+            <el-input v-model="form.province" clearable />
+          </el-form-item>
+          <el-form-item label="城市">
+            <el-input v-model="form.city" clearable />
+          </el-form-item>
+          <el-form-item label="联系人">
+            <el-input v-model="form.contactName" placeholder="可选，仅用于内部备注" clearable />
+          </el-form-item>
+          <el-form-item label="备注">
+            <el-input v-model="form.note" placeholder="可选" clearable />
+          </el-form-item>
+        </div>
+      </section>
+
+      <section class="panel">
+        <div class="panel-heading">
+          <div>
+            <h3>期初数据导入</h3>
+            <p class="caption">资产负债表和利润表属于同一初始化步骤，用于建立企业期初财务基线。</p>
+          </div>
+          <el-tag :type="balanceStatus.type" effect="light">{{ balanceStatus.text }}</el-tag>
+        </div>
+
+        <div class="upload-pair">
+          <el-upload drag action="#" :auto-upload="false" :limit="1" :on-change="rememberBalanceFile">
+            <strong>资产负债表 Excel</strong>
+            <span>{{ files.balanceSheet || '选择或拖入文件' }}</span>
+          </el-upload>
+          <el-upload drag action="#" :auto-upload="false" :limit="1" :on-change="rememberIncomeFile">
+            <strong>利润表 Excel</strong>
+            <span>{{ files.incomeStatement || '选择或拖入文件' }}</span>
+          </el-upload>
+        </div>
+
+        <div class="statement-grid">
+          <div>
+            <h4>资产负债表关键科目</h4>
+            <div class="form-grid compact">
+              <el-form-item label="资产总计" prop="assetsTotal">
+                <el-input v-model="form.assetsTotal" placeholder="0.00" />
+              </el-form-item>
+              <el-form-item label="负债合计" prop="liabilitiesTotal">
+                <el-input v-model="form.liabilitiesTotal" placeholder="0.00" />
+              </el-form-item>
+              <el-form-item label="所有者权益合计" prop="equityTotal">
+                <el-input v-model="form.equityTotal" placeholder="0.00" />
+              </el-form-item>
+              <el-form-item label="货币资金">
+                <el-input v-model="form.cash" placeholder="0.00" />
+              </el-form-item>
+            </div>
+          </div>
+
+          <div>
+            <h4>利润表关键科目</h4>
+            <div class="form-grid compact">
+              <el-form-item label="营业收入" prop="revenue">
+                <el-input v-model="form.revenue" placeholder="0.00" />
+              </el-form-item>
+              <el-form-item label="营业成本">
+                <el-input v-model="form.cost" placeholder="0.00" />
+              </el-form-item>
+              <el-form-item label="管理费用">
+                <el-input v-model="form.adminExpense" placeholder="0.00" />
+              </el-form-item>
+              <el-form-item label="净利润" prop="netProfit">
+                <el-input v-model="form.netProfit" placeholder="0.00" />
+              </el-form-item>
+            </div>
+          </div>
+        </div>
+      </section>
+    </el-form>
+  </section>
 </template>
 
 <script setup>
-import MetricCard from '../components/MetricCard.vue'
+import { computed, reactive, ref } from 'vue'
+import { useRouter } from 'vue-router'
+import { ElMessage } from 'element-plus'
+import { api } from '../api/client'
+import { useWorkspaceStore } from '../stores/workspace'
+
+const router = useRouter()
+const workspace = useWorkspaceStore()
+const formRef = ref(null)
+const isSubmitting = ref(false)
+const files = reactive({
+  balanceSheet: '',
+  incomeStatement: '',
+})
+
+const form = reactive({
+  name: '',
+  unifiedSocialCreditCode: '',
+  taxpayerType: 'GENERAL',
+  industry: '',
+  province: '江苏省',
+  city: '苏州市',
+  contactName: '',
+  note: '',
+  assetsTotal: '',
+  liabilitiesTotal: '',
+  equityTotal: '',
+  cash: '',
+  revenue: '',
+  cost: '',
+  adminExpense: '',
+  netProfit: '',
+})
+
+const requiredText = (message) => (_rule, value, callback) => {
+  if (!String(value || '').trim()) {
+    callback(new Error(message))
+    return
+  }
+  callback()
+}
+
+const rules = {
+  name: [{ validator: requiredText('请输入企业名称'), trigger: 'blur' }],
+  unifiedSocialCreditCode: [{ validator: requiredText('请输入营业执照编号'), trigger: 'blur' }],
+  taxpayerType: [{ required: true, message: '请选择纳税人类型', trigger: 'change' }],
+  industry: [{ validator: requiredText('请输入所属行业'), trigger: 'blur' }],
+  assetsTotal: [{ validator: requiredText('请输入资产总计'), trigger: 'blur' }],
+  liabilitiesTotal: [{ validator: requiredText('请输入负债合计'), trigger: 'blur' }],
+  equityTotal: [{ validator: requiredText('请输入所有者权益合计'), trigger: 'blur' }],
+  revenue: [{ validator: requiredText('请输入营业收入'), trigger: 'blur' }],
+  netProfit: [{ validator: requiredText('请输入净利润'), trigger: 'blur' }],
+}
+
+const balanceStatus = computed(() => {
+  const assets = toNumber(form.assetsTotal)
+  const liabilities = toNumber(form.liabilitiesTotal)
+  const equity = toNumber(form.equityTotal)
+  if ([form.assetsTotal, form.liabilitiesTotal, form.equityTotal].some((value) => !String(value).trim())) {
+    return { text: '待录入', type: 'warning' }
+  }
+  return Math.abs(assets - liabilities - equity) < 0.01
+    ? { text: '资产负债平衡', type: 'success' }
+    : { text: '需复核平衡关系', type: 'danger' }
+})
+
+function rememberBalanceFile(file) {
+  files.balanceSheet = file.name
+}
+
+function rememberIncomeFile(file) {
+  files.incomeStatement = file.name
+}
+
+async function submitEnterprise() {
+  try {
+    await formRef.value?.validate()
+  } catch {
+    ElMessage.warning('请先补齐必填信息')
+    return
+  }
+  isSubmitting.value = true
+  try {
+    const enterpriseResponse = await api.enterprises.create({
+      name: form.name.trim(),
+      unified_social_credit_code: form.unifiedSocialCreditCode.trim(),
+      taxpayer_type: form.taxpayerType,
+      industry: form.industry.trim(),
+      province: form.province.trim() || '江苏省',
+      city: form.city.trim() || '苏州市',
+    })
+    await api.enterprises.initialize(enterpriseResponse.data.id, {
+      balance_sheet_data: {
+        资产总计: form.assetsTotal,
+        负债合计: form.liabilitiesTotal,
+        所有者权益合计: form.equityTotal,
+        货币资金: form.cash,
+      },
+      income_statement_data: {
+        营业收入: form.revenue,
+        营业成本: form.cost,
+        管理费用: form.adminExpense,
+        净利润: form.netProfit,
+      },
+    })
+    await workspace.loadWorkspace()
+    ElMessage.success('企业和期初数据已保存')
+    router.push('/enterprises')
+  } catch (error) {
+    ElMessage.error(error?.response?.data?.detail || error?.message || '保存失败')
+  } finally {
+    isSubmitting.value = false
+  }
+}
+
+function toNumber(value) {
+  const parsed = Number(String(value || '').replace(/,/g, ''))
+  return Number.isFinite(parsed) ? parsed : 0
+}
 </script>
 
 <style scoped>
-.init-grid {
+.init-page {
   display: grid;
-  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: 16px;
+}
+
+.init-header,
+.panel-heading {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 16px;
+}
+
+.init-header .caption,
+.panel-heading .caption {
+  margin: 0 0 4px;
+}
+
+.init-form {
+  display: grid;
   gap: 16px;
 }
 
 .panel {
-  padding: 16px;
+  padding: 18px;
   border: 1px solid var(--fw-line);
   border-radius: var(--fw-radius);
   background: var(--fw-surface);
 }
 
-.init-form {
-  margin-top: 16px;
+.panel h3,
+.panel h4 {
+  margin: 0;
 }
 
-.validation-list {
+.form-grid {
   display: grid;
   grid-template-columns: repeat(2, minmax(0, 1fr));
-  gap: 12px;
+  gap: 12px 16px;
   margin-top: 16px;
 }
 
-@media (max-width: 960px) {
-  .init-grid,
-  .validation-list {
+.form-grid.compact {
+  grid-template-columns: repeat(4, minmax(0, 1fr));
+}
+
+.upload-pair {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: 14px;
+  margin-top: 16px;
+}
+
+.upload-pair strong,
+.upload-pair span {
+  display: block;
+}
+
+.upload-pair span {
+  margin-top: 6px;
+  color: var(--fw-text-muted);
+  font-size: 13px;
+}
+
+.statement-grid {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: 18px;
+  margin-top: 18px;
+  padding-top: 16px;
+  border-top: 1px solid var(--fw-line);
+}
+
+@media (max-width: 1100px) {
+  .form-grid.compact {
+    grid-template-columns: repeat(2, minmax(0, 1fr));
+  }
+
+  .statement-grid {
     grid-template-columns: 1fr;
+  }
+}
+
+@media (max-width: 720px) {
+  .init-header,
+  .panel-heading,
+  .upload-pair,
+  .form-grid,
+  .form-grid.compact {
+    grid-template-columns: 1fr;
+  }
+
+  .init-header,
+  .panel-heading {
+    display: grid;
   }
 }
 </style>

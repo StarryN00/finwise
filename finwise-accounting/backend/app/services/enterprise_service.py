@@ -39,6 +39,13 @@ def create_enterprise(
     city: str = "苏州市",
 ) -> Enterprise:
     organization_id = _ensure_current_organization(db)
+    name = _required_text(name, "Enterprise name is required.")
+    unified_social_credit_code = _required_text(
+        unified_social_credit_code,
+        "Unified social credit code is required.",
+    )
+    taxpayer_type = _required_text(taxpayer_type, "Taxpayer type is required.")
+    industry = _required_text(industry, "Industry is required.")
     existing = db.scalar(
         select(Enterprise).where(
             Enterprise.organization_id == organization_id,
@@ -66,6 +73,13 @@ def create_enterprise(
         raise ConflictError("Enterprise unified social credit code already exists in this organization.") from exc
     db.refresh(enterprise)
     return enterprise
+
+
+def _required_text(value: str, message: str) -> str:
+    normalized = (value or "").strip()
+    if not normalized:
+        raise ValidationError(message)
+    return normalized
 
 
 def save_initial_snapshot(
