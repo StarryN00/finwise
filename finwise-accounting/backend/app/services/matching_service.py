@@ -8,7 +8,7 @@ from sqlalchemy import select
 from sqlalchemy.orm import Session
 
 from app.core.org_context import get_current_organization_id
-from app.models import AccountingLine, BankTransaction, Invoice, MatchRecord, MonthlyWorkPackage
+from app.models import AccountingLine, AuditLog, BankTransaction, Invoice, MatchRecord, MatchingRule, MonthlyWorkPackage
 from app.rules.built_in import BUILT_IN_RULES
 
 
@@ -36,6 +36,106 @@ def apply_built_in_rule(transaction: BankTransaction) -> dict | None:
         if any(keyword in summary for keyword in rule["keywords"]):
             return rule
     return None
+
+
+def create_enterprise_matching_rule(
+    db: Session,
+    *,
+    enterprise_id: UUID,
+    summary_keywords: list[str],
+    suggested_business_type: str,
+    counterparty_pattern: str | None = None,
+    min_amount: Decimal | None = None,
+    max_amount: Decimal | None = None,
+    invoice_direction: str | None = None,
+) -> MatchingRule:
+    organization_id = get_current_organization_id()
+    invoice_direction = invoice_direction.upper() if invoice_direction else None
+    rule = MatchingRule(
+        organization_id=organization_id,
+        enterprise_id=enterprise_id,
+        scope="ENTERPRISE",
+        summary_keywords=summary_keywords,
+        counterparty_pattern=counterparty_pattern,
+        min_amount=min_amount,
+        max_amount=max_amount,
+        invoice_direction=invoice_direction,
+        suggested_business_type=suggested_business_type,
+        source="USER_MEMORY",
+    )
+    db.add(rule)
+    db.commit()
+    db.refresh(rule)
+    return rule
+
+
+def apply_persisted_rule(db: Session, transaction: BankTransaction, package: MonthlyWorkPackage) -> dict | None:
+    rule = find_matching_rule(db, transaction, package)
+    if rule is None:
+        return None
+    direction = _direction_for_persisted_rule(rule, transaction)
+    return {
+        "business_type": rule.suggested_business_type,
+        "line_label": rule.suggested_business_type,
+        "direction": direction,
+    }
+
+
+def find_matching_rule(db: Session, transaction: BankTransaction, package: MonthlyWorkPackage) -> MatchingRule | None:
+    rules = db.scalars(
+        select(MatchingRule)
+        .where(
+            MatchingRule.organization_id == package.organization_id,
+            MatchingRule.enterprise_id == package.enterprise_id,
+        )
+        .order_by(MatchingRule.created_at, MatchingRule.id)
+    )
+    for rule in rules:
+        if _persisted_rule_matches(rule, transaction):
+            return rule
+    return None
+
+
+def confirm_match(db: Session, *, match_id: UUID) -> dict:
+    match = db.get(MatchRecord, match_id)
+    if match is None:
+        raise MatchingDomainError("Match record not found.")
+
+    before = {"confirmation_status": match.confirmation_status}
+    match.confirmation_status = "CONFIRMED"
+    _add_audit_log(
+        db,
+        organization_id=match.organization_id,
+        monthly_work_package_id=match.monthly_work_package_id,
+        action="CONFIRM_MATCH",
+        before_data=before,
+        after_data={"confirmation_status": match.confirmation_status},
+    )
+    refresh_package_matching_summary(db, monthly_work_package_id=match.monthly_work_package_id, confirmed_when_zero=True)
+    response = {"id": match.id, "confirmation_status": match.confirmation_status}
+    db.commit()
+    return response
+
+
+def confirm_accounting_line(db: Session, *, line_id: UUID) -> dict:
+    line = db.get(AccountingLine, line_id)
+    if line is None:
+        raise MatchingDomainError("Accounting line not found.")
+
+    before = {"confirmation_status": line.confirmation_status}
+    line.confirmation_status = "CONFIRMED"
+    _add_audit_log(
+        db,
+        organization_id=line.organization_id,
+        monthly_work_package_id=line.monthly_work_package_id,
+        action="CONFIRM_ACCOUNTING_LINE",
+        before_data=before,
+        after_data={"confirmation_status": line.confirmation_status},
+    )
+    refresh_package_matching_summary(db, monthly_work_package_id=line.monthly_work_package_id, confirmed_when_zero=True)
+    response = {"id": line.id, "confirmation_status": line.confirmation_status}
+    db.commit()
+    return response
 
 
 def run_matching(db: Session, *, monthly_work_package_id: UUID) -> dict:
@@ -82,13 +182,17 @@ def run_matching(db: Session, *, monthly_work_package_id: UUID) -> dict:
         existing_pairs.add((transaction.id, invoice.id))
         exact_matches += 1
 
-    existing_line_keys = _existing_accounting_line_keys(db, monthly_work_package_id)
+    existing_line_keys, line_transaction_ids = _existing_accounting_line_state(db, monthly_work_package_id)
+    used_transaction_ids.update(line_transaction_ids)
     rule_lines = 0
     for transaction in transactions:
         if transaction.id in used_transaction_ids:
             continue
 
+        # Built-in rules run first so policy-maintained classifications take precedence over operator memory.
         rule = apply_built_in_rule(transaction)
+        if rule is None:
+            rule = apply_persisted_rule(db, transaction, package)
         if rule is None:
             continue
 
@@ -111,18 +215,13 @@ def run_matching(db: Session, *, monthly_work_package_id: UUID) -> dict:
             )
         )
         existing_line_keys.add(line_key)
+        used_transaction_ids.add(transaction.id)
         rule_lines += 1
 
-    pending_confirmations = _pending_confirmation_count(
+    pending_confirmations = refresh_package_matching_summary(
         db,
         monthly_work_package_id=monthly_work_package_id,
-        transactions=transactions,
-        invoices=invoices,
-        used_transaction_ids=used_transaction_ids,
-        used_invoice_ids=used_invoice_ids,
     )
-    package.pending_confirmation_count = pending_confirmations
-    package.matching_status = "COMPLETED" if pending_confirmations == 0 else "PENDING_CONFIRMATION"
     db.commit()
 
     return {
@@ -173,9 +272,18 @@ def _find_exact_invoice(
     return min(candidates, key=lambda invoice: (days_between(transaction.transaction_date, invoice.invoice_date), invoice.id))
 
 
-def _existing_accounting_line_keys(db: Session, monthly_work_package_id: UUID) -> set[tuple[str, str, str]]:
+def _existing_accounting_line_state(db: Session, monthly_work_package_id: UUID) -> tuple[set[tuple[str, str, str]], set[UUID]]:
     lines = db.scalars(select(AccountingLine).where(AccountingLine.monthly_work_package_id == monthly_work_package_id))
-    return {(line.source_type, line.source_id, line.business_type) for line in lines}
+    keys: set[tuple[str, str, str]] = set()
+    transaction_ids: set[UUID] = set()
+    for line in lines:
+        keys.add((line.source_type, line.source_id, line.business_type))
+        if line.source_type == "BANK_TRANSACTION":
+            try:
+                transaction_ids.add(UUID(line.source_id))
+            except ValueError:
+                continue
+    return keys, transaction_ids
 
 
 def _transaction_amount(transaction: BankTransaction) -> Decimal:
@@ -184,16 +292,20 @@ def _transaction_amount(transaction: BankTransaction) -> Decimal:
     return transaction.credit_amount or Decimal("0")
 
 
-def _pending_confirmation_count(
+def refresh_package_matching_summary(
     db: Session,
     *,
     monthly_work_package_id: UUID,
-    transactions: list[BankTransaction],
-    invoices: list[Invoice],
-    used_transaction_ids: set[UUID],
-    used_invoice_ids: set[UUID],
+    confirmed_when_zero: bool = False,
 ) -> int:
+    package = _get_monthly_package(db, monthly_work_package_id)
     db.flush()
+    transactions = list(db.scalars(select(BankTransaction).where(BankTransaction.monthly_work_package_id == package.id)))
+    invoices = list(db.scalars(select(Invoice).where(Invoice.monthly_work_package_id == package.id)))
+    used_transaction_ids, used_invoice_ids, _existing_pairs = _existing_match_state(db, package.id)
+    _line_keys, line_transaction_ids = _existing_accounting_line_state(db, package.id)
+    used_transaction_ids.update(line_transaction_ids)
+
     pending_line_count = db.query(AccountingLine).filter(
         AccountingLine.monthly_work_package_id == monthly_work_package_id,
         AccountingLine.confirmation_status == "PENDING",
@@ -201,4 +313,65 @@ def _pending_confirmation_count(
 
     unmatched_transaction_count = sum(1 for transaction in transactions if transaction.id not in used_transaction_ids)
     unmatched_invoice_count = sum(1 for invoice in invoices if invoice.id not in used_invoice_ids)
-    return pending_line_count + unmatched_transaction_count + unmatched_invoice_count
+    pending_confirmation_count = pending_line_count + unmatched_transaction_count + unmatched_invoice_count
+    package.pending_confirmation_count = pending_confirmation_count
+    if pending_confirmation_count == 0:
+        package.matching_status = "CONFIRMED" if confirmed_when_zero else "COMPLETED"
+    else:
+        package.matching_status = "PENDING_CONFIRMATION"
+    return pending_confirmation_count
+
+
+def _persisted_rule_matches(rule: MatchingRule, transaction: BankTransaction) -> bool:
+    summary = transaction.summary or ""
+    keywords = rule.summary_keywords or []
+    if keywords and not any(keyword in summary for keyword in keywords):
+        return False
+
+    if rule.counterparty_pattern:
+        counterparty = transaction.counterparty_name or ""
+        if rule.counterparty_pattern not in counterparty:
+            return False
+
+    amount = _transaction_amount(transaction)
+    if rule.min_amount is not None and amount < rule.min_amount:
+        return False
+    if rule.max_amount is not None and amount > rule.max_amount:
+        return False
+
+    if rule.invoice_direction == "OUTPUT" and not (transaction.credit_amount and transaction.credit_amount != 0):
+        return False
+    if rule.invoice_direction == "INPUT" and not (transaction.debit_amount and transaction.debit_amount != 0):
+        return False
+    return True
+
+
+def _direction_for_persisted_rule(rule: MatchingRule, transaction: BankTransaction) -> str:
+    if rule.invoice_direction == "OUTPUT":
+        return "INCOME"
+    if rule.invoice_direction == "INPUT":
+        return "EXPENSE"
+    if transaction.debit_amount and transaction.debit_amount != 0:
+        return "EXPENSE"
+    return "INCOME"
+
+
+def _add_audit_log(
+    db: Session,
+    *,
+    organization_id: UUID,
+    monthly_work_package_id: UUID,
+    action: str,
+    before_data: dict,
+    after_data: dict,
+) -> None:
+    db.add(
+        AuditLog(
+            organization_id=organization_id,
+            monthly_work_package_id=monthly_work_package_id,
+            actor="system",
+            action=action,
+            before_data=before_data,
+            after_data=after_data,
+        )
+    )

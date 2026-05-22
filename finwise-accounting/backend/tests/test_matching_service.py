@@ -3,9 +3,16 @@ from decimal import Decimal
 from uuid import UUID
 
 import pytest
+from fastapi.testclient import TestClient
 
 from app.models import AccountingLine, BankTransaction, Enterprise, Invoice, MatchRecord, MonthlyWorkPackage
-from app.services.matching_service import MonthlyPackageNotFoundError, run_matching
+from app.api.deps import get_db
+from app.main import create_app
+from app.services.matching_service import (
+    MonthlyPackageNotFoundError,
+    create_enterprise_matching_rule,
+    run_matching,
+)
 
 
 ORG = UUID("00000000-0000-0000-0000-000000000001")
@@ -168,10 +175,94 @@ def test_tax_payment_becomes_accounting_line(db_session):
 
     line = db_session.query(AccountingLine).one()
     assert result["rule_lines"] == 1
+    assert result["pending_confirmations"] == 1
     assert line.business_type == "TAX_PAYMENT"
     assert line.direction == "TAX"
     assert line.include_category == "TAX"
     assert line.amount == Decimal("2300.00")
+
+
+def test_persisted_enterprise_rule_creates_accounting_line(db_session):
+    package = make_package(db_session, code_suffix="07")
+    create_enterprise_matching_rule(
+        db_session,
+        enterprise_id=package.enterprise_id,
+        summary_keywords=["云服务"],
+        suggested_business_type="CLOUD_SERVICE",
+    )
+    add_transaction(
+        db_session,
+        package,
+        transaction_date=date(2026, 5, 13),
+        summary="支付云服务订阅费",
+        credit_amount=Decimal("0"),
+        debit_amount=Decimal("880"),
+    )
+    db_session.commit()
+
+    result = run_matching(db_session, monthly_work_package_id=package.id)
+
+    line = db_session.query(AccountingLine).one()
+    assert result["rule_lines"] == 1
+    assert result["pending_confirmations"] == 1
+    assert line.business_type == "CLOUD_SERVICE"
+    assert line.direction == "EXPENSE"
+    assert line.include_category == "EXPENSE"
+
+
+def test_built_in_rules_run_before_persisted_rules(db_session):
+    package = make_package(db_session, code_suffix="08")
+    create_enterprise_matching_rule(
+        db_session,
+        enterprise_id=package.enterprise_id,
+        summary_keywords=["增值税"],
+        suggested_business_type="CUSTOM_TAX_MEMORY",
+    )
+    add_transaction(
+        db_session,
+        package,
+        transaction_date=date(2026, 5, 13),
+        summary="缴纳增值税",
+        credit_amount=Decimal("0"),
+        debit_amount=Decimal("2300"),
+    )
+    db_session.commit()
+
+    run_matching(db_session, monthly_work_package_id=package.id)
+
+    line = db_session.query(AccountingLine).one()
+    assert line.business_type == "TAX_PAYMENT"
+
+
+def test_confirm_only_pending_accounting_line_updates_package_status(db_session):
+    package = make_package(db_session, code_suffix="09")
+    add_transaction(
+        db_session,
+        package,
+        transaction_date=date(2026, 5, 12),
+        summary="银行手续费",
+        credit_amount=Decimal("0"),
+        debit_amount=Decimal("25"),
+    )
+    db_session.commit()
+    run_matching(db_session, monthly_work_package_id=package.id)
+    line = db_session.query(AccountingLine).one()
+
+    app = create_app(init_db_on_startup=False)
+
+    def override_get_db():
+        yield db_session
+
+    app.dependency_overrides[get_db] = override_get_db
+    client = TestClient(app)
+
+    response = client.post(f"/api/accounting-lines/{line.id}/confirm")
+
+    db_session.refresh(package)
+    assert response.status_code == 200
+    assert response.json()["confirmation_status"] == "CONFIRMED"
+    assert package.pending_confirmation_count == 0
+    assert package.matching_status == "CONFIRMED"
 
 
 def test_matching_is_idempotent_for_matches_and_rule_lines(db_session):
