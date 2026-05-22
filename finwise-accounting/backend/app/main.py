@@ -8,6 +8,7 @@ from app import models  # noqa: F401
 from app.api.enterprises import router as enterprises_router
 from app.api.imports import router as imports_router
 from app.api.matching import router as matching_router
+from app.api.reports import router as reports_router
 from app.api.statements import router as statements_router
 from app.api.tax import router as tax_router
 from app.core.database import Base, SessionLocal, engine
@@ -58,6 +59,7 @@ def create_app(*, init_db_on_startup: bool = True) -> FastAPI:
     app.include_router(enterprises_router)
     app.include_router(imports_router)
     app.include_router(matching_router)
+    app.include_router(reports_router)
     app.include_router(statements_router)
     app.include_router(tax_router)
 
