@@ -15,15 +15,13 @@
         <el-button type="primary" @click="runMatching">运行匹配</el-button>
       </div>
     </div>
-    <el-table v-loading="workspace.isLoading" :data="rows" stripe>
-      <el-table-column prop="sourceCompleteness" label="统一视图" width="120" />
-      <el-table-column prop="date" label="日期" width="120" />
-      <el-table-column prop="summary" label="摘要" min-width="180" show-overflow-tooltip />
-      <el-table-column prop="remark" label="备注" min-width="180" show-overflow-tooltip />
-      <el-table-column prop="payer" label="付款方" min-width="160" show-overflow-tooltip />
-      <el-table-column prop="payee" label="收款方" min-width="160" show-overflow-tooltip />
-      <el-table-column prop="seller" label="销售方" min-width="160" show-overflow-tooltip />
-      <el-table-column prop="buyer" label="购买方" min-width="160" show-overflow-tooltip />
+    <el-table v-loading="workspace.isLoading" :data="rows" class="compact-account-table" stripe>
+      <el-table-column prop="sourceCompleteness" label="完整性" width="116" />
+      <el-table-column prop="date" label="日期" width="112" />
+      <el-table-column prop="directionType" label="类型" width="88" />
+      <el-table-column prop="transactionCounterparty" label="交易对方" min-width="150" show-overflow-tooltip />
+      <el-table-column prop="invoiceCounterparty" label="发票对方" min-width="150" show-overflow-tooltip />
+      <el-table-column prop="remark" label="摘要/备注" min-width="180" show-overflow-tooltip />
       <el-table-column label="状态" width="130">
         <template #default="{ row }"><StatusTag :status="row.status" /></template>
       </el-table-column>
@@ -196,6 +194,10 @@ function defaultBusinessType(row) {
   display: flex;
   align-items: center;
   gap: 8px;
+}
+
+.compact-account-table {
+  width: 100%;
 }
 
 @media (max-width: 900px) {

@@ -153,6 +153,9 @@ def test_workspace_rows_merge_bank_and_invoice_sources():
     rows = response.json()["accountRows"]
     merged_row = next(row for row in rows if row["invoiceNumber"] == "OUT-MATCHED")
     assert merged_row["type"] == "流水+发票"
+    assert merged_row["directionType"] == "匹配"
+    assert merged_row["transactionCounterparty"] == "苏州客户有限公司"
+    assert merged_row["invoiceCounterparty"] == "苏州客户有限公司"
     assert merged_row["sourceCompleteness"] == "流水+发票"
     assert merged_row["payer"] == "苏州客户有限公司"
     assert merged_row["payee"] == enterprise.name
@@ -164,6 +167,9 @@ def test_workspace_rows_merge_bank_and_invoice_sources():
 
     bank_only_row = next(row for row in rows if row["sourceId"] == str(unmatched_transaction.id))
     assert bank_only_row["sourceCompleteness"] == "缺失发票主体"
+    assert bank_only_row["directionType"] == "转出"
+    assert bank_only_row["transactionCounterparty"] == "苏州供应商有限公司"
+    assert bank_only_row["invoiceCounterparty"] == "-"
     assert bank_only_row["payer"] == enterprise.name
     assert bank_only_row["payee"] == "苏州供应商有限公司"
     assert bank_only_row["seller"] == "-"
@@ -171,6 +177,9 @@ def test_workspace_rows_merge_bank_and_invoice_sources():
 
     invoice_only_row = next(row for row in rows if row["sourceId"] == str(unmatched_invoice.id))
     assert invoice_only_row["sourceCompleteness"] == "缺失转账主体"
+    assert invoice_only_row["directionType"] == "成本"
+    assert invoice_only_row["transactionCounterparty"] == "-"
+    assert invoice_only_row["invoiceCounterparty"] == "苏州票方有限公司"
     assert invoice_only_row["payer"] == "-"
     assert invoice_only_row["payee"] == "-"
     assert invoice_only_row["seller"] == "苏州票方有限公司"

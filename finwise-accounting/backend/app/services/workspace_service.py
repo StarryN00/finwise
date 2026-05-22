@@ -146,6 +146,9 @@ def _account_rows(db: Session, package: MonthlyWorkPackage) -> list[dict]:
                 "businessType": business_type,
                 "amount": _format_amount((transaction.credit_amount or Decimal("0")) or (transaction.debit_amount or Decimal("0"))),
                 "tax": "-",
+                "directionType": _bank_direction_type(transaction),
+                "transactionCounterparty": transaction.counterparty_name or "-",
+                "invoiceCounterparty": "-",
                 "payer": _bank_payer(transaction, enterprise_name),
                 "payee": _bank_payee(transaction, enterprise_name),
                 "seller": "-",
@@ -176,6 +179,9 @@ def _account_rows(db: Session, package: MonthlyWorkPackage) -> list[dict]:
                 "businessType": "销项发票" if invoice.invoice_direction == "OUTPUT" else "进项发票",
                 "amount": _format_amount(invoice.total_amount),
                 "tax": _format_amount(invoice.tax_amount),
+                "directionType": _invoice_direction_type(invoice),
+                "transactionCounterparty": "-",
+                "invoiceCounterparty": _invoice_counterparty(invoice, enterprise_name),
                 "payer": "-",
                 "payee": "-",
                 "seller": invoice.seller_name or "-",
@@ -205,6 +211,9 @@ def _account_rows(db: Session, package: MonthlyWorkPackage) -> list[dict]:
                 "businessType": line.business_type,
                 "amount": _format_amount(line.amount),
                 "tax": _format_amount(line.tax_amount),
+                "directionType": "人工",
+                "transactionCounterparty": "-",
+                "invoiceCounterparty": "-",
                 "payer": "-",
                 "payee": "-",
                 "seller": "-",
@@ -239,6 +248,9 @@ def _merged_source_row(
         "businessType": record.match_method,
         "amount": _format_amount((transaction.credit_amount or Decimal("0")) or (transaction.debit_amount or Decimal("0"))),
         "tax": _format_amount(invoice.tax_amount),
+        "directionType": "匹配",
+        "transactionCounterparty": transaction.counterparty_name or "-",
+        "invoiceCounterparty": _invoice_counterparty(invoice, enterprise_name),
         "payer": _bank_payer(transaction, enterprise_name),
         "payee": _bank_payee(transaction, enterprise_name),
         "seller": invoice.seller_name or "-",
@@ -267,6 +279,9 @@ def _invoice_only_row(record: MatchRecord, invoice: Invoice, *, enterprise_name:
         "businessType": record.match_method,
         "amount": _format_amount(invoice.total_amount),
         "tax": _format_amount(invoice.tax_amount),
+        "directionType": _invoice_direction_type(invoice),
+        "transactionCounterparty": "-",
+        "invoiceCounterparty": _invoice_counterparty(invoice, enterprise_name),
         "payer": "-",
         "payee": "-",
         "seller": invoice.seller_name or "-",
@@ -336,6 +351,26 @@ def _bank_payer(transaction: BankTransaction, enterprise_name: str) -> str:
     if transaction.credit_amount and transaction.credit_amount != 0:
         return transaction.counterparty_name or "-"
     return "-"
+
+
+def _bank_direction_type(transaction: BankTransaction) -> str:
+    if transaction.debit_amount and transaction.debit_amount != 0:
+        return "转出"
+    if transaction.credit_amount and transaction.credit_amount != 0:
+        return "转入"
+    return "流水"
+
+
+def _invoice_direction_type(invoice: Invoice) -> str:
+    return "销售" if invoice.invoice_direction == "OUTPUT" else "成本"
+
+
+def _invoice_counterparty(invoice: Invoice, enterprise_name: str) -> str:
+    if invoice.invoice_direction == "OUTPUT":
+        return invoice.buyer_name or "-"
+    if invoice.seller_name and invoice.seller_name != enterprise_name:
+        return invoice.seller_name
+    return invoice.buyer_name or "-"
 
 
 def _bank_payee(transaction: BankTransaction, enterprise_name: str) -> str:

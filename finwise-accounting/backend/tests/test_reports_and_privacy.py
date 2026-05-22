@@ -9,7 +9,7 @@ from app.main import create_app
 from app.models import Enterprise, MonthlyStatement, MonthlyWorkPackage, TaxFilingDraft
 from app.reports.health_diagnosis import build_health_diagnosis
 from app.reports.monthly_brief import render_monthly_brief_html
-from app.services.report_service import desensitize_ai_payload, generate_health_report
+from app.services.report_service import build_health_report_ai_payload, desensitize_ai_payload, generate_health_report
 
 
 ORG = UUID("00000000-0000-0000-0000-000000000001")
@@ -123,6 +123,83 @@ def test_generate_health_report_persists_html_snapshot(db_session, tmp_path):
     assert enterprise.name in html
     assert "执行摘要与关键结论" in html
     assert "税务风险" in html
+
+
+def test_generate_health_report_uses_ai_client_with_desensitized_payload(db_session, tmp_path):
+    enterprise, package = make_package(db_session)
+    db_session.add(
+        MonthlyStatement(
+            organization_id=ORG,
+            monthly_work_package_id=package.id,
+            estimated_balance_sheet={
+                "total_assets": "48000000.00",
+                "total_liabilities": "26000000.00",
+                "cash_net_movement": "200000.00",
+            },
+            estimated_income_statement={
+                "revenue": "1200000.00",
+                "cost": "760000.00",
+                "expense": "120000.00",
+                "operating_profit": "320000.00",
+            },
+        )
+    )
+    db_session.add(
+        TaxFilingDraft(
+            organization_id=ORG,
+            monthly_work_package_id=package.id,
+            data={"vat_payable": "7800.00", "surcharge_estimate": "936.00"},
+            status="DRAFT",
+        )
+    )
+    db_session.commit()
+    seen_payloads = []
+
+    class FakeHealthAiClient:
+        def generate_report(self, payload):
+            seen_payloads.append(payload)
+            return {
+                "sections": [
+                    {"title": "一、执行摘要与关键结论", "content": ["AI 判断现金流质量稳定，短期税负可控。"]},
+                    {"title": "二、风险等级总览矩阵", "content": ["偿债能力：低风险；盈利能力：中风险；税务风险：低风险。"]},
+                    {"title": "三、经营建议", "content": ["继续跟踪回款周期，建立月度发票与流水匹配复核。"]},
+                ]
+            }
+
+    report = generate_health_report(
+        db_session,
+        monthly_work_package_id=package.id,
+        output_dir=tmp_path,
+        ai_client=FakeHealthAiClient(),
+    )
+
+    html = tmp_path.joinpath(f"health-report-{package.id}.html").read_text(encoding="utf-8")
+    assert report.status == "READY"
+    assert report.data_version["source"] == "ai_health_report"
+    assert "AI 判断现金流质量稳定" in html
+    assert "风险等级总览矩阵" in html
+    assert seen_payloads
+    assert enterprise.name not in str(seen_payloads[0])
+    assert enterprise.unified_social_credit_code not in str(seen_payloads[0])
+    assert seen_payloads[0]["enterprise_profile"]["name"] == "本企业"
+
+
+def test_health_report_ai_payload_follows_sample_report_sections():
+    payload = build_health_report_ai_payload(
+        enterprise={"name": "苏州样例科技有限公司", "industry": "制造业", "unified_social_credit_code": "91320500REPORT000001"},
+        period="2026-05",
+        statement={
+            "estimated_balance_sheet": {"total_assets": "48000000.00", "total_liabilities": "26000000.00"},
+            "estimated_income_statement": {"revenue": "1200000.00", "operating_profit": "320000.00"},
+        },
+        tax_draft={"vat_payable": "7800.00"},
+    )
+
+    assert payload["report_structure"][0] == "执行摘要与关键结论"
+    assert "风险等级总览矩阵" in payload["report_structure"]
+    assert "税务风险与合规提示" in payload["report_structure"]
+    assert "苏州样例科技有限公司" not in str(payload)
+    assert "91320500REPORT000001" not in str(payload)
 
 
 def test_report_html_endpoint_serves_online_health_report(db_session, tmp_path):
