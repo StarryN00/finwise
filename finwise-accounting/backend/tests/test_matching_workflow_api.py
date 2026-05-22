@@ -227,6 +227,30 @@ def test_confirm_unmatched_bank_transaction_creates_confirmed_line_and_rule():
     assert rule.suggested_business_type == "CONSULTING_SERVICE"
 
 
+def test_ai_matching_endpoint_runs_ai_suggestions(monkeypatch):
+    client, db_session = make_context()
+    _enterprise, package = make_package(db_session)
+
+    def fake_run_ai_matching(db, *, monthly_work_package_id):
+        assert db is db_session
+        assert monthly_work_package_id == package.id
+        return {
+            "created_matches": 2,
+            "uncertain_matches": 3,
+            "candidate_transactions": 8,
+            "candidate_invoices": 9,
+            "pending_confirmations": 5,
+        }
+
+    monkeypatch.setattr("app.api.matching.run_ai_matching", fake_run_ai_matching)
+
+    response = client.post(f"/api/monthly-packages/{package.id}/matching/ai-run")
+
+    assert response.status_code == 200
+    assert response.json()["created_matches"] == 2
+    assert response.json()["uncertain_matches"] == 3
+
+
 def test_confirm_unmatched_invoice_marks_invoice_confirmed():
     client, db_session = make_context()
     _enterprise, package = make_package(db_session)

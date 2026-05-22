@@ -17,6 +17,8 @@ describe('AccountDetailsView', () => {
     expect(source).toContain('销售方')
     expect(source).toContain('购买方')
     expect(source).toContain('备注')
+    expect(source).toContain('AI 智能匹配')
+    expect(source).toContain('runAiMatching')
     expect(source).not.toContain('流水视图')
     expect(source).not.toContain('发票视图')
   })

@@ -5,6 +5,9 @@
     action-label="运行匹配"
     @action="runMatching"
   >
+    <template #filters>
+      <el-button :loading="isAiMatching" @click="runAiMatching">AI 智能匹配</el-button>
+    </template>
     <div class="account-toolbar">
       <el-segmented v-model="activeFilter" :options="filterOptions" />
     </div>
@@ -67,6 +70,7 @@ const workspace = useWorkspaceStore()
 const activeFilter = ref('all')
 const confirmDialogVisible = ref(false)
 const isConfirming = ref(false)
+const isAiMatching = ref(false)
 const currentRow = ref(null)
 const confirmForm = ref({
   businessType: '',
@@ -109,6 +113,23 @@ async function runMatching() {
     ElMessage.success('匹配已完成，列表已刷新')
   } catch (error) {
     ElMessage.error(error?.response?.data?.detail || error?.message || '运行匹配失败')
+  }
+}
+
+async function runAiMatching() {
+  const activePackage = workspace.activePackage
+  if (!activePackage) {
+    ElMessage.warning('请先创建月度工作包')
+    return
+  }
+  isAiMatching.value = true
+  try {
+    const result = await workspace.runAiMatching(activePackage.id)
+    ElMessage.success(`AI 已生成 ${result?.created_matches ?? 0} 条待确认匹配`)
+  } catch (error) {
+    ElMessage.error(error?.response?.data?.detail || error?.message || 'AI 匹配失败')
+  } finally {
+    isAiMatching.value = false
   }
 }
 

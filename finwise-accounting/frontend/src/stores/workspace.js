@@ -37,6 +37,11 @@ export const useWorkspaceStore = defineStore('workspace', {
       await api.matching.run(packageId)
       await this.loadWorkspace()
     },
+    async runAiMatching(packageId) {
+      const response = await api.matching.runAi(packageId)
+      await this.loadWorkspace()
+      return response.data
+    },
     async confirmRow(row, payload = {}) {
       if (row.confirmType === 'match') {
         await api.matching.confirmMatch(row.confirmId)

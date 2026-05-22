@@ -8,6 +8,7 @@ from sqlalchemy.orm import Session
 
 from app.api.deps import get_db
 from app.schemas.matching import AccountingLineConfirmRequest, MatchingRuleCreate, MatchingRuleRead, UnmatchedConfirmRequest
+from app.services.ai_matching_service import AiMatchingUnavailableError, run_ai_matching
 from app.services.matching_service import (
     MatchingDomainError,
     MatchingValidationError,
@@ -29,6 +30,16 @@ router = APIRouter(tags=["matching"])
 def run_matching_endpoint(package_id: UUID, db: Session = Depends(get_db)):
     try:
         return run_matching(db, monthly_work_package_id=package_id)
+    except MonthlyPackageNotFoundError as exc:
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail=str(exc)) from exc
+
+
+@router.post("/api/monthly-packages/{package_id}/matching/ai-run")
+def run_ai_matching_endpoint(package_id: UUID, db: Session = Depends(get_db)):
+    try:
+        return run_ai_matching(db, monthly_work_package_id=package_id)
+    except AiMatchingUnavailableError as exc:
+        raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail=str(exc)) from exc
     except MonthlyPackageNotFoundError as exc:
         raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail=str(exc)) from exc
 

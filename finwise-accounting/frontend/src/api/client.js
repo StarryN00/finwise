@@ -24,6 +24,7 @@ export const api = {
   },
   matching: {
     run: (packageId) => apiClient.post(`/monthly-packages/${packageId}/matching/run`),
+    runAi: (packageId) => apiClient.post(`/monthly-packages/${packageId}/matching/ai-run`),
     confirmMatch: (matchId) => apiClient.post(`/matches/${matchId}/confirm`),
     confirmLine: (lineId, payload) => apiClient.post(`/accounting-lines/${lineId}/confirm`, payload),
     confirmUnmatched: (packageId, payload) => apiClient.post(`/monthly-packages/${packageId}/confirm-unmatched`, payload),
