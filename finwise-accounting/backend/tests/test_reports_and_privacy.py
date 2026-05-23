@@ -1,5 +1,6 @@
 from datetime import date
 from decimal import Decimal
+from pathlib import Path
 from uuid import UUID
 
 from fastapi.testclient import TestClient
@@ -287,6 +288,89 @@ def test_ai_health_report_html_uses_diagnostic_report_layout(db_session, tmp_pat
     assert "AI 认为资产负债率偏高" in html
 
 
+def test_ai_health_report_html_matches_formal_pdf_report_structure(db_session, tmp_path):
+    enterprise, package = make_package(db_session)
+    db_session.add(
+        MonthlyStatement(
+            organization_id=ORG,
+            monthly_work_package_id=package.id,
+            estimated_balance_sheet={
+                "total_assets": "908486.12",
+                "total_liabilities": "952699.44",
+                "cash": "614277.56",
+                "accounts_receivable": "39863.80",
+                "inventory": "82575.21",
+                "accounts_payable": "785700.00",
+                "cash_net_movement": "-64576.00",
+            },
+            estimated_income_statement={
+                "revenue": "251415.93",
+                "cost": "226274.34",
+                "expense": "10387.26",
+                "operating_profit": "14754.33",
+                "net_profit": "14754.33",
+            },
+        )
+    )
+    db_session.add(
+        TaxFilingDraft(
+            organization_id=ORG,
+            monthly_work_package_id=package.id,
+            data={
+                "output_amount": "251415.93",
+                "output_tax": "32684.07",
+                "input_amount": "282218.70",
+                "input_tax": "36544.80",
+                "vat_payable": "0.00",
+                "unmatched_invoice_count": 12,
+            },
+            status="DRAFT",
+        )
+    )
+    db_session.commit()
+
+    class FakeHealthAiClient:
+        def generate_report(self, payload):
+            return {
+                "sections": [
+                    {"title": "一、执行摘要与关键结论", "content": ["AI 认为资产负债率偏高，需优先压降短期债务。"]},
+                    {"title": "三、偿债能力分析", "content": ["企业资产负债率高于安全线。"]},
+                    {"title": "六、税务风险与合规提示", "content": ["未匹配发票需在申报前复核。"]},
+                ]
+            }
+
+    report = generate_health_report(
+        db_session,
+        monthly_work_package_id=package.id,
+        output_dir=tmp_path,
+        ai_client=FakeHealthAiClient(),
+    )
+
+    html = tmp_path.joinpath(f"health-report-{package.id}.html").read_text(encoding="utf-8")
+    assert report.status == "READY"
+    assert "FINANCIAL HEALTH DIAGNOSTIC" in html
+    assert "企业财务健康诊断报告" in html
+    assert "report-page cover-page" in html
+    assert "page-number" in html
+    assert "一、执行摘要与关键结论" in html
+    assert "二、公司概况" in html
+    assert "小微企业资格判定" in html
+    assert "三、偿债能力分析" in html
+    assert "四、盈利能力分析" in html
+    assert "五、运营效率与现金流分析" in html
+    assert "六、税务风险与合规提示" in html
+    assert "七、风险量化与改进建议" in html
+    assert "图 1" in html
+    assert "图 2" in html
+    assert "图 3" in html
+    assert "图 4" in html
+    assert "资产负债率</span>" in html
+    assert "104.87%</strong>" in html
+    assert "利润率</span>" in html
+    assert "5.87%</strong>" in html
+    assert html.count("report-page") >= 8
+
+
 def test_health_report_ai_payload_follows_sample_report_sections():
     payload = build_health_report_ai_payload(
         enterprise={"name": "苏州样例科技有限公司", "industry": "制造业", "unified_social_credit_code": "91320500REPORT000001"},
@@ -303,6 +387,17 @@ def test_health_report_ai_payload_follows_sample_report_sections():
     assert "税务风险与合规提示" in payload["report_structure"]
     assert "苏州样例科技有限公司" not in str(payload)
     assert "91320500REPORT000001" not in str(payload)
+
+
+def test_moonshot_health_report_client_caps_completion_size():
+    source = Path("app/services/report_service.py").read_text(encoding="utf-8")
+    config_source = Path("app/core/config.py").read_text(encoding="utf-8")
+
+    assert '"max_tokens": 3500' in source
+    assert "每个章节输出1到2段" in source
+    assert "不要自行换算金额单位" in source
+    assert 'moonshot_report_model: str = "moonshot-v1-8k"' in config_source
+    assert "model=settings.moonshot_report_model" in source
 
 
 def test_report_html_endpoint_serves_online_health_report(db_session, tmp_path):

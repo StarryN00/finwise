@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+from datetime import date
 import json
 import re
 from html import escape
@@ -43,6 +44,7 @@ class MoonshotHealthReportClient:
         body = {
             "model": self.model,
             "response_format": {"type": "json_object"},
+            "max_tokens": 3500,
             "messages": [
                 {
                     "role": "system",
@@ -51,6 +53,8 @@ class MoonshotHealthReportClient:
                         "只能基于脱敏后的报表指标、税务指标和风险矩阵写报告，不得编造企业名称、税号、地址。"
                         "输出 JSON：{\"sections\":[{\"title\":\"章节标题\",\"content\":[\"段落或要点\"]}]}。"
                         "章节需要贴近企业财务健康诊断报告，包含执行摘要、风险矩阵、偿债、盈利、现金流、税务风险和建议。"
+                        "每个章节输出1到2段，每段不超过120个中文字符；表格和图表由系统生成，你只写分析判断。"
+                        "不要自行换算金额单位，不要在段落中重复精确金额或比例；需要引用指标时只做定性描述。"
                     ),
                 },
                 {"role": "user", "content": json.dumps(payload, ensure_ascii=False)},
@@ -196,61 +200,285 @@ def render_ai_health_report_html(
     balance = statement.get("estimated_balance_sheet", {})
     income = statement.get("estimated_income_statement", {})
     metric_cards = _health_metric_cards(balance=balance, income=income, tax_draft=tax_draft)
-    section_html = []
-    for section in sections:
-        title = escape(str(section.get("title") or "诊断章节"))
-        content_items = section.get("content") or []
-        if isinstance(content_items, str):
-            content_items = [content_items]
-        paragraphs = "".join(f"<p>{escape(str(item))}</p>" for item in content_items if str(item).strip())
-        section_html.append(f"<section><h2>{title}</h2>{paragraphs}</section>")
-    if not section_html:
-        section_html.append("<section><h2>执行摘要与关键结论</h2><p>AI 未返回有效章节，已生成基础诊断框架。</p></section>")
+    section_map = _normalize_ai_sections(sections)
+    enterprise_name = escape(str(enterprise.get("name", "企业")))
+    industry = escape(str(enterprise.get("industry") or "未填写"))
+    compiled_date = date.today().strftime("%Y 年 %m 月 %d 日")
+    risk_table = _risk_overview_table(balance=balance, income=income, tax_draft=tax_draft)
+    cover_page = _cover_page(
+        enterprise_name=enterprise_name,
+        industry=industry,
+        period=period,
+        compiled_date=compiled_date,
+    )
+    pages = [
+        cover_page,
+        _report_page(
+            2,
+            "一、执行摘要与关键结论",
+            _executive_summary_html(section_map, balance, income, tax_draft)
+            + f'<section class="metric-grid">{"".join(metric_cards)}</section>'
+            + f'<section class="risk-overview"><h3>1.2 风险等级总览矩阵</h3>{risk_table}</section>',
+            period=period,
+        ),
+        _report_page(3, "二、公司概况", _company_overview_html(enterprise=enterprise, period=period, balance=balance, income=income), period=period),
+        _report_page(4, "三、偿债能力分析", _solvency_html(section_map, balance), period=period),
+        _report_page(5, "四、盈利能力分析", _profitability_html(section_map, income), period=period),
+        _report_page(6, "五、运营效率与现金流分析", _cashflow_html(section_map, balance, income), period=period),
+        _report_page(7, "六、税务风险与合规提示", _tax_html(section_map, tax_draft), period=period),
+        _report_page(8, "七、风险量化与改进建议", _recommendation_html(section_map, balance, income, tax_draft), period=period),
+        _report_page(9, "附录：AI 原始分析补充", _all_ai_sections_html(section_map), period=period),
+    ]
 
     return f"""
 <!doctype html>
 <html lang="zh-CN">
 <head>
   <meta charset="utf-8" />
-  <title>{escape(str(enterprise.get("name", "企业")))} {escape(period)} 财务健康诊断</title>
+  <title>{enterprise_name} {escape(period)} 财务健康诊断</title>
   <style>
-    body {{ margin: 0; padding: 40px 28px; font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", "PingFang SC", sans-serif; color: #172033; line-height: 1.72; background: #eef3f8; }}
-    main {{ max-width: 1080px; margin: 0 auto; }}
-    header {{ padding: 34px 38px; border-radius: 16px; color: #fff; background: linear-gradient(135deg, #123c7c, #1769e0); }}
-    h1 {{ margin: 0 0 8px; font-size: 30px; letter-spacing: 0; }}
-    h2 {{ margin: 0 0 14px; color: #123c7c; font-size: 20px; }}
-    section {{ margin-top: 18px; padding: 26px 30px; border: 1px solid #d9e2ef; border-radius: 14px; background: #fff; }}
+    @page {{ size: A4; margin: 0; }}
+    * {{ box-sizing: border-box; }}
+    body {{ margin: 0; padding: 24px 0; font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", "PingFang SC", sans-serif; color: #172033; line-height: 1.58; background: #dfe7f1; }}
+    main {{ display: grid; gap: 18px; width: 794px; margin: 0 auto; }}
+    .report-page {{ position: relative; min-height: 1123px; padding: 74px 70px 70px; overflow: hidden; background: #fff; box-shadow: 0 12px 32px rgba(15, 37, 68, .14); page-break-after: always; }}
+    .report-page::before {{ content: ""; position: absolute; inset: 0 0 auto; height: 18px; background: linear-gradient(90deg, #153c6e, #2d6fab); }}
+    .cover-page {{ display: flex; min-height: 1123px; flex-direction: column; justify-content: center; color: #fff; background: radial-gradient(circle at 82% 16%, rgba(255,255,255,.12), transparent 25%), linear-gradient(135deg, #17345d 0%, #285f97 100%); }}
+    .cover-page::before {{ height: 0; }}
+    .cover-kicker {{ margin-bottom: 20px; font-size: 28px; font-weight: 800; letter-spacing: 3px; text-transform: uppercase; }}
+    .cover-title {{ margin: 0 0 18px; font-size: 42px; letter-spacing: 0; }}
+    .cover-subtitle {{ max-width: 560px; margin: 0 0 56px; color: #dbeafe; font-size: 18px; }}
+    .cover-meta {{ display: grid; gap: 13px; max-width: 560px; padding-top: 28px; border-top: 1px solid rgba(255,255,255,.32); }}
+    .cover-meta div {{ display: grid; grid-template-columns: 130px 1fr; gap: 14px; }}
+    .page-header {{ position: absolute; top: 36px; left: 70px; right: 70px; display: flex; justify-content: space-between; color: #52647d; font-size: 12px; }}
+    .page-number {{ position: absolute; right: 70px; bottom: 34px; color: #6b7a90; font-size: 12px; }}
+    h1 {{ margin: 0; font-size: 30px; letter-spacing: 0; }}
+    h2 {{ margin: 0 0 18px; color: #153c6e; font-size: 25px; }}
+    h3 {{ margin: 22px 0 10px; color: #285f97; font-size: 17px; }}
     p {{ margin: 10px 0; }}
-    .subtitle {{ margin: 0; color: #dbeafe; }}
-    .metric-grid {{ display: grid; grid-template-columns: repeat(4, minmax(0, 1fr)); gap: 12px; margin-top: 18px; }}
-    .metric-card {{ padding: 16px; border: 1px solid #d9e2ef; border-radius: 12px; background: #f8fafc; }}
+    .lead-list {{ display: grid; gap: 10px; margin: 18px 0 22px; padding: 0; list-style: none; }}
+    .lead-list li {{ padding: 12px 14px; border-left: 4px solid #2d6fab; background: #f2f6fb; }}
+    .metric-grid {{ display: grid; grid-template-columns: repeat(4, minmax(0, 1fr)); gap: 12px; margin: 18px 0 22px; }}
+    .metric-card {{ min-height: 86px; padding: 14px; border: 1px solid #d9e2ef; border-radius: 8px; background: #f8fafc; }}
     .metric-card span {{ display: block; color: #667085; font-size: 12px; }}
-    .metric-card strong {{ display: block; margin-top: 8px; color: #0f2544; font-size: 22px; }}
-    .risk-overview table {{ width: 100%; border-collapse: collapse; margin-top: 10px; }}
-    .risk-overview th, .risk-overview td {{ padding: 11px 12px; border-bottom: 1px solid #e5edf6; text-align: left; }}
-    .risk-overview th {{ color: #667085; background: #f8fafc; }}
+    .metric-card strong {{ display: block; margin-top: 8px; color: #0f2544; font-size: 20px; }}
+    table {{ width: 100%; border-collapse: collapse; margin: 12px 0 18px; font-size: 13px; }}
+    th, td {{ padding: 9px 10px; border: 1px solid #d9e2ef; text-align: left; vertical-align: top; }}
+    th {{ color: #41516a; background: #eef3f8; font-weight: 700; }}
     .risk-high {{ color: #b42318; font-weight: 700; }}
     .risk-medium {{ color: #b54708; font-weight: 700; }}
     .risk-low {{ color: #027a48; font-weight: 700; }}
-    @media (max-width: 860px) {{ .metric-grid {{ grid-template-columns: 1fr 1fr; }} }}
+    .figure {{ margin-top: 18px; padding: 16px; border: 1px solid #d9e2ef; border-radius: 10px; background: #f8fafc; }}
+    .figure-title {{ margin-bottom: 12px; color: #41516a; font-weight: 700; }}
+    .bar-row {{ display: grid; grid-template-columns: 110px 1fr 90px; gap: 12px; align-items: center; margin: 10px 0; font-size: 13px; }}
+    .bar-track {{ height: 12px; overflow: hidden; border-radius: 999px; background: #e5edf6; }}
+    .bar-fill {{ display: block; height: 100%; border-radius: 999px; background: linear-gradient(90deg, #285f97, #4f91cf); }}
+    .recommendations {{ display: grid; gap: 14px; }}
+    .recommendation-card {{ padding: 14px 16px; border: 1px solid #d9e2ef; border-radius: 8px; background: #f8fafc; }}
+    @media print {{ body {{ padding: 0; background: #fff; }} main {{ width: 100%; gap: 0; }} .report-page {{ width: 210mm; min-height: 297mm; box-shadow: none; }} }}
   </style>
 </head>
 <body>
   <main>
-    <header>
-      <h1>{escape(str(enterprise.get("name", "企业")))} {escape(period)} 财务健康诊断报告</h1>
-      <p class="subtitle">基于资产负债表、利润表、申报草稿及已确认账目，由 AI 生成多维度风险分析与建议。</p>
-    </header>
-    <section class="metric-grid">{''.join(metric_cards)}</section>
-    <section class="risk-overview">
-      <h2>风险等级总览矩阵</h2>
-      {_risk_overview_table(balance=balance, income=income, tax_draft=tax_draft)}
-    </section>
-    {''.join(section_html)}
+    {''.join(pages)}
   </main>
 </body>
 </html>
 """
+
+
+def _cover_page(*, enterprise_name: str, industry: str, period: str, compiled_date: str) -> str:
+    return f"""
+    <section class="report-page cover-page">
+      <div class="cover-kicker">FINANCIAL HEALTH DIAGNOSTIC</div>
+      <h1 class="cover-title">企业财务健康诊断报告</h1>
+      <p class="cover-subtitle">基于资产负债表、利润表及增值税申报表的多维度财务风险分析与量化评估</p>
+      <div class="cover-meta">
+        <div><span>诊断对象</span><strong>{enterprise_name}</strong></div>
+        <div><span>所属行业</span><strong>{industry}</strong></div>
+        <div><span>纳税人状态</span><strong>一般纳税人</strong></div>
+        <div><span>报告期间</span><strong>{escape(period)}</strong></div>
+        <div><span>编制日期</span><strong>{escape(compiled_date)}</strong></div>
+      </div>
+    </section>
+"""
+
+
+def _report_page(page_number: int, title: str, body: str, *, period: str) -> str:
+    return f"""
+    <section class="report-page">
+      <div class="page-header"><span>企业财务健康诊断报告</span><span>{escape(period)}</span></div>
+      <h2>{escape(title)}</h2>
+      {body}
+      <span class="page-number">{page_number}</span>
+    </section>
+"""
+
+
+def _normalize_ai_sections(sections: list[dict]) -> dict[str, list[str]]:
+    normalized: dict[str, list[str]] = {}
+    for section in sections:
+        title = str(section.get("title") or "诊断章节").strip()
+        content_items = section.get("content") or []
+        if isinstance(content_items, str):
+            content_items = [content_items]
+        normalized[title] = [str(item).strip() for item in content_items if str(item).strip()]
+    if not normalized:
+        normalized["执行摘要与关键结论"] = ["AI 未返回有效章节，已生成基础诊断框架。"]
+    return normalized
+
+
+def _section_paragraphs(section_map: dict[str, list[str]], keyword: str, fallback: list[str]) -> str:
+    for title, paragraphs in section_map.items():
+        if keyword in title:
+            return "".join(f"<p>{escape(item)}</p>" for item in paragraphs)
+    return "".join(f"<p>{escape(item)}</p>" for item in fallback)
+
+
+def _executive_summary_html(section_map: dict[str, list[str]], balance: dict, income: dict, tax_draft: dict) -> str:
+    fallback = [
+        f"资产负债率为{_ratio(balance.get('total_liabilities'), balance.get('total_assets'))}，需关注资本结构安全边界。",
+        f"本期营业收入为{_format_wan(income.get('revenue'))}，营业利润率为{_ratio(income.get('operating_profit'), income.get('revenue'))}。",
+        f"本期应纳增值税为{_format_wan(tax_draft.get('vat_payable'))}，未匹配发票需在申报前复核。",
+    ]
+    content = _section_paragraphs(section_map, "执行摘要", fallback)
+    return f"<ul class=\"lead-list\"><li>{content.replace('</p><p>', '</li><li>').replace('<p>', '').replace('</p>', '')}</li></ul>"
+
+
+def _company_overview_html(*, enterprise: dict, period: str, balance: dict, income: dict) -> str:
+    return f"""
+    <h3>2.1 基本信息</h3>
+    <table><tbody>
+      <tr><th>企业名称</th><td>{escape(str(enterprise.get("name", "企业")))}</td><th>所属行业</th><td>{escape(str(enterprise.get("industry") or "未填写"))}</td></tr>
+      <tr><th>纳税人资格</th><td>一般纳税人</td><th>报告期间</th><td>{escape(period)}</td></tr>
+      <tr><th>资产总额</th><td>{_format_wan(balance.get("total_assets"))}</td><th>营业收入</th><td>{_format_wan(income.get("revenue"))}</td></tr>
+    </tbody></table>
+    <h3>2.2 小微企业资格判定</h3>
+    <table><thead><tr><th>判定条件</th><th>标准值</th><th>当前数据</th><th>结果</th></tr></thead><tbody>
+      <tr><td>行业限制</td><td>非限制/禁止行业</td><td>{escape(str(enterprise.get("industry") or "未填写"))}</td><td>需人工确认</td></tr>
+      <tr><td>资产总额</td><td>不超过 5,000 万元</td><td>{_format_wan(balance.get("total_assets"))}</td><td>通过</td></tr>
+      <tr><td>应纳税所得额</td><td>不超过 300 万元</td><td>{_format_wan(income.get("operating_profit"))}</td><td>通过</td></tr>
+    </tbody></table>
+    <h3>2.3 资产负债总览</h3>
+    {_statement_table([("资产总计", _format_wan(balance.get("total_assets"))), ("负债合计", _format_wan(balance.get("total_liabilities"))), ("货币资金", _format_wan(balance.get("cash"))), ("应收账款", _format_wan(balance.get("accounts_receivable"))), ("存货", _format_wan(balance.get("inventory"))), ("应付账款", _format_wan(balance.get("accounts_payable")))])}
+    {_bar_figure("图 1 资产负债结构分析", [("货币资金", balance.get("cash")), ("应收账款", balance.get("accounts_receivable")), ("存货", balance.get("inventory")), ("负债合计", balance.get("total_liabilities"))])}
+"""
+
+
+def _solvency_html(section_map: dict[str, list[str]], balance: dict) -> str:
+    return f"""
+    <h3>3.1 资本结构指标</h3>
+    <table><thead><tr><th>指标</th><th>计算口径</th><th>实际值</th><th>安全阈值</th><th>评估</th></tr></thead><tbody>
+      <tr><td>资产负债率</td><td>负债 / 资产</td><td>{_ratio(balance.get("total_liabilities"), balance.get("total_assets"))}</td><td>&lt;70%</td><td>{_risk_level_text(_numeric_ratio(balance.get("total_liabilities"), balance.get("total_assets")), 0.7, True)}</td></tr>
+      <tr><td>现金资产占比</td><td>货币资金 / 资产</td><td>{_ratio(balance.get("cash"), balance.get("total_assets"))}</td><td>&gt;20%</td><td>需关注</td></tr>
+      <tr><td>应付账款占负债</td><td>应付账款 / 负债</td><td>{_ratio(balance.get("accounts_payable"), balance.get("total_liabilities"))}</td><td>&lt;50%</td><td>需关注供应链信用</td></tr>
+    </tbody></table>
+    {_bar_figure("图 2 偿债能力指标对比分析", [("资产负债率", _percent_value(balance.get("total_liabilities"), balance.get("total_assets"))), ("现金占资产", _percent_value(balance.get("cash"), balance.get("total_assets"))), ("应付占负债", _percent_value(balance.get("accounts_payable"), balance.get("total_liabilities")))], unit="%")}
+    <h3>3.2 偿债能力风险总结</h3>
+    {_section_paragraphs(section_map, "偿债", ["资产负债结构是本期首要观察点，应结合供应商账期、短期借款到期日和现金流计划持续跟踪。"])}
+"""
+
+
+def _profitability_html(section_map: dict[str, list[str]], income: dict) -> str:
+    return f"""
+    <h3>4.1 利润 margins 分析</h3>
+    <table><thead><tr><th>指标</th><th>实际值</th><th>参考安全值</th><th>评估</th></tr></thead><tbody>
+      <tr><td>营业收入</td><td>{_format_wan(income.get("revenue"))}</td><td>-</td><td>收入规模需持续观察</td></tr>
+      <tr><td>毛利率</td><td>{_ratio(_money_diff(income.get("revenue"), income.get("cost")), income.get("revenue"))}</td><td>&gt;15%</td><td>关注成本率</td></tr>
+      <tr><td>营业利润率</td><td>{_ratio(income.get("operating_profit"), income.get("revenue"))}</td><td>&gt;8%</td><td>需改善</td></tr>
+      <tr><td>期间费用率</td><td>{_ratio(income.get("expense"), income.get("revenue"))}</td><td>&lt;15%</td><td>可控</td></tr>
+    </tbody></table>
+    {_bar_figure("图 3 盈利能力指标对比分析", [("毛利率", _percent_value(_money_diff(income.get("revenue"), income.get("cost")), income.get("revenue"))), ("利润率", _percent_value(income.get("operating_profit"), income.get("revenue"))), ("费用率", _percent_value(income.get("expense"), income.get("revenue")))], unit="%")}
+    {_section_paragraphs(section_map, "盈利", ["盈利能力取决于毛利率、项目成本控制和费用刚性，应按订单或项目建立单项利润复核。"])}
+"""
+
+
+def _cashflow_html(section_map: dict[str, list[str]], balance: dict, income: dict) -> str:
+    return f"""
+    <h3>5.1 营运效率与资金占用</h3>
+    <table><thead><tr><th>项目</th><th>金额/指标</th><th>诊断提示</th></tr></thead><tbody>
+      <tr><td>现金净变动</td><td>{_format_wan(balance.get("cash_net_movement"))}</td><td>为负时需压降非必要支出并强化回款</td></tr>
+      <tr><td>应收账款</td><td>{_format_wan(balance.get("accounts_receivable"))}</td><td>结合客户账龄判断坏账风险</td></tr>
+      <tr><td>存货</td><td>{_format_wan(balance.get("inventory"))}</td><td>关注呆滞料和项目型库存占用</td></tr>
+      <tr><td>营业收入</td><td>{_format_wan(income.get("revenue"))}</td><td>作为现金回款计划基准</td></tr>
+    </tbody></table>
+    {_bar_figure("图 4 现金流压力与营运效率分析", [("现金净变动", abs(_to_float(balance.get("cash_net_movement")))), ("应收账款", balance.get("accounts_receivable")), ("存货", balance.get("inventory"))])}
+    {_section_paragraphs(section_map, "现金流", ["现金流压力需要通过回款计划、付款排期和库存压降共同改善。"])}
+"""
+
+
+def _tax_html(section_map: dict[str, list[str]], tax_draft: dict) -> str:
+    return f"""
+    <h3>6.1 增值税税负评估</h3>
+    <table><thead><tr><th>申报项目</th><th>金额</th><th>说明</th></tr></thead><tbody>
+      <tr><td>销项销售额</td><td>{_format_wan(tax_draft.get("output_amount"))}</td><td>本期销项不含税销售额</td></tr>
+      <tr><td>销项税额</td><td>{_format_wan(tax_draft.get("output_tax"))}</td><td>本期销项税额</td></tr>
+      <tr><td>进项金额</td><td>{_format_wan(tax_draft.get("input_amount"))}</td><td>本期进项不含税金额</td></tr>
+      <tr><td>进项税额</td><td>{_format_wan(tax_draft.get("input_tax"))}</td><td>本期可抵扣进项税额</td></tr>
+      <tr><td>本期应纳增值税</td><td>{_format_wan(tax_draft.get("vat_payable"))}</td><td>销项税额减进项税额</td></tr>
+      <tr><td>未匹配发票</td><td>{escape(str(tax_draft.get("unmatched_invoice_count", 0)))} 张</td><td>申报前需人工复核</td></tr>
+    </tbody></table>
+    {_section_paragraphs(section_map, "税务", ["需核对发票匹配、进项抵扣和申报草稿口径，确保账表税一致。"])}
+"""
+
+
+def _recommendation_html(section_map: dict[str, list[str]], balance: dict, income: dict, tax_draft: dict) -> str:
+    ai_text = _section_paragraphs(section_map, "建议", ["优先处理高风险事项，再建立月度指标跟踪机制。"])
+    return f"""
+    <h3>7.1 高风险事项清单</h3>
+    <table><thead><tr><th>风险事项</th><th>量化依据</th><th>建议动作</th></tr></thead><tbody>
+      <tr><td>资本结构压力</td><td>资产负债率 {_ratio(balance.get("total_liabilities"), balance.get("total_assets"))}</td><td>补充权益资本或制定债务化解计划</td></tr>
+      <tr><td>现金流压力</td><td>现金净变动 {_format_wan(balance.get("cash_net_movement"))}</td><td>建立 13 周资金滚动预测</td></tr>
+      <tr><td>盈利安全边际</td><td>营业利润率 {_ratio(income.get("operating_profit"), income.get("revenue"))}</td><td>按订单复核毛利和费用归集</td></tr>
+      <tr><td>税务资料缺口</td><td>未匹配发票 {escape(str(tax_draft.get("unmatched_invoice_count", 0)))} 张</td><td>申报前完成发票与流水核对</td></tr>
+    </tbody></table>
+    <h3>7.2 短中长期措施</h3>
+    <div class="recommendations">
+      <div class="recommendation-card"><strong>短期 1-3 个月</strong><p>完成未匹配发票复核、应付账款账龄梳理和现金支出压降。</p></div>
+      <div class="recommendation-card"><strong>中期 3-12 个月</strong><p>建立项目毛利核算、供应商账期谈判和回款节点管理。</p></div>
+      <div class="recommendation-card"><strong>长期 1-3 年</strong><p>优化产品结构，提升高毛利服务和可持续经营能力。</p></div>
+    </div>
+    {ai_text}
+"""
+
+
+def _all_ai_sections_html(section_map: dict[str, list[str]]) -> str:
+    return "".join(
+        f"<h3>{escape(title)}</h3>{''.join(f'<p>{escape(item)}</p>' for item in paragraphs)}"
+        for title, paragraphs in section_map.items()
+    )
+
+
+def _statement_table(rows: list[tuple[str, str]]) -> str:
+    body = "".join(f"<tr><td>{escape(label)}</td><td>{escape(value)}</td></tr>" for label, value in rows)
+    return f"<table><thead><tr><th>项目</th><th>金额</th></tr></thead><tbody>{body}</tbody></table>"
+
+
+def _bar_figure(title: str, rows: list[tuple[str, object]], *, unit: str = "money") -> str:
+    values = [abs(_to_float(value)) for _label, value in rows]
+    max_value = max(values) if values else 1
+    bars = []
+    for label, value in rows:
+        number = abs(_to_float(value))
+        width = 8 if max_value == 0 else max(8, min(100, number / max_value * 100))
+        display = f"{_to_float(value):.2f}%" if unit == "%" else _format_wan(value)
+        bars.append(f"<div class=\"bar-row\"><span>{escape(label)}</span><div class=\"bar-track\"><span class=\"bar-fill\" style=\"width:{width:.0f}%\"></span></div><strong>{escape(display)}</strong></div>")
+    return f"<div class=\"figure\"><div class=\"figure-title\">{escape(title)}</div>{''.join(bars)}</div>"
+
+
+def _percent_value(numerator, denominator) -> float:
+    ratio = _numeric_ratio(numerator, denominator)
+    return 0 if ratio is None else ratio * 100
+
+
+def _risk_level_text(value: float | None, threshold: float, higher_is_risk: bool) -> str:
+    if value is None:
+        return "数据不足"
+    if higher_is_risk and value >= threshold:
+        return "高风险"
+    if not higher_is_risk and value <= threshold:
+        return "高风险"
+    return "可控"
 
 
 def _build_report_statement_data(*, statement: MonthlyStatement | None, initial_snapshot: InitialFinancialSnapshot | None) -> dict:
@@ -426,7 +654,7 @@ def _generate_ai_health_report(
         client = MoonshotHealthReportClient(
             api_key=settings.moonshot_api_key,
             base_url=settings.moonshot_base_url,
-            model=settings.moonshot_model,
+            model=settings.moonshot_report_model,
         )
     try:
         return client.generate_report(payload)
