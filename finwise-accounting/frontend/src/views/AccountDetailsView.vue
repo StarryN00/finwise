@@ -23,10 +23,7 @@
       </div>
       <el-progress :percentage="aiProgress" :stroke-width="10" striped striped-flow />
     </div>
-    <div class="scroll-affordance">
-      <span>表格可左右滑动查看更多字段</span>
-    </div>
-    <div class="account-table-scroll">
+    <div ref="tableViewport" class="account-table-scroll" @scroll="syncHorizontalScroll">
       <el-table v-loading="workspace.isLoading" :data="rows" class="compact-account-table" stripe>
         <el-table-column prop="sourceCompleteness" label="完整性" width="116" />
         <el-table-column prop="date" label="日期" width="112" />
@@ -54,6 +51,20 @@
         </el-table-column>
       </el-table>
     </div>
+    <div class="account-scroll-footer">
+      <span>横向滚动</span>
+      <input
+        v-model.number="horizontalScroll"
+        class="account-scroll-slider"
+        type="range"
+        min="0"
+        :max="maxHorizontalScroll"
+        :disabled="maxHorizontalScroll <= 0"
+        aria-label="横向滚动账目明细表格"
+        @input="setTableScroll"
+      />
+      <span class="account-scroll-footer__hint">向右拖动查看金额、税额和操作</span>
+    </div>
   </DataTableShell>
   <el-dialog v-model="confirmDialogVisible" title="确认待处理事项" width="440px">
     <el-form label-width="96px">
@@ -75,7 +86,7 @@
 </template>
 
 <script setup>
-import { computed, onBeforeUnmount, ref } from 'vue'
+import { computed, nextTick, onBeforeUnmount, onMounted, ref, watch } from 'vue'
 import { ElMessage } from 'element-plus'
 import DataTableShell from '../components/DataTableShell.vue'
 import PackageContextBar from '../components/PackageContextBar.vue'
@@ -89,6 +100,9 @@ const isConfirming = ref(false)
 const isAiMatching = ref(false)
 const isRuleMatching = ref(false)
 const aiProgress = ref(0)
+const tableViewport = ref(null)
+const horizontalScroll = ref(0)
+const maxHorizontalScroll = ref(0)
 let aiProgressTimer = null
 const currentRow = ref(null)
 const confirmForm = ref({
@@ -120,6 +134,33 @@ const rows = computed(() => {
   }
   return workspace.accountRows
 })
+
+function updateScrollMetrics() {
+  const node = tableViewport.value
+  if (!node) return
+  maxHorizontalScroll.value = Math.max(0, node.scrollWidth - node.clientWidth)
+  horizontalScroll.value = Math.min(node.scrollLeft, maxHorizontalScroll.value)
+}
+
+function syncHorizontalScroll() {
+  const node = tableViewport.value
+  if (!node) return
+  horizontalScroll.value = node.scrollLeft
+}
+
+function setTableScroll() {
+  const node = tableViewport.value
+  if (!node) return
+  node.scrollLeft = Number(horizontalScroll.value || 0)
+}
+
+watch(
+  rows,
+  () => {
+    nextTick(updateScrollMetrics)
+  },
+  { flush: 'post' },
+)
 
 async function runMatching() {
   const activePackage = workspace.activePackage
@@ -187,6 +228,12 @@ function stopAiProgress() {
 
 onBeforeUnmount(() => {
   stopAiProgress()
+  window.removeEventListener('resize', updateScrollMetrics)
+})
+
+onMounted(() => {
+  nextTick(updateScrollMetrics)
+  window.addEventListener('resize', updateScrollMetrics)
 })
 
 async function startConfirm(row) {
@@ -280,27 +327,11 @@ function defaultBusinessType(row) {
   font-size: 12px;
 }
 
-.scroll-affordance {
-  position: sticky;
-  bottom: 0;
-  z-index: 2;
-  display: flex;
-  justify-content: flex-end;
-  padding: 0 16px 8px;
-  color: var(--fw-brand);
-  font-size: 12px;
-}
-
-.scroll-affordance span {
-  padding: 4px 10px;
-  border: 1px solid #bfdbfe;
-  border-radius: 999px;
-  background: #eff6ff;
-}
-
 .account-table-scroll {
-  max-height: calc(100vh - 360px);
+  width: 100%;
   max-width: 100%;
+  min-width: 0;
+  max-height: clamp(260px, calc(100vh - 520px), 560px);
   overflow-x: auto;
   overflow-y: auto;
   border-top: 1px solid var(--fw-line);
@@ -309,6 +340,7 @@ function defaultBusinessType(row) {
 }
 
 .account-table-scroll::-webkit-scrollbar {
+  width: 12px;
   height: 12px;
 }
 
@@ -322,14 +354,57 @@ function defaultBusinessType(row) {
   background: var(--fw-brand);
 }
 
+.account-scroll-footer {
+  position: sticky;
+  bottom: 0;
+  z-index: 3;
+  display: grid;
+  grid-template-columns: auto minmax(180px, 1fr) auto;
+  gap: 12px;
+  align-items: center;
+  padding: 10px 16px;
+  border-top: 1px solid #bfdbfe;
+  background: #eaf2ff;
+  color: var(--fw-ink-soft);
+  font-size: 12px;
+}
+
+.account-scroll-slider {
+  width: 100%;
+  height: 18px;
+  margin: 0;
+  accent-color: var(--fw-brand);
+  cursor: pointer;
+}
+
+.account-scroll-slider:disabled {
+  cursor: default;
+  opacity: 0.45;
+}
+
+.account-scroll-footer__hint {
+  color: var(--fw-brand);
+  white-space: nowrap;
+}
+
 .compact-account-table {
-  min-width: 1120px;
+  width: 1280px;
+  min-width: 1280px;
 }
 
 @media (max-width: 900px) {
   .account-toolbar {
     align-items: center;
     overflow-x: auto;
+  }
+
+  .account-scroll-footer {
+    grid-template-columns: 1fr;
+    gap: 6px;
+  }
+
+  .account-scroll-footer__hint {
+    white-space: normal;
   }
 
   .ai-progress-panel {

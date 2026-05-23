@@ -161,3 +161,33 @@ def test_run_ai_matching_falls_back_to_local_candidates_when_ai_times_out(db_ses
     assert match.invoice_id == invoice.id
     assert match.match_method == "AI_FALLBACK_RULE"
     assert match.confirmation_status == "PENDING"
+
+
+def test_run_ai_matching_fallback_creates_low_confidence_candidates_for_manual_review(db_session):
+    _enterprise, package = make_package(db_session)
+    transaction = add_transaction(
+        db_session,
+        package,
+        summary="收到设备项目阶段款",
+        amount="65000.00",
+        counterparty="上海设备客户有限公司",
+    )
+    invoice = add_invoice(
+        db_session,
+        package,
+        number="OUT-AI-CANDIDATE",
+        total_amount="93100.00",
+        buyer="上海设备客户有限公司",
+    )
+    db_session.commit()
+
+    result = run_ai_matching(db_session, monthly_work_package_id=package.id, ai_client=TimeoutAiMatchingClient())
+
+    assert result["aiStatus"] == "FALLBACK"
+    assert result["created_matches"] == 1
+    match = db_session.query(MatchRecord).one()
+    assert match.bank_transaction_id == transaction.id
+    assert match.invoice_id == invoice.id
+    assert match.match_method == "AI_FALLBACK_CANDIDATE"
+    assert match.confirmation_status == "PENDING"
+    assert 35 <= match.confidence < 70

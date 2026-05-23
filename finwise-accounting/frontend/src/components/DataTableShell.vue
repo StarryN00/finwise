@@ -39,6 +39,9 @@ defineEmits(['action'])
 
 <style scoped>
 .table-shell {
+  width: 100%;
+  min-width: 0;
+  overflow: hidden;
   border: 1px solid var(--fw-line);
   border-radius: var(--fw-radius);
   background: var(--fw-surface);
@@ -65,6 +68,7 @@ defineEmits(['action'])
 }
 
 .table-shell__body {
+  min-width: 0;
   padding: 0;
 }
 

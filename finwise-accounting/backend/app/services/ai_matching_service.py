@@ -189,13 +189,21 @@ def _create_local_fallback_matches(
             allowed_fallback_gap = max(Decimal("10.00"), abs(_transaction_amount(transaction)) * Decimal("0.02"))
             if amount_gap > allowed_fallback_gap or date_gap > 15:
                 continue
-            candidates.append((score, transaction, invoice))
+            candidates.append((score, transaction, invoice, "AI_FALLBACK_RULE"))
+
+    if not candidates:
+        for transaction in transactions:
+            for invoice in invoices:
+                score = _candidate_score(transaction, invoice, broad=True)
+                if score is None:
+                    continue
+                candidates.append((score, transaction, invoice, "AI_FALLBACK_CANDIDATE"))
     candidates.sort(key=lambda item: item[0])
 
     created_matches = 0
     used_transaction_ids: set[UUID] = set()
     used_invoice_ids: set[UUID] = set()
-    for score, transaction, invoice in candidates:
+    for score, transaction, invoice, match_method in candidates:
         if transaction.id in used_transaction_ids or invoice.id in used_invoice_ids:
             continue
         if (transaction.id, invoice.id) in existing_pairs:
@@ -206,9 +214,13 @@ def _create_local_fallback_matches(
                 monthly_work_package_id=package.id,
                 bank_transaction_id=transaction.id,
                 invoice_id=invoice.id,
-                match_method="AI_FALLBACK_RULE",
-                confidence=_fallback_confidence(score),
-                explanation="AI 服务超时后由本地金额、日期和方向候选规则生成",
+                match_method=match_method,
+                confidence=_fallback_confidence(score, candidate=match_method == "AI_FALLBACK_CANDIDATE"),
+                explanation=(
+                    "AI 服务超时后由本地金额、日期和方向候选规则生成"
+                    if match_method == "AI_FALLBACK_RULE"
+                    else "AI 服务超时后由宽松候选规则生成，金额或主体可能不完全一致，需人工确认"
+                ),
                 confirmation_status="PENDING",
             )
         )
@@ -221,8 +233,12 @@ def _create_local_fallback_matches(
     return created_matches
 
 
-def _fallback_confidence(score: tuple[Decimal, int, int]) -> int:
+def _fallback_confidence(score: tuple[Decimal, int, int], *, candidate: bool = False) -> int:
     amount_gap, date_gap, party_penalty = score
+    if candidate:
+        amount_penalty = min(24, int(amount_gap / Decimal("1000")))
+        date_penalty = min(10, date_gap // 4)
+        return max(35, min(68, 68 - amount_penalty - date_penalty - party_penalty * 12))
     amount_penalty = min(int(amount_gap * Decimal("10")), 8)
     date_penalty = min(date_gap, 7)
     return max(70, 88 - amount_penalty - date_penalty - party_penalty * 10)
@@ -390,7 +406,7 @@ def _select_ai_candidates(
     return selected_transactions, selected_invoices
 
 
-def _candidate_score(transaction: BankTransaction, invoice: Invoice) -> tuple[Decimal, int, int] | None:
+def _candidate_score(transaction: BankTransaction, invoice: Invoice, *, broad: bool = False) -> tuple[Decimal, int, int] | None:
     bank_direction = "OUT" if transaction.debit_amount and transaction.debit_amount != 0 else "IN"
     if bank_direction == "OUT" and invoice.invoice_direction != "INPUT":
         return None
@@ -399,19 +415,52 @@ def _candidate_score(transaction: BankTransaction, invoice: Invoice) -> tuple[De
 
     transaction_amount = _transaction_amount(transaction)
     amount_gap = abs(Decimal(str(transaction_amount)) - Decimal(str(invoice.total_amount or Decimal("0"))))
-    allowed_gap = max(Decimal("1.00"), abs(Decimal(str(transaction_amount))) * Decimal("0.05"))
+    amount_base = max(abs(Decimal(str(transaction_amount))), abs(Decimal(str(invoice.total_amount or Decimal("0")))), Decimal("1.00"))
+    allowed_gap = max(Decimal("1.00"), amount_base * (Decimal("0.60") if broad else Decimal("0.05")))
     if amount_gap > allowed_gap:
         return None
 
     date_gap = abs((transaction.transaction_date - invoice.invoice_date).days)
-    if date_gap > 45:
+    if date_gap > (75 if broad else 45):
         return None
 
     counterparty = (transaction.counterparty_name or "").strip()
     invoice_counterparty_name = invoice.seller_name if invoice.invoice_direction == "INPUT" else invoice.buyer_name
     invoice_counterparty = (invoice_counterparty_name or "").strip()
-    party_penalty = 0 if counterparty and invoice_counterparty and counterparty == invoice_counterparty else 1
+    party_penalty = 0 if _party_names_may_match(counterparty, invoice_counterparty, broad=broad) else 1
+    if broad and party_penalty and not counterparty and not invoice_counterparty:
+        party_penalty = 2
     return amount_gap, date_gap, party_penalty
+
+
+def _party_names_may_match(counterparty: str, invoice_counterparty: str, *, broad: bool) -> bool:
+    if counterparty and invoice_counterparty and counterparty == invoice_counterparty:
+        return True
+    if not broad or not counterparty or not invoice_counterparty:
+        return False
+    compact_counterparty = _compact_party_name(counterparty)
+    compact_invoice = _compact_party_name(invoice_counterparty)
+    return bool(
+        compact_counterparty
+        and compact_invoice
+        and (
+            compact_counterparty in compact_invoice
+            or compact_invoice in compact_counterparty
+            or len(set(compact_counterparty) & set(compact_invoice)) >= min(4, len(compact_invoice))
+        )
+    )
+
+
+def _compact_party_name(value: str) -> str:
+    return (
+        value.replace("有限公司", "")
+        .replace("有限责任公司", "")
+        .replace("昆山", "")
+        .replace("苏州", "")
+        .replace("上海", "")
+        .replace(" ", "")
+        .strip()
+    )
 
 
 def _transaction_amount(transaction: BankTransaction) -> Decimal:

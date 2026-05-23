@@ -203,6 +203,7 @@ async function createPackage() {
 
 .app-main {
   min-width: 0;
+  overflow: hidden;
 }
 
 .app-topbar {
@@ -229,7 +230,10 @@ async function createPackage() {
 
 .app-content {
   display: grid;
+  grid-template-columns: minmax(0, 1fr);
   gap: 18px;
+  min-width: 0;
+  overflow: hidden;
   padding: 24px 28px 40px;
 }
 
