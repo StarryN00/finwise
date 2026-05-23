@@ -6,7 +6,7 @@ from fastapi.testclient import TestClient
 
 from app.api.deps import get_db
 from app.main import create_app
-from app.models import Enterprise, MonthlyStatement, MonthlyWorkPackage, TaxFilingDraft
+from app.models import Enterprise, InitialFinancialSnapshot, MonthlyStatement, MonthlyWorkPackage, TaxFilingDraft
 from app.reports.health_diagnosis import build_health_diagnosis
 from app.reports.monthly_brief import render_monthly_brief_html
 from app.services.report_service import build_health_report_ai_payload, desensitize_ai_payload, generate_health_report
@@ -182,6 +182,109 @@ def test_generate_health_report_uses_ai_client_with_desensitized_payload(db_sess
     assert enterprise.name not in str(seen_payloads[0])
     assert enterprise.unified_social_credit_code not in str(seen_payloads[0])
     assert seen_payloads[0]["enterprise_profile"]["name"] == "本企业"
+
+
+def test_generate_health_report_uses_initial_snapshot_when_statement_lacks_core_balance_data(db_session, tmp_path):
+    enterprise, package = make_package(db_session)
+    db_session.add(
+        InitialFinancialSnapshot(
+            organization_id=ORG,
+            enterprise_id=enterprise.id,
+            balance_sheet_data={
+                "资产总计": "908486.12",
+                "负债合计": "952699.44",
+                "货币资金": "614277.56",
+                "应收账款": "39863.80",
+                "存货": "82575.21",
+            },
+            income_statement_data={
+                "营业收入": "251415.93",
+                "营业成本": "226274.34",
+                "管理费用": "10387.26",
+                "营业利润": "14754.33",
+                "净利润": "14754.33",
+            },
+        )
+    )
+    db_session.add(
+        MonthlyStatement(
+            organization_id=ORG,
+            monthly_work_package_id=package.id,
+            estimated_balance_sheet={"cash_net_movement": "-64576.00"},
+            estimated_income_statement={"revenue": "0.00", "operating_profit": "0.00"},
+        )
+    )
+    db_session.add(
+        TaxFilingDraft(
+            organization_id=ORG,
+            monthly_work_package_id=package.id,
+            data={"vat_payable": "0.00", "surcharge_estimate": "0.00"},
+            status="DRAFT",
+        )
+    )
+    db_session.commit()
+
+    report = generate_health_report(db_session, monthly_work_package_id=package.id, output_dir=tmp_path)
+
+    html = tmp_path.joinpath(f"health-report-{package.id}.html").read_text(encoding="utf-8")
+    assert report.status == "READY"
+    assert report.data_version["missing_data"] == []
+    assert "资产负债率" in html
+    assert "营业利润率" in html
+
+
+def test_ai_health_report_html_uses_diagnostic_report_layout(db_session, tmp_path):
+    enterprise, package = make_package(db_session)
+    db_session.add(
+        MonthlyStatement(
+            organization_id=ORG,
+            monthly_work_package_id=package.id,
+            estimated_balance_sheet={
+                "total_assets": "908486.12",
+                "total_liabilities": "952699.44",
+                "cash_net_movement": "-64576.00",
+            },
+            estimated_income_statement={
+                "revenue": "251415.93",
+                "cost": "226274.34",
+                "expense": "10387.26",
+                "operating_profit": "14754.33",
+            },
+        )
+    )
+    db_session.add(
+        TaxFilingDraft(
+            organization_id=ORG,
+            monthly_work_package_id=package.id,
+            data={"vat_payable": "0.00", "surcharge_estimate": "0.00"},
+            status="DRAFT",
+        )
+    )
+    db_session.commit()
+
+    class FakeHealthAiClient:
+        def generate_report(self, payload):
+            return {
+                "sections": [
+                    {"title": "一、执行摘要与关键结论", "content": ["AI 认为资产负债率偏高，需优先压降短期债务。"]},
+                    {"title": "二、风险等级总览矩阵", "content": ["偿债能力：高风险；盈利能力：中风险；税务风险：低风险。"]},
+                    {"title": "三、改进建议", "content": ["建立回款计划，并按月复核进销项匹配。"]},
+                ]
+            }
+
+    report = generate_health_report(
+        db_session,
+        monthly_work_package_id=package.id,
+        output_dir=tmp_path,
+        ai_client=FakeHealthAiClient(),
+    )
+
+    html = tmp_path.joinpath(f"health-report-{package.id}.html").read_text(encoding="utf-8")
+    assert report.status == "READY"
+    assert "risk-overview" in html
+    assert "metric-grid" in html
+    assert "资产负债率" in html
+    assert "AI 认为资产负债率偏高" in html
 
 
 def test_health_report_ai_payload_follows_sample_report_sections():

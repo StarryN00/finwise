@@ -13,7 +13,7 @@ from sqlalchemy.orm import Session
 
 from app.core.config import get_settings
 from app.core.org_context import get_current_organization_id
-from app.models import Enterprise, MonthlyStatement, MonthlyWorkPackage, Report, TaxFilingDraft
+from app.models import Enterprise, InitialFinancialSnapshot, MonthlyStatement, MonthlyWorkPackage, Report, TaxFilingDraft
 from app.reports.health_diagnosis import build_health_diagnosis
 
 
@@ -63,7 +63,7 @@ class MoonshotHealthReportClient:
             headers={"Authorization": f"Bearer {self.api_key}", "Content-Type": "application/json"},
             method="POST",
         )
-        with request.urlopen(http_request, timeout=60) as response:
+        with request.urlopen(http_request, timeout=180) as response:
             response_data = json.loads(response.read().decode("utf-8"))
         content = response_data["choices"][0]["message"]["content"]
         return json.loads(content)
@@ -87,10 +87,12 @@ def generate_health_report(
         "industry": enterprise.industry if enterprise else "",
         "unified_social_credit_code": enterprise.unified_social_credit_code if enterprise else "",
     }
-    statement_data = {
-        "estimated_balance_sheet": statement.estimated_balance_sheet if statement else {},
-        "estimated_income_statement": statement.estimated_income_statement if statement else {},
-    }
+    initial_snapshot = (
+        db.scalar(select(InitialFinancialSnapshot).where(InitialFinancialSnapshot.enterprise_id == package.enterprise_id))
+        if enterprise
+        else None
+    )
+    statement_data = _build_report_statement_data(statement=statement, initial_snapshot=initial_snapshot)
     tax_data = tax_draft.data if tax_draft else {}
 
     diagnosis = build_health_diagnosis(
@@ -112,6 +114,8 @@ def generate_health_report(
             diagnosis["html"] = render_ai_health_report_html(
                 enterprise=enterprise_data,
                 period=period,
+                statement=statement_data,
+                tax_draft=tax_data,
                 sections=ai_response.get("sections", []),
             )
             used_ai_report = True
@@ -179,7 +183,19 @@ def build_health_report_ai_payload(*, enterprise: dict, period: str, statement: 
     }
 
 
-def render_ai_health_report_html(*, enterprise: dict, period: str, sections: list[dict]) -> str:
+def render_ai_health_report_html(
+    *,
+    enterprise: dict,
+    period: str,
+    sections: list[dict],
+    statement: dict | None = None,
+    tax_draft: dict | None = None,
+) -> str:
+    statement = statement or {}
+    tax_draft = tax_draft or {}
+    balance = statement.get("estimated_balance_sheet", {})
+    income = statement.get("estimated_income_statement", {})
+    metric_cards = _health_metric_cards(balance=balance, income=income, tax_draft=tax_draft)
     section_html = []
     for section in sections:
         title = escape(str(section.get("title") or "诊断章节"))
@@ -198,23 +214,183 @@ def render_ai_health_report_html(*, enterprise: dict, period: str, sections: lis
   <meta charset="utf-8" />
   <title>{escape(str(enterprise.get("name", "企业")))} {escape(period)} 财务健康诊断</title>
   <style>
-    body {{ max-width: 980px; margin: 0 auto; padding: 40px 28px; font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", "PingFang SC", sans-serif; color: #172033; line-height: 1.7; background: #f6f8fb; }}
-    main {{ padding: 32px; border: 1px solid #d9e2ef; border-radius: 10px; background: #fff; }}
-    h1 {{ margin: 0 0 8px; color: #123c7c; font-size: 28px; }}
-    h2 {{ margin-top: 30px; padding-bottom: 8px; border-bottom: 1px solid #d9e2ef; color: #1769e0; font-size: 20px; }}
-    .subtitle {{ color: #5d6b82; }}
+    body {{ margin: 0; padding: 40px 28px; font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", "PingFang SC", sans-serif; color: #172033; line-height: 1.72; background: #eef3f8; }}
+    main {{ max-width: 1080px; margin: 0 auto; }}
+    header {{ padding: 34px 38px; border-radius: 16px; color: #fff; background: linear-gradient(135deg, #123c7c, #1769e0); }}
+    h1 {{ margin: 0 0 8px; font-size: 30px; letter-spacing: 0; }}
+    h2 {{ margin: 0 0 14px; color: #123c7c; font-size: 20px; }}
+    section {{ margin-top: 18px; padding: 26px 30px; border: 1px solid #d9e2ef; border-radius: 14px; background: #fff; }}
     p {{ margin: 10px 0; }}
+    .subtitle {{ margin: 0; color: #dbeafe; }}
+    .metric-grid {{ display: grid; grid-template-columns: repeat(4, minmax(0, 1fr)); gap: 12px; margin-top: 18px; }}
+    .metric-card {{ padding: 16px; border: 1px solid #d9e2ef; border-radius: 12px; background: #f8fafc; }}
+    .metric-card span {{ display: block; color: #667085; font-size: 12px; }}
+    .metric-card strong {{ display: block; margin-top: 8px; color: #0f2544; font-size: 22px; }}
+    .risk-overview table {{ width: 100%; border-collapse: collapse; margin-top: 10px; }}
+    .risk-overview th, .risk-overview td {{ padding: 11px 12px; border-bottom: 1px solid #e5edf6; text-align: left; }}
+    .risk-overview th {{ color: #667085; background: #f8fafc; }}
+    .risk-high {{ color: #b42318; font-weight: 700; }}
+    .risk-medium {{ color: #b54708; font-weight: 700; }}
+    .risk-low {{ color: #027a48; font-weight: 700; }}
+    @media (max-width: 860px) {{ .metric-grid {{ grid-template-columns: 1fr 1fr; }} }}
   </style>
 </head>
 <body>
   <main>
-    <h1>{escape(str(enterprise.get("name", "企业")))} {escape(period)} 财务健康诊断报告</h1>
-    <p class="subtitle">基于资产负债表、利润表、申报草稿及已确认账目，由 AI 生成多维度风险分析与建议。</p>
+    <header>
+      <h1>{escape(str(enterprise.get("name", "企业")))} {escape(period)} 财务健康诊断报告</h1>
+      <p class="subtitle">基于资产负债表、利润表、申报草稿及已确认账目，由 AI 生成多维度风险分析与建议。</p>
+    </header>
+    <section class="metric-grid">{''.join(metric_cards)}</section>
+    <section class="risk-overview">
+      <h2>风险等级总览矩阵</h2>
+      {_risk_overview_table(balance=balance, income=income, tax_draft=tax_draft)}
+    </section>
     {''.join(section_html)}
   </main>
 </body>
 </html>
 """
+
+
+def _build_report_statement_data(*, statement: MonthlyStatement | None, initial_snapshot: InitialFinancialSnapshot | None) -> dict:
+    estimated_balance_sheet = dict(statement.estimated_balance_sheet if statement else {})
+    estimated_income_statement = dict(statement.estimated_income_statement if statement else {})
+    if initial_snapshot is not None:
+        estimated_balance_sheet = _merge_initial_balance_sheet(estimated_balance_sheet, initial_snapshot.balance_sheet_data)
+        estimated_income_statement = _merge_initial_income_statement(
+            estimated_income_statement,
+            initial_snapshot.income_statement_data,
+        )
+    return {
+        "estimated_balance_sheet": estimated_balance_sheet,
+        "estimated_income_statement": estimated_income_statement,
+    }
+
+
+def _merge_initial_balance_sheet(current: dict, initial: dict) -> dict:
+    mapping = {
+        "total_assets": "资产总计",
+        "total_liabilities": "负债合计",
+        "owner_equity": "所有者权益合计",
+        "cash": "货币资金",
+        "accounts_receivable": "应收账款",
+        "inventory": "存货",
+        "accounts_payable": "应付账款",
+    }
+    return _merge_chinese_statement_fields(current, initial, mapping)
+
+
+def _merge_initial_income_statement(current: dict, initial: dict) -> dict:
+    mapping = {
+        "revenue": "营业收入",
+        "cost": "营业成本",
+        "expense": "管理费用",
+        "operating_profit": "营业利润",
+        "net_profit": "净利润",
+    }
+    merged = _merge_chinese_statement_fields(current, initial, mapping)
+    if _is_missing_money(merged.get("gross_profit")) and not _is_missing_money(merged.get("revenue")) and not _is_missing_money(merged.get("cost")):
+        merged["gross_profit"] = f"{float(merged['revenue']) - float(merged['cost']):.2f}"
+    return merged
+
+
+def _merge_chinese_statement_fields(current: dict, initial: dict, mapping: dict[str, str]) -> dict:
+    merged = dict(current)
+    for target_key, source_key in mapping.items():
+        if _is_missing_money(merged.get(target_key)) and not _is_missing_money(initial.get(source_key)):
+            merged[target_key] = _format_number(initial[source_key])
+    return merged
+
+
+def _health_metric_cards(*, balance: dict, income: dict, tax_draft: dict) -> list[str]:
+    metrics = [
+        ("资产总额", _format_wan(balance.get("total_assets"))),
+        ("资产负债率", _ratio(balance.get("total_liabilities"), balance.get("total_assets"))),
+        ("营业收入", _format_wan(income.get("revenue"))),
+        ("营业利润率", _ratio(income.get("operating_profit"), income.get("revenue"))),
+        ("现金净变动", _format_wan(balance.get("cash_net_movement"))),
+        ("本期应纳增值税", _format_wan(tax_draft.get("vat_payable"))),
+        ("毛利率", _ratio(_money_diff(income.get("revenue"), income.get("cost")), income.get("revenue"))),
+        ("净利润", _format_wan(income.get("net_profit") or income.get("operating_profit"))),
+    ]
+    return [f"<div class=\"metric-card\"><span>{escape(label)}</span><strong>{escape(value)}</strong></div>" for label, value in metrics]
+
+
+def _risk_overview_table(*, balance: dict, income: dict, tax_draft: dict) -> str:
+    liability_ratio = _numeric_ratio(balance.get("total_liabilities"), balance.get("total_assets"))
+    profit_margin = _numeric_ratio(income.get("operating_profit"), income.get("revenue"))
+    vat_payable = _to_float(tax_draft.get("vat_payable"))
+    rows = [
+        ("偿债能力", _risk_level(liability_ratio, high=0.7, medium=0.55, higher_is_risk=True), _ratio(balance.get("total_liabilities"), balance.get("total_assets")), "关注资产负债结构和短期债务压力"),
+        ("盈利能力", _risk_level(profit_margin, high=0.03, medium=0.08, higher_is_risk=False), _ratio(income.get("operating_profit"), income.get("revenue")), "关注收入质量、成本率和费用刚性"),
+        ("税务合规", "低风险" if vat_payable >= 0 else "中风险", _format_wan(tax_draft.get("vat_payable")), "结合未匹配发票和申报草稿复核"),
+        ("现金流", "中风险" if _to_float(balance.get("cash_net_movement")) < 0 else "低风险", _format_wan(balance.get("cash_net_movement")), "关注经营现金净流入和回款节奏"),
+    ]
+    body = "".join(
+        f"<tr><td>{escape(item)}</td><td class=\"{_risk_class(level)}\">{escape(level)}</td><td>{escape(value)}</td><td>{escape(note)}</td></tr>"
+        for item, level, value, note in rows
+    )
+    return f"<table><thead><tr><th>维度</th><th>风险等级</th><th>关键指标</th><th>诊断提示</th></tr></thead><tbody>{body}</tbody></table>"
+
+
+def _risk_level(value: float | None, *, high: float, medium: float, higher_is_risk: bool) -> str:
+    if value is None:
+        return "中风险"
+    if higher_is_risk:
+        if value >= high:
+            return "高风险"
+        if value >= medium:
+            return "中风险"
+        return "低风险"
+    if value <= high:
+        return "高风险"
+    if value <= medium:
+        return "中风险"
+    return "低风险"
+
+
+def _risk_class(level: str) -> str:
+    return {"高风险": "risk-high", "中风险": "risk-medium", "低风险": "risk-low"}.get(level, "")
+
+
+def _ratio(numerator, denominator) -> str:
+    value = _numeric_ratio(numerator, denominator)
+    if value is None:
+        return "数据不足"
+    return f"{value * 100:.2f}%"
+
+
+def _numeric_ratio(numerator, denominator) -> float | None:
+    denominator_value = _to_float(denominator)
+    if denominator_value == 0:
+        return None
+    return _to_float(numerator) / denominator_value
+
+
+def _money_diff(left, right) -> str:
+    return f"{_to_float(left) - _to_float(right):.2f}"
+
+
+def _format_wan(value) -> str:
+    return f"{_to_float(value) / 10000:.2f} 万元"
+
+
+def _format_number(value) -> str:
+    return f"{_to_float(value):.2f}"
+
+
+def _to_float(value) -> float:
+    try:
+        return float(str(value or "0").replace(",", ""))
+    except (TypeError, ValueError):
+        return 0.0
+
+
+def _is_missing_money(value) -> bool:
+    if value is None or value == "":
+        return True
+    return _to_float(value) == 0
 
 
 def desensitize_ai_payload(payload: dict) -> dict:
