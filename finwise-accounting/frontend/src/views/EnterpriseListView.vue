@@ -8,8 +8,14 @@
     <template #filters>
       <el-input v-model="keyword" placeholder="搜索企业" clearable style="width: 220px" />
     </template>
-    <el-table v-loading="workspace.isLoading" :data="filteredEnterprises" stripe>
-      <el-table-column prop="name" label="企业名称" min-width="220" />
+    <el-table v-loading="workspace.isLoading" :data="filteredEnterprises" stripe @row-click="openEnterpriseDetail">
+      <el-table-column label="企业名称" min-width="220">
+        <template #default="{ row }">
+          <el-button class="enterprise-name-link" link type="primary" @click.stop="openEnterpriseDetail(row)">
+            {{ row.name }}
+          </el-button>
+        </template>
+      </el-table-column>
       <el-table-column prop="taxpayerType" label="纳税人类型" width="140" />
       <el-table-column prop="latestMonth" label="最新月份" width="120" />
       <el-table-column label="资料状态" width="130">
@@ -43,4 +49,15 @@ const filteredEnterprises = computed(() => {
   if (!value) return workspace.enterprises
   return workspace.enterprises.filter((enterprise) => enterprise.name.includes(value))
 })
+
+function openEnterpriseDetail(row) {
+  router.push(`/enterprises/${row.id}`)
+}
 </script>
+
+<style scoped>
+.enterprise-name-link {
+  padding: 0;
+  font-weight: 700;
+}
+</style>

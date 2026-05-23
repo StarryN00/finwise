@@ -67,7 +67,13 @@ def _enterprise_row(db: Session, enterprise: Enterprise, package: MonthlyWorkPac
     return {
         "id": str(enterprise.id),
         "name": enterprise.name,
+        "unifiedSocialCreditCode": enterprise.unified_social_credit_code,
         "taxpayerType": "一般纳税人" if enterprise.taxpayer_type == "GENERAL" else "小规模纳税人",
+        "taxpayerTypeCode": enterprise.taxpayer_type,
+        "industry": enterprise.industry,
+        "province": enterprise.province,
+        "city": enterprise.city,
+        "status": enterprise.status,
         "latestMonth": _period(package) if package else "-",
         "dataStatus": package.matching_status if package and package.matching_status != "NOT_STARTED" else (package.data_status if package else "PENDING_IMPORT"),
         "pendingConfirmations": package.pending_confirmation_count if package else 0,

@@ -17,6 +17,11 @@ const routes = [
     component: () => import('../views/EnterpriseInitView.vue'),
   },
   {
+    path: '/enterprises/:enterpriseId',
+    name: 'enterprise-detail',
+    component: () => import('../views/EnterpriseDetailView.vue'),
+  },
+  {
     path: '/monthly-workspace',
     name: 'monthly-workspace',
     component: () => import('../views/MonthlyWorkspaceView.vue'),

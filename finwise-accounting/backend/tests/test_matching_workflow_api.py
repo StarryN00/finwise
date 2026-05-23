@@ -303,6 +303,21 @@ def test_workspace_snapshot_can_focus_selected_package():
     assert payload["workPackages"][0]["company"] == first_enterprise.name
 
 
+def test_workspace_enterprise_rows_include_detail_fields():
+    client, db_session = make_context()
+    enterprise, _package = make_package(db_session)
+
+    response = client.get("/api/workspace")
+
+    assert response.status_code == 200
+    row = next(item for item in response.json()["enterprises"] if item["id"] == str(enterprise.id))
+    assert row["unifiedSocialCreditCode"] == "91320500FLOW000001"
+    assert row["industry"] == "制造业"
+    assert row["province"] == "江苏省"
+    assert row["city"] == "苏州市"
+    assert row["status"] == "ACTIVE"
+
+
 def test_confirm_unmatched_bank_transaction_creates_confirmed_line_and_rule():
     client, db_session = make_context()
     _enterprise, package = make_package(db_session)
