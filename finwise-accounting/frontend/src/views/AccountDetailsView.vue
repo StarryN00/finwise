@@ -16,6 +16,16 @@
       </div>
     </div>
     <p class="match-hint">可先运行匹配使用确定性规则快速处理，再用 AI 智能匹配补充复杂或模糊场景；两者没有强制顺序。</p>
+    <div v-if="isAiMatching" class="ai-progress-panel">
+      <div>
+        <strong>AI 正在分析流水与发票</strong>
+        <span>通常需要几十秒，完成后会自动刷新待确认匹配。</span>
+      </div>
+      <el-progress :percentage="aiProgress" :stroke-width="10" striped striped-flow />
+    </div>
+    <div class="scroll-affordance">
+      <span>表格可左右滑动查看更多字段</span>
+    </div>
     <div class="account-table-scroll">
       <el-table v-loading="workspace.isLoading" :data="rows" class="compact-account-table" stripe>
         <el-table-column prop="sourceCompleteness" label="完整性" width="116" />
@@ -65,7 +75,7 @@
 </template>
 
 <script setup>
-import { computed, ref } from 'vue'
+import { computed, onBeforeUnmount, ref } from 'vue'
 import { ElMessage } from 'element-plus'
 import DataTableShell from '../components/DataTableShell.vue'
 import PackageContextBar from '../components/PackageContextBar.vue'
@@ -78,6 +88,8 @@ const confirmDialogVisible = ref(false)
 const isConfirming = ref(false)
 const isAiMatching = ref(false)
 const isRuleMatching = ref(false)
+const aiProgress = ref(0)
+let aiProgressTimer = null
 const currentRow = ref(null)
 const confirmForm = ref({
   businessType: '',
@@ -133,15 +145,45 @@ async function runAiMatching() {
     return
   }
   isAiMatching.value = true
+  startAiProgress()
   try {
     const result = await workspace.runAiMatching(activePackage.id)
+    aiProgress.value = 100
+    if (result?.aiStatus === 'UNAVAILABLE') {
+      ElMessage.warning(result.message || 'AI 服务暂时不可用，请稍后重试')
+      return
+    }
     ElMessage.success(`AI 已生成 ${result?.created_matches ?? 0} 条待确认匹配`)
   } catch (error) {
     ElMessage.error(error?.response?.data?.detail || error?.message || 'AI 匹配失败')
   } finally {
+    stopAiProgress()
     isAiMatching.value = false
   }
 }
+
+function startAiProgress() {
+  stopAiProgress()
+  aiProgress.value = 8
+  aiProgressTimer = window.setInterval(() => {
+    if (aiProgress.value < 88) {
+      aiProgress.value += 4
+    } else if (aiProgress.value < 96) {
+      aiProgress.value += 1
+    }
+  }, 1200)
+}
+
+function stopAiProgress() {
+  if (aiProgressTimer) {
+    window.clearInterval(aiProgressTimer)
+    aiProgressTimer = null
+  }
+}
+
+onBeforeUnmount(() => {
+  stopAiProgress()
+})
 
 async function startConfirm(row) {
   if (row.confirmType === 'match') {
@@ -211,9 +253,64 @@ function defaultBusinessType(row) {
   font-size: 12px;
 }
 
+.ai-progress-panel {
+  display: grid;
+  grid-template-columns: minmax(220px, 0.8fr) minmax(260px, 1fr);
+  gap: 16px;
+  align-items: center;
+  margin: 0 16px 12px;
+  padding: 12px;
+  border: 1px solid #bfdbfe;
+  border-radius: var(--fw-radius-sm);
+  background: #eff6ff;
+}
+
+.ai-progress-panel strong,
+.ai-progress-panel span {
+  display: block;
+}
+
+.ai-progress-panel span {
+  margin-top: 4px;
+  color: var(--fw-text-muted);
+  font-size: 12px;
+}
+
+.scroll-affordance {
+  display: flex;
+  justify-content: flex-end;
+  padding: 0 16px 8px;
+  color: var(--fw-brand);
+  font-size: 12px;
+}
+
+.scroll-affordance span {
+  padding: 4px 10px;
+  border: 1px solid #bfdbfe;
+  border-radius: 999px;
+  background: #eff6ff;
+}
+
 .account-table-scroll {
   max-width: 100%;
   overflow-x: auto;
+  border-top: 1px solid var(--fw-line);
+  scrollbar-color: var(--fw-brand) #eaf2ff;
+  scrollbar-width: thin;
+}
+
+.account-table-scroll::-webkit-scrollbar {
+  height: 12px;
+}
+
+.account-table-scroll::-webkit-scrollbar-track {
+  background: #eaf2ff;
+}
+
+.account-table-scroll::-webkit-scrollbar-thumb {
+  border: 2px solid #eaf2ff;
+  border-radius: 999px;
+  background: var(--fw-brand);
 }
 
 .compact-account-table {
@@ -224,6 +321,10 @@ function defaultBusinessType(row) {
   .account-toolbar {
     align-items: center;
     overflow-x: auto;
+  }
+
+  .ai-progress-panel {
+    grid-template-columns: 1fr;
   }
 }
 </style>

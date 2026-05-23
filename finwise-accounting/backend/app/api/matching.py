@@ -39,7 +39,14 @@ def run_ai_matching_endpoint(package_id: UUID, db: Session = Depends(get_db)):
     try:
         return run_ai_matching(db, monthly_work_package_id=package_id)
     except AiMatchingUnavailableError as exc:
-        raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail=str(exc)) from exc
+        return {
+            "aiStatus": "UNAVAILABLE",
+            "message": str(exc),
+            "created_matches": 0,
+            "uncertain_matches": 0,
+            "candidate_transactions": 0,
+            "candidate_invoices": 0,
+        }
     except MonthlyPackageNotFoundError as exc:
         raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail=str(exc)) from exc
 

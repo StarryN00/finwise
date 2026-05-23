@@ -3,7 +3,7 @@ from __future__ import annotations
 import json
 from decimal import Decimal
 from typing import Protocol
-from urllib import request
+from urllib import error, request
 from uuid import UUID
 
 from sqlalchemy import select
@@ -58,10 +58,17 @@ class MoonshotAiMatchingClient:
             },
             method="POST",
         )
-        with request.urlopen(http_request, timeout=45) as response:
-            response_data = json.loads(response.read().decode("utf-8"))
-        content = response_data["choices"][0]["message"]["content"]
-        return json.loads(content)
+        try:
+            with request.urlopen(http_request, timeout=45) as response:
+                response_data = json.loads(response.read().decode("utf-8"))
+            content = response_data["choices"][0]["message"]["content"]
+            return json.loads(content)
+        except TimeoutError as exc:
+            raise AiMatchingUnavailableError("AI 服务响应超时，请稍后重试，或先使用规则匹配。") from exc
+        except error.HTTPError as exc:
+            raise AiMatchingUnavailableError(f"AI 服务返回错误：HTTP {exc.code}") from exc
+        except (OSError, KeyError, json.JSONDecodeError) as exc:
+            raise AiMatchingUnavailableError("AI 服务暂时不可用，请稍后重试。") from exc
 
 
 def run_ai_matching(db: Session, *, monthly_work_package_id: UUID, ai_client: AiMatchingClient | None = None) -> dict:

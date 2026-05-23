@@ -12,6 +12,7 @@ from app.core.database import Base
 from app.core.org_context import ensure_default_organization
 from app.main import create_app
 from app.models import AccountingLine, BankTransaction, Enterprise, Invoice, MatchingRule, MonthlyWorkPackage
+from app.services.ai_matching_service import AiMatchingUnavailableError
 from app.services.matching_service import run_matching
 
 
@@ -302,6 +303,25 @@ def test_ai_matching_endpoint_runs_ai_suggestions(monkeypatch):
     assert response.status_code == 200
     assert response.json()["created_matches"] == 2
     assert response.json()["uncertain_matches"] == 3
+
+
+def test_ai_matching_endpoint_returns_readable_error_when_provider_times_out(monkeypatch):
+    client, db_session = make_context()
+    _enterprise, package = make_package(db_session)
+
+    def fake_run_ai_matching(db, *, monthly_work_package_id):
+        assert db is db_session
+        assert monthly_work_package_id == package.id
+        raise AiMatchingUnavailableError("AI 服务响应超时，请稍后重试，或先使用规则匹配。")
+
+    monkeypatch.setattr("app.api.matching.run_ai_matching", fake_run_ai_matching)
+
+    response = client.post(f"/api/monthly-packages/{package.id}/matching/ai-run")
+
+    assert response.status_code == 200
+    assert response.json()["aiStatus"] == "UNAVAILABLE"
+    assert response.json()["message"] == "AI 服务响应超时，请稍后重试，或先使用规则匹配。"
+    assert response.json()["created_matches"] == 0
 
 
 def test_confirm_unmatched_invoice_marks_invoice_confirmed():
