@@ -9,6 +9,23 @@ from sqlalchemy.orm import Session
 from app.models import AccountingLine, BankTransaction, Enterprise, Invoice, MatchRecord, MonthlyStatement, MonthlyWorkPackage, Report, TaxFilingDraft
 
 
+BUSINESS_TYPE_LABELS = {
+    "AUTO_EXACT": "自动匹配",
+    "AI_SUGGESTED": "AI 建议匹配",
+    "AI_FALLBACK_RULE": "需要规则匹配",
+    "AI_FALLBACK_CANDIDATE": "疑似匹配候选",
+    "MANUAL_CANDIDATE": "人工候选",
+    "MANUAL_INVOICE_ONLY": "手工确认发票",
+    "RULE": "规则匹配",
+    "BANK_FEE": "银行手续费",
+    "CONSULTING_SERVICE": "咨询服务",
+    "OTHER_EXPENSE": "其他支出",
+    "OTHER_INCOME": "其他收入",
+    "OUTPUT_REVENUE": "销售收入",
+    "INVOICE_CONFIRMED": "发票确认",
+}
+
+
 def get_workspace_snapshot(db: Session, selected_package_id: UUID | None = None) -> dict:
     enterprises = list(db.scalars(select(Enterprise).order_by(Enterprise.created_at.desc(), Enterprise.id)))
     packages = list(db.scalars(select(MonthlyWorkPackage).order_by(MonthlyWorkPackage.period_year.desc(), MonthlyWorkPackage.period_month.desc())))
@@ -132,7 +149,7 @@ def _account_rows(db: Session, package: MonthlyWorkPackage) -> list[dict]:
         if line is not None:
             emitted_line_ids.add(line.id)
         status = _record_status(record) if record else (line.confirmation_status if line else "PENDING_CONFIRMATION")
-        business_type = record.match_method if record else (line.business_type if line else "待确认")
+        business_type = _business_type_label(record.match_method if record else (line.business_type if line else "待确认"))
         rows.append(
             {
                 "id": str(transaction.id),
@@ -208,7 +225,7 @@ def _account_rows(db: Session, package: MonthlyWorkPackage) -> list[dict]:
                 "remark": line.business_type,
                 "status": line.confirmation_status,
                 "confidence": 0,
-                "businessType": line.business_type,
+                "businessType": _business_type_label(line.business_type),
                 "amount": _format_amount(line.amount),
                 "tax": _format_amount(line.tax_amount),
                 "directionType": "人工",
@@ -245,7 +262,7 @@ def _merged_source_row(
         "remark": _combined_remark(transaction, invoice),
         "status": _record_status(record),
         "confidence": record.confidence,
-        "businessType": record.match_method,
+        "businessType": _business_type_label(record.match_method),
         "amount": _format_amount((transaction.credit_amount or Decimal("0")) or (transaction.debit_amount or Decimal("0"))),
         "tax": _format_amount(invoice.tax_amount),
         "directionType": "匹配",
@@ -276,7 +293,7 @@ def _invoice_only_row(record: MatchRecord, invoice: Invoice, *, enterprise_name:
         "remark": _invoice_remark(invoice),
         "status": _record_status(record),
         "confidence": record.confidence,
-        "businessType": record.match_method,
+        "businessType": _business_type_label(record.match_method),
         "amount": _format_amount(invoice.total_amount),
         "tax": _format_amount(invoice.tax_amount),
         "directionType": _invoice_direction_type(invoice),
@@ -327,6 +344,12 @@ def _record_status(record: MatchRecord | None) -> str:
     if record is None:
         return "PENDING_CONFIRMATION"
     return "CONFIRMED" if record.confirmation_status in {"AUTO_CONFIRMED", "CONFIRMED"} else record.confirmation_status
+
+
+def _business_type_label(value: str | None) -> str:
+    if not value:
+        return "待确认"
+    return BUSINESS_TYPE_LABELS.get(value, value)
 
 
 def _confirm_type(record: MatchRecord | None, line: AccountingLine | None, *, fallback: str) -> str:

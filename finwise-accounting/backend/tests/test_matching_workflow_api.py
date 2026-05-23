@@ -11,7 +11,7 @@ from app.api.deps import get_db
 from app.core.database import Base
 from app.core.org_context import ensure_default_organization
 from app.main import create_app
-from app.models import AccountingLine, BankTransaction, Enterprise, Invoice, MatchingRule, MonthlyWorkPackage
+from app.models import AccountingLine, BankTransaction, Enterprise, Invoice, MatchRecord, MatchingRule, MonthlyWorkPackage
 from app.services.ai_matching_service import AiMatchingUnavailableError
 from app.services.matching_service import run_matching
 
@@ -165,6 +165,7 @@ def test_workspace_rows_merge_bank_and_invoice_sources():
     assert merged_row["remark"] == "收到客户货款 备注A / 发票备注A"
     assert merged_row["amount"] == "1,130.00"
     assert merged_row["tax"] == "130.00"
+    assert merged_row["businessType"] == "自动匹配"
 
     bank_only_row = next(row for row in rows if row["sourceId"] == str(unmatched_transaction.id))
     assert bank_only_row["sourceCompleteness"] == "缺失发票主体"
@@ -186,6 +187,53 @@ def test_workspace_rows_merge_bank_and_invoice_sources():
     assert invoice_only_row["seller"] == "苏州票方有限公司"
     assert invoice_only_row["buyer"] == enterprise.name
     assert invoice_only_row["remark"] == "票据备注B"
+
+
+def test_workspace_rows_display_business_type_labels_in_chinese():
+    client, db_session = make_context()
+    enterprise, package = make_package(db_session)
+    transaction = BankTransaction(
+        organization_id=ORG,
+        monthly_work_package_id=package.id,
+        transaction_date=date(2026, 5, 8),
+        summary="收到客户货款",
+        debit_amount=Decimal("0.00"),
+        credit_amount=Decimal("65000.00"),
+        counterparty_name="苏州客户有限公司",
+    )
+    invoice = Invoice(
+        organization_id=ORG,
+        monthly_work_package_id=package.id,
+        invoice_direction="OUTPUT",
+        invoice_number="OUT-AI-FALLBACK",
+        invoice_date=date(2026, 5, 9),
+        amount=Decimal("82000.00"),
+        tax_amount=Decimal("1100.00"),
+        total_amount=Decimal("83100.00"),
+        seller_name=enterprise.name,
+        buyer_name="苏州客户有限公司",
+    )
+    db_session.add_all([transaction, invoice])
+    db_session.flush()
+    db_session.add(
+        MatchRecord(
+            organization_id=ORG,
+            monthly_work_package_id=package.id,
+            bank_transaction_id=transaction.id,
+            invoice_id=invoice.id,
+            match_method="AI_FALLBACK_RULE",
+            confidence=70,
+            explanation="timeout fallback",
+            confirmation_status="PENDING",
+        )
+    )
+    db_session.commit()
+
+    response = client.get("/api/workspace")
+
+    assert response.status_code == 200
+    row = next(row for row in response.json()["accountRows"] if row["invoiceNumber"] == "OUT-AI-FALLBACK")
+    assert row["businessType"] == "需要规则匹配"
 
 
 def test_workspace_rows_expose_confirmation_handles():

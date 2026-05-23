@@ -23,7 +23,9 @@
           </template>
         </el-table-column>
         <el-table-column prop="counterparty_pattern" label="对方户名" min-width="160" />
-        <el-table-column prop="suggested_business_type" label="业务类型" width="180" />
+        <el-table-column label="业务类型" width="180">
+          <template #default="{ row }">{{ businessTypeLabel(row.suggested_business_type) }}</template>
+        </el-table-column>
         <el-table-column prop="invoice_direction" label="方向" width="110" />
         <el-table-column prop="source" label="来源" width="130" />
         <el-table-column label="操作" width="110">
@@ -44,7 +46,7 @@
           <el-input v-model="form.counterpartyPattern" placeholder="可选" />
         </el-form-item>
         <el-form-item label="业务类型">
-          <el-input v-model="form.businessType" placeholder="例如：BANK_FEE / CONSULTING_SERVICE" />
+          <el-input v-model="form.businessType" placeholder="例如：银行手续费 / 咨询服务 / 销售收入" />
         </el-form-item>
         <el-form-item label="收支方向">
           <el-select v-model="form.invoiceDirection" clearable placeholder="可选">
@@ -119,7 +121,7 @@ async function createRule() {
       enterprise_id: selectedEnterpriseId.value,
       summary_keywords: keywords,
       counterparty_pattern: form.counterpartyPattern.trim() || null,
-      suggested_business_type: form.businessType.trim().toUpperCase(),
+      suggested_business_type: form.businessType.trim(),
       invoice_direction: form.invoiceDirection || null,
     })
     form.summaryKeywords = ''
@@ -146,6 +148,25 @@ async function removeRule(rule) {
       ElMessage.error(error?.response?.data?.detail || error?.message || '规则删除失败')
     }
   }
+}
+
+function businessTypeLabel(value) {
+  const labels = {
+    AUTO_EXACT: '自动匹配',
+    AI_SUGGESTED: 'AI 建议匹配',
+    AI_FALLBACK_RULE: '需要规则匹配',
+    AI_FALLBACK_CANDIDATE: '疑似匹配候选',
+    MANUAL_CANDIDATE: '人工候选',
+    MANUAL_INVOICE_ONLY: '手工确认发票',
+    RULE: '规则匹配',
+    BANK_FEE: '银行手续费',
+    CONSULTING_SERVICE: '咨询服务',
+    OTHER_EXPENSE: '其他支出',
+    OTHER_INCOME: '其他收入',
+    OUTPUT_REVENUE: '销售收入',
+    INVOICE_CONFIRMED: '发票确认',
+  }
+  return labels[value] || value || '待确认'
 }
 </script>
 

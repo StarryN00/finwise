@@ -72,7 +72,7 @@
         <span>{{ currentRow?.summary }}</span>
       </el-form-item>
       <el-form-item label="业务类型">
-        <el-input v-model="confirmForm.businessType" placeholder="例如：BANK_FEE / CONSULTING_SERVICE" />
+        <el-input v-model="confirmForm.businessType" placeholder="例如：银行手续费 / 咨询服务 / 销售收入" />
       </el-form-item>
       <el-form-item v-if="canSaveRule" label="规则沉淀">
         <el-checkbox v-model="confirmForm.saveAsRule">保存为该企业的匹配规则</el-checkbox>
@@ -275,9 +275,9 @@ async function confirmRow(row, payload) {
 }
 
 function defaultBusinessType(row) {
-  if (row.type === '发票') return row.sourceType === 'INVOICE' ? 'INVOICE_CONFIRMED' : 'OUTPUT_REVENUE'
+  if (row.type === '发票') return row.sourceType === 'INVOICE' ? '发票确认' : '销售收入'
   const amount = String(row.amount || '')
-  return amount.includes('-') ? 'OTHER_INCOME' : 'OTHER_EXPENSE'
+  return amount.includes('-') ? '其他收入' : '其他支出'
 }
 </script>
 
