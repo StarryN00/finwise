@@ -35,7 +35,20 @@
           <template #default="{ row }"><StatusTag :status="row.status" /></template>
         </el-table-column>
         <el-table-column prop="confidence" label="置信度" width="100" align="right" />
-        <el-table-column prop="businessType" label="业务类型" width="140" />
+        <el-table-column label="业务类型" width="140">
+          <template #default="{ row }">
+            <el-button
+              v-if="row.businessType === '需要规则匹配'"
+              class="rule-link"
+              link
+              type="primary"
+              @click="openRuleDialog(row)"
+            >
+              需要规则匹配
+            </el-button>
+            <span v-else>{{ row.businessType }}</span>
+          </template>
+        </el-table-column>
         <el-table-column prop="amount" label="金额" width="130" align="right" />
         <el-table-column prop="tax" label="税额" width="120" align="right" />
         <el-table-column label="操作" width="120">
@@ -83,6 +96,35 @@
       <el-button type="primary" :loading="isConfirming" @click="confirmCurrentRow">确认</el-button>
     </template>
   </el-dialog>
+  <el-dialog v-model="ruleDialogVisible" title="配置匹配规则" width="520px">
+    <el-form label-position="top">
+      <el-form-item label="当前行">
+        <div class="rule-context">
+          <strong>{{ ruleSourceRow?.transactionCounterparty || ruleSourceRow?.invoiceCounterparty || '-' }}</strong>
+          <span>{{ ruleSourceRow?.remark || ruleSourceRow?.summary || '-' }}</span>
+        </div>
+      </el-form-item>
+      <el-form-item label="摘要关键词">
+        <el-input v-model="ruleForm.summaryKeywords" placeholder="多个关键词用逗号分隔" />
+      </el-form-item>
+      <el-form-item label="对方户名包含">
+        <el-input v-model="ruleForm.counterpartyPattern" placeholder="例如：客户或供应商名称中的关键词" />
+      </el-form-item>
+      <el-form-item label="业务类型">
+        <el-input v-model="ruleForm.businessType" placeholder="例如：银行手续费 / 咨询服务 / 销售收入" />
+      </el-form-item>
+      <el-form-item label="收支方向">
+        <el-select v-model="ruleForm.invoiceDirection" clearable placeholder="自动判断">
+          <el-option label="收入/销项" value="OUTPUT" />
+          <el-option label="支出/进项" value="INPUT" />
+        </el-select>
+      </el-form-item>
+    </el-form>
+    <template #footer>
+      <el-button @click="ruleDialogVisible = false">取消</el-button>
+      <el-button type="primary" :loading="isSavingRule" @click="saveInlineRule">保存规则</el-button>
+    </template>
+  </el-dialog>
 </template>
 
 <script setup>
@@ -91,12 +133,15 @@ import { ElMessage } from 'element-plus'
 import DataTableShell from '../components/DataTableShell.vue'
 import PackageContextBar from '../components/PackageContextBar.vue'
 import StatusTag from '../components/StatusTag.vue'
+import { api } from '../api/client'
 import { useWorkspaceStore } from '../stores/workspace'
 
 const workspace = useWorkspaceStore()
 const activeFilter = ref('all')
 const confirmDialogVisible = ref(false)
+const ruleDialogVisible = ref(false)
 const isConfirming = ref(false)
+const isSavingRule = ref(false)
 const isAiMatching = ref(false)
 const isRuleMatching = ref(false)
 const aiProgress = ref(0)
@@ -105,9 +150,16 @@ const horizontalScroll = ref(0)
 const maxHorizontalScroll = ref(0)
 let aiProgressTimer = null
 const currentRow = ref(null)
+const ruleSourceRow = ref(null)
 const confirmForm = ref({
   businessType: '',
   saveAsRule: false,
+})
+const ruleForm = ref({
+  summaryKeywords: '',
+  counterpartyPattern: '',
+  businessType: '',
+  invoiceDirection: '',
 })
 
 const canSaveRule = computed(() => currentRow.value?.sourceType === 'BANK_TRANSACTION')
@@ -274,6 +326,66 @@ async function confirmRow(row, payload) {
   }
 }
 
+function openRuleDialog(row) {
+  ruleSourceRow.value = row
+  ruleForm.value = {
+    summaryKeywords: suggestKeywords(row),
+    counterpartyPattern: firstMeaningfulValue(row.transactionCounterparty, row.invoiceCounterparty),
+    businessType: defaultBusinessType(row),
+    invoiceDirection: suggestInvoiceDirection(row),
+  }
+  ruleDialogVisible.value = true
+}
+
+async function saveInlineRule() {
+  const activePackage = workspace.activePackage
+  const keywords = ruleForm.value.summaryKeywords
+    .split(/[，,]/)
+    .map((item) => item.trim())
+    .filter(Boolean)
+  if (!activePackage?.enterpriseId || !keywords.length || !ruleForm.value.businessType.trim()) {
+    ElMessage.warning('请填写摘要关键词和业务类型')
+    return
+  }
+  isSavingRule.value = true
+  try {
+    await api.rules.create({
+      enterprise_id: activePackage.enterpriseId,
+      summary_keywords: keywords,
+      counterparty_pattern: ruleForm.value.counterpartyPattern.trim() || null,
+      suggested_business_type: ruleForm.value.businessType.trim(),
+      invoice_direction: ruleForm.value.invoiceDirection || null,
+    })
+    ruleDialogVisible.value = false
+    await workspace.loadWorkspace()
+    ElMessage.success('规则已保存')
+  } catch (error) {
+    ElMessage.error(error?.response?.data?.detail || error?.message || '规则保存失败')
+  } finally {
+    isSavingRule.value = false
+  }
+}
+
+function suggestKeywords(row) {
+  const text = row.remark || row.summary || ''
+  const fragments = text
+    .split(/[\\/，,；;：:\\s]+/)
+    .map((item) => item.trim())
+    .filter((item) => item && item !== '-')
+  return fragments.slice(0, 3).join('，') || text.slice(0, 12)
+}
+
+function firstMeaningfulValue(...values) {
+  return values.find((value) => value && value !== '-') || ''
+}
+
+function suggestInvoiceDirection(row) {
+  if (row.directionType === '销售' || row.directionType === '转入') return 'OUTPUT'
+  if (row.directionType === '成本' || row.directionType === '转出') return 'INPUT'
+  const amount = String(row.amount || '')
+  return amount.includes('-') ? 'OUTPUT' : 'INPUT'
+}
+
 function defaultBusinessType(row) {
   if (row.type === '发票') return row.sourceType === 'INVOICE' ? '发票确认' : '销售收入'
   const amount = String(row.amount || '')
@@ -390,6 +502,25 @@ function defaultBusinessType(row) {
 .compact-account-table {
   width: 100%;
   min-width: 1280px;
+}
+
+.rule-link {
+  padding: 0;
+  font-weight: 700;
+}
+
+.rule-context {
+  display: grid;
+  gap: 4px;
+  padding: 10px 12px;
+  border: 1px solid var(--fw-line);
+  border-radius: var(--fw-radius-sm);
+  background: var(--fw-surface-muted);
+}
+
+.rule-context span {
+  color: var(--fw-text-muted);
+  font-size: 12px;
 }
 
 @media (max-width: 900px) {
