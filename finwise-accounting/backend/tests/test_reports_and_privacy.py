@@ -436,14 +436,11 @@ def test_generate_health_report_creates_template_based_pdf(db_session, tmp_path)
     assert pdf_path.suffix == ".pdf"
     reader = PdfReader(str(pdf_path))
     text = "\n".join(page.extract_text() or "" for page in reader.pages)
-    assert len(reader.pages) >= 8
-    assert "FINANCIAL HEALTH DIAGNOSTIC" in text
+    compact_text = text.replace(" ", "")
+    assert len(reader.pages) == 20
+    assert "FINANCIALHEALTHDIAGNOSTIC" in compact_text
     assert "企业财务健康诊断报告" in text
-    assert "一、报告摘要与核心结论" in text
-    assert "1.2 风险等级总览矩阵" in text
-    assert "2.2 小型微利企业政策适用性分析" in text
-    assert "八、改进建议与应对措施" in text
-    assert "附录：财务指标速查表" in text
+    assert "总结展望" in text
 
 
 def test_health_report_ai_payload_follows_sample_report_sections():

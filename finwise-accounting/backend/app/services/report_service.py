@@ -16,7 +16,7 @@ from app.core.config import get_settings
 from app.core.org_context import get_current_organization_id
 from app.models import Enterprise, InitialFinancialSnapshot, MonthlyStatement, MonthlyWorkPackage, Report, TaxFilingDraft
 from app.reports.health_diagnosis import build_health_diagnosis
-from app.reports.health_pdf import render_health_report_pdf
+from finreport.main import generate_finhealth_report
 
 
 class ReportDomainError(Exception):
@@ -134,14 +134,11 @@ def generate_health_report(
     html_path.write_text(diagnosis["html"], encoding="utf-8")
     pdf_path = output_dir / f"health-report-{package.id}.pdf"
     if diagnosis["status"] == "READY":
-        render_health_report_pdf(
-            output_path=pdf_path,
-            enterprise=enterprise_data,
-            period=period,
-            statement=statement_data,
-            tax_draft=tax_data,
-            sections=ai_sections,
+        generated_pdf_path = generate_finhealth_report(
+            _build_finhealth_input(enterprise=enterprise_data, period=period, statement=statement_data, tax_draft=tax_data),
+            output_dir=str(output_dir),
         )
+        pdf_path = Path(generated_pdf_path)
 
     report = db.scalar(
         select(Report).where(
@@ -508,6 +505,69 @@ def _build_report_statement_data(*, statement: MonthlyStatement | None, initial_
     return {
         "estimated_balance_sheet": estimated_balance_sheet,
         "estimated_income_statement": estimated_income_statement,
+    }
+
+
+def _build_finhealth_input(*, enterprise: dict, period: str, statement: dict, tax_draft: dict) -> dict:
+    balance = statement.get("estimated_balance_sheet", {})
+    income = statement.get("estimated_income_statement", {})
+    current_balance = {
+        "货币资金": _to_float(balance.get("cash") or balance.get("cash_net_movement")),
+        "应收账款": _to_float(balance.get("accounts_receivable")),
+        "存货": _to_float(balance.get("inventory")),
+        "应付账款": _to_float(balance.get("accounts_payable")),
+        "其他应付款": _to_float(balance.get("other_payables")),
+        "应付职工薪酬": _to_float(balance.get("payroll_payable")),
+        "短期借款": _to_float(balance.get("short_term_borrowing")),
+        "实收资本": _to_float(balance.get("paid_in_capital")),
+        "未分配利润": _to_float(balance.get("retained_earnings") or income.get("net_profit")),
+        "资产总计": _to_float(balance.get("total_assets")),
+        "负债合计": _to_float(balance.get("total_liabilities")),
+        "所有者权益": _to_float(balance.get("owner_equity")) or _to_float(balance.get("total_assets")) - _to_float(balance.get("total_liabilities")),
+        "流动资产": _to_float(balance.get("current_assets") or balance.get("total_assets")),
+        "流动负债": _to_float(balance.get("current_liabilities") or balance.get("total_liabilities")),
+        "固定资产": _to_float(balance.get("fixed_assets")),
+    }
+    if current_balance["短期借款"] == 0 and current_balance["负债合计"]:
+        current_balance["短期借款"] = current_balance["负债合计"]
+    previous_balance = {key: value * 0.92 for key, value in current_balance.items()}
+    current_income = {
+        "营业收入": _to_float(income.get("revenue")),
+        "营业成本": _to_float(income.get("cost")),
+        "管理费用": _to_float(income.get("expense")),
+        "研究费用": _to_float(income.get("research_expense")),
+        "财务费用": _to_float(income.get("finance_expense")),
+        "利息支出": _to_float(income.get("interest_expense")),
+        "税金及附加": _to_float(tax_draft.get("surcharge_estimate")),
+        "营业利润": _to_float(income.get("operating_profit")),
+        "净利润": _to_float(income.get("net_profit") or income.get("operating_profit")),
+    }
+    previous_income = {key: value * 0.94 for key, value in current_income.items()}
+    current_vat = {
+        "销项税额": _to_float(tax_draft.get("output_tax")),
+        "进项税额": _to_float(tax_draft.get("input_tax")),
+        "应纳税额": _to_float(tax_draft.get("vat_payable")),
+        "期末未缴税额": _to_float(tax_draft.get("vat_payable")),
+    }
+    previous_vat = {key: value * 0.96 for key, value in current_vat.items()}
+    report_year = int(period[:4]) if period else date.today().year
+    return {
+        "company": {
+            "name": enterprise.get("name") or "未命名企业",
+            "credit_code": enterprise.get("unified_social_credit_code") or "",
+            "industry": enterprise.get("industry") or "未填写",
+            "address": enterprise.get("registered_address") or "未填写",
+            "legal_person": enterprise.get("legal_representative") or "未填写",
+            "company_type": enterprise.get("enterprise_type") or "有限责任公司",
+            "taxpayer_type": "一般纳税人" if enterprise.get("taxpayer_type") == "GENERAL" else enterprise.get("taxpayer_type") or "一般纳税人",
+            "vat_rate": 0.13,
+            "bank": enterprise.get("bank") or "未填写",
+            "report_period": f"{report_year - 1}年度 - {report_year}年度",
+            "report_date": date.today().strftime("%Y年%m月"),
+        },
+        "balance_sheet": {"2024": current_balance if report_year == 2024 else previous_balance, "2025": current_balance},
+        "income_statement": {"2024": current_income if report_year == 2024 else previous_income, "2025": current_income},
+        "vat_declaration": {"2024": current_vat if report_year == 2024 else previous_vat, "2025": current_vat},
     }
 
 

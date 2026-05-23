@@ -1,0 +1,204 @@
+@font-face {
+  font-family: 'SourceHanSans';
+  src: url('fonts/SourceHanSansSC-Regular.otf') format('opentype');
+  font-weight: 400;
+}
+@font-face {
+  font-family: 'SourceHanSans';
+  src: url('fonts/SourceHanSansSC-Bold.otf') format('opentype');
+  font-weight: 700;
+}
+
+:root {
+  --primary-dark:   #1B3A5C;
+  --primary-blue:   #2C5282;
+  --accent-orange:  #E8954A;
+  --danger-red:     #C0392B;
+  --danger-bg:      #FDECEA;
+  --warning-bg:     #FDF6E3;
+  --info-bg:        #E8F2FB;
+  --success-green:  #2E8B57;
+  --text-main:      #1A1A1A;
+  --text-secondary: #4A4A4A;
+}
+
+@page {
+  size: A4;
+  margin: 0;
+}
+
+* { box-sizing: border-box; }
+
+body {
+  font-family: 'SourceHanSans', 'Noto Sans CJK SC', 'PingFang SC', 'STHeiti', sans-serif;
+  font-size: 10.5pt;
+  line-height: 1.7;
+  color: var(--text-main);
+  margin: 0;
+}
+
+.page {
+  width: 210mm;
+  height: 297mm;
+  padding: 25mm 22mm;
+  page-break-after: always;
+  position: relative;
+  background: white;
+  overflow: hidden;
+}
+.page:last-child { page-break-after: auto; }
+
+.cover-page {
+  padding: 0;
+  background: radial-gradient(ellipse at top right, #2C5282 0%, #1B3A5C 70%);
+  color: white;
+}
+.cover-inner {
+  padding: 90mm 0 0 38mm;
+  position: relative;
+}
+.cover-accent-bar {
+  position: absolute;
+  left: 22mm;
+  top: 80mm;
+  width: 4px;
+  height: 65mm;
+  background: var(--accent-orange);
+}
+.cover-en-subtitle {
+  font-size: 13pt;
+  letter-spacing: 4px;
+  font-weight: 300;
+  margin-bottom: 6mm;
+  color: rgba(255,255,255,0.92);
+}
+.cover-title {
+  font-size: 32pt;
+  font-weight: 700;
+  margin: 0 0 8mm 0;
+  letter-spacing: 2px;
+}
+.cover-subtitle {
+  font-size: 11pt;
+  font-weight: 300;
+  line-height: 1.8;
+  color: rgba(255,255,255,0.88);
+  max-width: 130mm;
+}
+.cover-meta {
+  margin-top: 60mm;
+  padding-left: 0;
+  font-size: 10pt;
+  line-height: 2.4;
+}
+.cover-meta-row b {
+  font-weight: 600;
+  margin-right: 4mm;
+}
+
+.section-title {
+  font-size: 18pt;
+  font-weight: 700;
+  margin: 0 0 10mm 0;
+  padding-bottom: 4mm;
+  position: relative;
+  border-bottom: 1.5pt solid var(--text-main);
+}
+.section-title::after {
+  content: '';
+  position: absolute;
+  left: 0; bottom: -1.5pt;
+  width: 35px; height: 4px;
+  background: var(--accent-orange);
+}
+
+h3 { font-size: 13pt; font-weight: 700; margin: 7mm 0 4mm; }
+h4 { font-size: 11pt; font-weight: 700; margin: 5mm 0 3mm; }
+p { margin: 0 0 4mm 0; }
+.report-page-title {
+  font-size: 22pt;
+  font-weight: 700;
+  margin: 0 0 8mm 0;
+}
+
+.report-table {
+  width: 100%;
+  border-collapse: collapse;
+  font-size: 10pt;
+  margin: 6mm 0;
+}
+.report-table thead tr {
+  border-top: 1.5pt solid #000;
+  border-bottom: 0.75pt solid #000;
+}
+.report-table tbody tr:last-child {
+  border-bottom: 1.5pt solid #000;
+}
+.report-table th {
+  font-weight: 600;
+  padding: 7px 10px;
+  text-align: center;
+}
+.report-table td {
+  padding: 7px 10px;
+  text-align: center;
+}
+.report-table td:first-child,
+.report-table th:first-child {
+  text-align: left;
+}
+.tag-high { color: var(--danger-red); font-weight: 700; }
+.tag-mid  { color: #D68910; font-weight: 700; }
+.tag-low  { color: var(--success-green); font-weight: 700; }
+
+.callout {
+  padding: 12px 18px;
+  margin: 6mm 0;
+  border-radius: 2px;
+}
+.callout-title {
+  font-weight: 700;
+  font-size: 11pt;
+  margin-bottom: 6px;
+}
+.callout-danger {
+  background: var(--danger-bg);
+  border-left: 4px solid var(--danger-red);
+}
+.callout-danger .callout-title { color: var(--danger-red); }
+.callout-warning {
+  background: var(--warning-bg);
+  border-left: 4px solid var(--accent-orange);
+}
+.callout-warning .callout-title { color: var(--accent-orange); }
+.callout-info {
+  background: var(--info-bg);
+  border-left: 4px solid var(--primary-blue);
+}
+.callout-info .callout-title { color: var(--primary-blue); }
+.callout p { margin: 0 0 3mm 0; }
+.callout p:last-child { margin-bottom: 0; }
+.callout ol, .callout ul { margin: 2mm 0; padding-left: 6mm; }
+.callout li { margin-bottom: 2mm; line-height: 1.7; }
+
+.chart-figure { margin: 6mm 0; text-align: center; }
+.chart-figure img { max-width: 100%; height: auto; }
+.chart-figure figcaption {
+  font-size: 10pt;
+  margin-top: 3mm;
+}
+
+.page-footer {
+  position: absolute;
+  bottom: 12mm; left: 0; right: 0;
+  text-align: center;
+  font-size: 9pt;
+  color: #888;
+}
+
+.two-col {
+  display: grid;
+  grid-template-columns: 1fr 1fr;
+  gap: 8mm;
+}
+.small { font-size: 9pt; color: var(--text-secondary); }

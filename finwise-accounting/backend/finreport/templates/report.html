@@ -1,0 +1,253 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+  <meta charset="utf-8">
+  <title>{{ company.name }} 企业财务健康诊断报告</title>
+</head>
+<body>
+  <div class="page cover-page">
+    <div class="cover-accent-bar"></div>
+    <div class="cover-inner">
+      <div class="cover-en-subtitle">FINANCIAL HEALTH DIAGNOSTIC</div>
+      <h1 class="cover-title">企业财务健康诊断报告</h1>
+      <div class="cover-subtitle">基于资产负债表、利润表及增值税申报表的<br>多维度财务风险分析与量化评估</div>
+      <div class="cover-meta">
+        <div class="cover-meta-row"><b>诊断对象:</b>{{ company.name }}</div>
+        <div class="cover-meta-row"><b>所属行业:</b>{{ company.industry }}</div>
+        <div class="cover-meta-row"><b>纳税人状态:</b>{{ company.taxpayer_type }}（增值税税率 {{ company.vat_rate|pct }}）</div>
+        <div class="cover-meta-row"><b>报告期间:</b>{{ company.report_period }}</div>
+        <div class="cover-meta-row"><b>编制日期:</b>{{ company.report_date }}</div>
+      </div>
+    </div>
+  </div>
+
+  <div class="page">
+    <h1 class="report-page-title">企业财务健康诊断报告</h1>
+    <h2 class="section-title">一、执行摘要与关键结论</h2>
+    <h3>1.1 核心发现：五项重大风险</h3>
+    <div class="callout callout-danger">{{ texts.W1|md|safe }}</div>
+    <h3>1.2 风险等级总览矩阵</h3>
+    <table class="report-table">
+      <thead><tr><th>风险类别</th><th>指标</th><th>实际值</th><th>安全值</th><th>风险等级</th></tr></thead>
+      <tbody>
+      {% for label, risk in risk_rows %}
+        <tr><td>{{ label[0] }}</td><td>{{ label[1] }}</td><td>{{ risk.display }}</td><td>{{ risk.safe_threshold }}</td><td class="{{ risk.tag_class }}">{{ risk.level }}</td></tr>
+      {% endfor %}
+      </tbody>
+    </table>
+    <div class="page-footer">2</div>
+  </div>
+
+  <div class="page">
+    <h2 class="section-title">二、公司概况</h2>
+    <h3>2.1 基本信息</h3>
+    <table class="report-table"><tbody>
+      <tr><td>企业名称</td><td>{{ company.name }}</td></tr>
+      <tr><td>统一社会信用代码</td><td>{{ company.credit_code }}</td></tr>
+      <tr><td>所属行业</td><td>{{ company.industry }}</td></tr>
+      <tr><td>注册地址</td><td>{{ company.address }}</td></tr>
+      <tr><td>法定代表人</td><td>{{ company.legal_person }}</td></tr>
+      <tr><td>企业类型</td><td>{{ company.company_type }}</td></tr>
+      <tr><td>纳税人资格</td><td>{{ company.taxpayer_type }}</td></tr>
+      <tr><td>开户银行</td><td>{{ company.bank }}</td></tr>
+    </tbody></table>
+    <h3>2.2 小微企业资格判定（财税2023年第12号公告）</h3>
+    <table class="report-table">
+      <thead><tr><th>序号</th><th>判定条件</th><th>标准值</th><th>实际值</th><th>是否通过</th></tr></thead>
+      <tbody>
+        <tr><td>1</td><td>行业限制</td><td>非限制/禁止行业</td><td>{{ company.industry }}</td><td>通过</td></tr>
+        <tr><td>2</td><td>从业人数</td><td>≤300人</td><td>报表未直接披露</td><td>待确认</td></tr>
+        <tr><td>3</td><td>资产总额</td><td>≤5,000万元</td><td>{{ latest_adjusted["资产总计"]|wan }}万元</td><td>通过</td></tr>
+        <tr><td>4</td><td>应纳税所得额</td><td>≤300万元</td><td>{{ latest_income["净利润"]|wan }}万元</td><td>通过</td></tr>
+      </tbody>
+    </table>
+    <div class="page-footer">3</div>
+  </div>
+
+  <div class="page">
+    <h3>小微企业优惠判定结论</h3>
+    <div class="callout callout-info">{{ texts.W2|md|safe }}</div>
+    <h3>2.3 资产负债总览（2025年末调整后）</h3>
+    <table class="report-table"><thead><tr><th>项目</th><th>金额（万元）</th><th>占比</th></tr></thead><tbody>
+      {% for row in balance_overview_rows %}
+      <tr><td>{{ row.name }}</td><td>{{ row.amount }}</td><td>{{ row.ratio }}</td></tr>
+      {% endfor %}
+    </tbody></table>
+    <div class="page-footer">4</div>
+  </div>
+
+  <div class="page">
+    <figure class="chart-figure">
+      <img src="{{ charts.chart1 }}">
+      <figcaption>图 1 2025年资产负债结构分析（调整后）</figcaption>
+    </figure>
+    <div class="page-footer">5</div>
+  </div>
+
+  <div class="page">
+    <h2 class="section-title">三、偿债能力分析</h2>
+    <div class="callout callout-danger"><div class="callout-title">重要说明</div><p>本节所有偿债能力指标均基于负数负债重分类后的调整数据计算，并与原始报表异常并列提示。</p></div>
+    <h3>3.1 资本结构表</h3>
+    <table class="report-table"><thead><tr><th>指标</th><th>实际值</th><th>安全值</th><th>风险提示</th></tr></thead><tbody>
+      <tr><td>资产负债率</td><td>{{ cap["资产负债率"]|pct }}</td><td>&lt;70%</td><td>{{ metrics.risks["资产负债率"].level }}</td></tr>
+      <tr><td>权益乘数</td><td>{{ "%.2f"|format(cap["权益乘数"]) }}</td><td>&lt;3.0</td><td>需关注</td></tr>
+      <tr><td>净资产负债率</td><td>{{ cap["净资产负债率"]|pct }}</td><td>&lt;100%</td><td>需关注</td></tr>
+    </tbody></table>
+    <h3>3.2 短期偿债表</h3>
+    <table class="report-table"><thead><tr><th>指标</th><th>实际值</th><th>安全值</th><th>风险提示</th></tr></thead><tbody>
+      <tr><td>流动比率</td><td>{{ "%.2f"|format(solv["流动比率"]) }}</td><td>&gt;1.5</td><td>低风险</td></tr>
+      <tr><td>速动比率</td><td>{{ "%.2f"|format(solv["速动比率"]) }}</td><td>&gt;1.0</td><td>低风险</td></tr>
+      <tr><td>现金比率</td><td>{{ solv["现金比率"]|pct }}</td><td>&gt;20%</td><td class="tag-high">高风险</td></tr>
+    </tbody></table>
+    <div class="page-footer">6</div>
+  </div>
+
+  <div class="page">
+    <figure class="chart-figure"><img src="{{ charts.chart2 }}"><figcaption>图 2 偿债能力与盈利能力指标对比</figcaption></figure>
+    <h3>3.3 偿债风险总结</h3>
+    <div class="callout callout-danger">{{ texts.W3|md|safe }}</div>
+    <div class="callout callout-warning">{{ texts.W4|md|safe }}</div>
+    <div class="page-footer">7</div>
+  </div>
+
+  <div class="page">
+    <h2 class="section-title">四、盈利能力分析</h2>
+    <h3>4.1 利润 margins 表</h3>
+    <table class="report-table"><thead><tr><th>指标</th><th>2024</th><th>2025</th><th>参考值</th></tr></thead><tbody>
+      <tr><td>毛利率</td><td>{{ prev_profit["毛利率"]|pct }}</td><td>{{ profit["毛利率"]|pct }}</td><td>25%-35%</td></tr>
+      <tr><td>净利率</td><td>{{ prev_profit["净利率"]|pct }}</td><td>{{ profit["净利率"]|pct }}</td><td>&gt;5%</td></tr>
+      <tr><td>营业利润率</td><td>{{ prev_profit["营业利润率"]|pct }}</td><td>{{ profit["营业利润率"]|pct }}</td><td>&gt;8%</td></tr>
+      <tr><td>ROE</td><td>{{ prev_profit["ROE"]|pct }}</td><td>{{ profit["ROE"]|pct }}</td><td>&gt;10%</td></tr>
+    </tbody></table>
+    <h3>4.2 管理费用结构表</h3>
+    <table class="report-table"><thead><tr><th>项目</th><th>金额（万元）</th><th>收入占比</th><th>提示</th></tr></thead><tbody>
+      <tr><td>管理费用</td><td>{{ latest_income["管理费用"]|wan }}</td><td>{{ profit["管理费用率"]|pct }}</td><td>费用率偏高</td></tr>
+      <tr><td>财务费用</td><td>{{ latest_income["财务费用"]|wan }}</td><td>{{ profit["财务费用率"]|pct }}</td><td>利息压力明显</td></tr>
+      <tr><td>研发费用</td><td>{{ latest_income["研究费用"]|wan }}</td><td>{{ (latest_income["研究费用"] / latest_income["营业收入"])|pct }}</td><td>可关注加计扣除</td></tr>
+    </tbody></table>
+    <div class="page-footer">8</div>
+  </div>
+
+  <div class="page">
+    <div class="callout callout-info"><div class="callout-title">研发费用加计扣除提示</div>{{ texts.W5|md|safe }}</div>
+    <figure class="chart-figure"><img src="{{ charts.chart3 }}"><figcaption>图 3 2025年利润结构与税费构成</figcaption></figure>
+    <div class="page-footer">9</div>
+  </div>
+
+  <div class="page">
+    <h2 class="section-title">五、运营效率与现金流分析</h2>
+    <h3>5.1 应收账款表</h3>
+    <table class="report-table"><thead><tr><th>项目</th><th>2024</th><th>2025</th><th>变化</th></tr></thead><tbody>
+      <tr><td>应收账款余额</td><td>{{ prev_raw["应收账款"]|wan }}</td><td>{{ latest_raw["应收账款"]|wan }}</td><td>下降</td></tr>
+      <tr><td>应收账款周转天数</td><td>{{ "%.1f"|format(prev_eff["应收账款周转天数"]) }}天</td><td>{{ "%.1f"|format(eff["应收账款周转天数"]) }}天</td><td>改善</td></tr>
+    </tbody></table>
+    <div class="callout callout-info">{{ texts.W6|md|safe }}</div>
+    <div class="page-footer">10</div>
+  </div>
+
+  <div class="page">
+    <h3>5.2 存货周转表</h3>
+    <table class="report-table"><thead><tr><th>项目</th><th>金额/指标</th><th>正常水平</th><th>风险等级</th></tr></thead><tbody>
+      <tr><td>存货</td><td>{{ latest_raw["存货"]|wan }}万元</td><td>-</td><td>资金占用</td></tr>
+      <tr><td>存货周转天数</td><td>{{ "%.1f"|format(eff["存货周转天数"]) }}天</td><td>&lt;120天</td><td class="tag-high">高风险</td></tr>
+    </tbody></table>
+    <div class="callout callout-danger">{{ texts.W7|md|safe }}</div>
+    <div class="page-footer">11</div>
+  </div>
+
+  <div class="page">
+    <h3>5.3 预付账款异常</h3>
+    <div class="callout callout-danger"><div class="callout-title">重分类说明</div><p>应付账款、其他应付款、应付职工薪酬为负数时，按预付性质款项重分类至流动资产，并从负债端剔除。</p></div>
+    <table class="report-table"><thead><tr><th>原报表项目</th><th>原始金额（万元）</th><th>调整方向</th><th>调整后口径</th></tr></thead><tbody>
+      <tr><td>应付账款</td><td>{{ latest_raw["应付账款"]|wan }}</td><td>转入预付性质款项</td><td>{{ (-latest_raw["应付账款"])|wan }}</td></tr>
+      <tr><td>其他应付款</td><td>{{ latest_raw["其他应付款"]|wan }}</td><td>转入其他应收性质</td><td>{{ (-latest_raw["其他应付款"])|wan }}</td></tr>
+      <tr><td>应付职工薪酬</td><td>{{ latest_raw["应付职工薪酬"]|wan }}</td><td>转入资金占用</td><td>{{ (-latest_raw["应付职工薪酬"])|wan }}</td></tr>
+    </tbody></table>
+    <h3>5.4 现金流压力测试表</h3>
+    <table class="report-table"><thead><tr><th>项目</th><th>金额（万元）</th><th>说明</th></tr></thead><tbody>
+      <tr><td>货币资金</td><td>{{ latest_raw["货币资金"]|wan }}</td><td>可立即动用资金</td></tr>
+      <tr><td>短期借款</td><td>{{ latest_raw["短期借款"]|wan }}</td><td>刚性债务压力</td></tr>
+      <tr><td>年利息支出</td><td>{{ latest_income["利息支出"]|wan }}</td><td>现金固定消耗</td></tr>
+    </tbody></table>
+    <div class="page-footer">12</div>
+  </div>
+
+  <div class="page">
+    <figure class="chart-figure"><img src="{{ charts.chart4 }}"><figcaption>图 4 现金流压力测试与资金占用结构</figcaption></figure>
+    <div class="callout callout-danger">{{ texts.W8|md|safe }}</div>
+    <div class="page-footer">13</div>
+  </div>
+
+  <div class="page">
+    <h2 class="section-title">六、税务风险分析</h2>
+    <h3>6.1 增值税表</h3>
+    <table class="report-table"><thead><tr><th>项目</th><th>2024</th><th>2025</th><th>提示</th></tr></thead><tbody>
+      <tr><td>销项税额</td><td>{{ prev_vat["销项税额"]|wan }}</td><td>{{ latest_vat["销项税额"]|wan }}</td><td>与收入匹配</td></tr>
+      <tr><td>进项税额</td><td>{{ prev_vat["进项税额"]|wan }}</td><td>{{ latest_vat["进项税额"]|wan }}</td><td>需核对抵扣凭证</td></tr>
+      <tr><td>应纳税额</td><td>{{ prev_vat["应纳税额"]|wan }}</td><td>{{ latest_vat["应纳税额"]|wan }}</td><td>税负稳定</td></tr>
+      <tr><td>增值税税负率</td><td>{{ prev_tax["增值税税负率"]|pct }}</td><td>{{ tax["增值税税负率"]|pct }}</td><td>正常区间</td></tr>
+    </tbody></table>
+    <div class="callout callout-info"><div class="callout-title">增值税合规提示</div><p>当前增值税税负率处于制造业常见区间，但仍需按月核对进销项发票、异常红冲和未认证进项。</p></div>
+    <div class="page-footer">14</div>
+  </div>
+
+  <div class="page">
+    <h3>6.2 企业所得税表</h3>
+    <table class="report-table"><thead><tr><th>项目</th><th>2024</th><th>2025</th></tr></thead><tbody>
+      <tr><td>营业利润</td><td>{{ prev_income["营业利润"]|wan }}</td><td>{{ latest_income["营业利润"]|wan }}</td></tr>
+      <tr><td>净利润</td><td>{{ prev_income["净利润"]|wan }}</td><td>{{ latest_income["净利润"]|wan }}</td></tr>
+      <tr><td>预计应纳税所得额</td><td>{{ prev_income["净利润"]|wan }}</td><td>{{ latest_income["净利润"]|wan }}</td></tr>
+    </tbody></table>
+    <div class="callout callout-info"><div class="callout-title">所得税提示</div><p>企业处于亏损状态，当期不产生企业所得税缴纳义务，但亏损弥补、费用真实性和研发费用归集仍需保留完整证据链。</p></div>
+    <h3>6.3 其他税费表</h3>
+    <table class="report-table"><tbody><tr><td>税金及附加</td><td>{{ latest_income["税金及附加"]|wan }}万元</td><td>与增值税附加申报联动复核</td></tr></tbody></table>
+    <div class="page-footer">15</div>
+  </div>
+
+  <div class="page">
+    <h2 class="section-title">七、风险量化</h2>
+    <h3>7.1 高风险事项清单表</h3>
+    <table class="report-table"><thead><tr><th>风险事项</th><th>风险等级</th><th>涉及金额/指标</th><th>处理优先级</th></tr></thead><tbody>
+      <tr><td>负数往来异常</td><td class="tag-high">高风险</td><td>{{ latest_adjusted["预付性质款项"]|wan }}万元</td><td>立即清理</td></tr>
+      <tr><td>现金比率过低</td><td class="tag-high">高风险</td><td>{{ solv["现金比率"]|pct }}</td><td>立即处理</td></tr>
+      <tr><td>持续亏损</td><td class="tag-high">高风险</td><td>{{ latest_income["净利润"]|wan }}万元</td><td>专项复盘</td></tr>
+      <tr><td>存货周转缓慢</td><td class="tag-high">高风险</td><td>{{ "%.1f"|format(eff["存货周转天数"]) }}天</td><td>库存处置</td></tr>
+    </tbody></table>
+    <div class="page-footer">16</div>
+  </div>
+
+  <div class="page">
+    <h3>7.2 潜在损失估算表</h3>
+    <table class="report-table"><thead><tr><th>风险事项</th><th>潜在损失（万元）</th><th>计算依据</th></tr></thead><tbody>
+      {% for row in metrics.potential_losses %}
+      <tr><td>{{ row["项目"] }}</td><td>{{ row["金额"]|wan }}</td><td>{{ row["计算依据"] }}</td></tr>
+      {% endfor %}
+    </tbody></table>
+    <div class="callout callout-danger"><div class="callout-title">关键结论</div><p>潜在损失合计需与所有者权益、现金余额和未来盈利能力联动评估，若不能及时清理异常往来和库存，将持续侵蚀企业净资产。</p></div>
+    <div class="page-footer">17</div>
+  </div>
+
+  <div class="page">
+    <h2 class="section-title">八、改善建议</h2>
+    <h3>8.1 短期应对措施（1-3个月）</h3>
+    <div class="callout callout-warning"><div class="callout-title">短期动作</div><ol><li>清理负数往来并补齐合同、发票和付款依据。</li><li>与银行确认短期借款续贷和还款安排。</li><li>建立现金流周报，暂停非必要支出。</li></ol></div>
+    <h3>8.2 中期优化方向（3-12个月）</h3>
+    <div class="callout callout-warning"><div class="callout-title">中期动作</div><ol><li>建立项目毛利核算和库存库龄分析。</li><li>完善客户信用政策和逾期回款机制。</li><li>规范研发费用辅助账和税务资料归档。</li></ol></div>
+    <div class="page-footer">18</div>
+  </div>
+
+  <div class="page">
+    <h3>8.3 长期优化方向（1-3年）</h3>
+    <div class="callout callout-warning"><div class="callout-title">长期动作</div><ol><li>优化产品和客户结构，减少低毛利订单占比。</li><li>降低对短期借款续贷的依赖，改善资本结构。</li><li>建立年度预算、滚动预测和经营指标复盘机制。</li></ol></div>
+    <h3>8.4 税收优惠策略</h3>
+    <div class="callout callout-info"><div class="callout-title">税收优惠</div><p>持续关注小型微利企业、高新技术企业、研发费用加计扣除和制造业专项政策，所有优惠均以真实业务、完整凭证和规范账务为前提。</p></div>
+    <div class="page-footer">19</div>
+  </div>
+
+  <div class="page">
+    <h2 class="section-title">九、总结展望</h2>
+    <div class="callout callout-info">{{ texts.W9|md|safe }}</div>
+    <div class="page-footer">20</div>
+  </div>
+</body>
+</html>
