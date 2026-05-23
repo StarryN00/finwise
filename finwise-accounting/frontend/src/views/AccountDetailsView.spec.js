@@ -34,7 +34,7 @@ describe('AccountDetailsView', () => {
     expect(source).toContain('max-height: clamp(260px, calc(100vh - 520px), 560px)')
     expect(source).toContain('position: sticky')
     expect(source).toContain('bottom: 0')
-    expect(source).toContain('width: 1280px')
+    expect(source).toContain('width: 100%')
     expect(source).toContain('min-width: 1280px')
     expect(source).toContain('ai-progress-panel')
     expect(source).toContain('el-progress')

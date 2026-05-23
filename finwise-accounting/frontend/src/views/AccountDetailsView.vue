@@ -51,7 +51,7 @@
         </el-table-column>
       </el-table>
     </div>
-    <div class="account-scroll-footer">
+    <div v-if="maxHorizontalScroll > 0" class="account-scroll-footer">
       <span>横向滚动</span>
       <input
         v-model.number="horizontalScroll"
@@ -388,7 +388,7 @@ function defaultBusinessType(row) {
 }
 
 .compact-account-table {
-  width: 1280px;
+  width: 100%;
   min-width: 1280px;
 }
 
