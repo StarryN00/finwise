@@ -1,5 +1,7 @@
 import axios from 'axios'
 
+const AI_REQUEST_TIMEOUT_MS = 120000
+
 export const apiClient = axios.create({
   baseURL: '/api',
   timeout: 20000,
@@ -24,7 +26,7 @@ export const api = {
   },
   matching: {
     run: (packageId) => apiClient.post(`/monthly-packages/${packageId}/matching/run`),
-    runAi: (packageId) => apiClient.post(`/monthly-packages/${packageId}/matching/ai-run`),
+    runAi: (packageId) => apiClient.post(`/monthly-packages/${packageId}/matching/ai-run`, undefined, { timeout: AI_REQUEST_TIMEOUT_MS }),
     confirmMatch: (matchId) => apiClient.post(`/matches/${matchId}/confirm`),
     confirmLine: (lineId, payload) => apiClient.post(`/accounting-lines/${lineId}/confirm`, payload),
     confirmUnmatched: (packageId, payload) => apiClient.post(`/monthly-packages/${packageId}/confirm-unmatched`, payload),
@@ -41,7 +43,7 @@ export const api = {
     viewDraftUrl: (draftId) => `/api/tax-drafts/${draftId}/html`,
   },
   reports: {
-    generateHealth: (packageId) => apiClient.post(`/monthly-packages/${packageId}/reports/health`),
+    generateHealth: (packageId) => apiClient.post(`/monthly-packages/${packageId}/reports/health`, undefined, { timeout: AI_REQUEST_TIMEOUT_MS }),
     viewHealthUrl: (reportId) => `/api/reports/${reportId}/html`,
   },
   rules: {

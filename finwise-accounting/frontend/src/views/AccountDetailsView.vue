@@ -11,36 +11,39 @@
     <div class="account-toolbar">
       <el-segmented v-model="activeFilter" :options="filterOptions" />
       <div class="account-toolbar__actions">
-        <el-button :loading="isAiMatching" @click="runAiMatching">AI 智能匹配</el-button>
-        <el-button type="primary" @click="runMatching">运行匹配</el-button>
+        <el-button :loading="isAiMatching" :disabled="isRuleMatching" @click="runAiMatching">AI 智能匹配</el-button>
+        <el-button type="primary" :loading="isRuleMatching" :disabled="isAiMatching" @click="runMatching">运行匹配</el-button>
       </div>
     </div>
-    <el-table v-loading="workspace.isLoading" :data="rows" class="compact-account-table" stripe>
-      <el-table-column prop="sourceCompleteness" label="完整性" width="116" />
-      <el-table-column prop="date" label="日期" width="112" />
-      <el-table-column prop="directionType" label="类型" width="88" />
-      <el-table-column prop="transactionCounterparty" label="交易对方" min-width="150" show-overflow-tooltip />
-      <el-table-column prop="invoiceCounterparty" label="发票对方" min-width="150" show-overflow-tooltip />
-      <el-table-column prop="remark" label="摘要/备注" min-width="180" show-overflow-tooltip />
-      <el-table-column label="状态" width="130">
-        <template #default="{ row }"><StatusTag :status="row.status" /></template>
-      </el-table-column>
-      <el-table-column prop="confidence" label="置信度" width="100" align="right" />
-      <el-table-column prop="businessType" label="业务类型" width="140" />
-      <el-table-column prop="amount" label="金额" width="130" align="right" />
-      <el-table-column prop="tax" label="税额" width="120" align="right" />
-      <el-table-column label="操作" width="120">
-        <template #default="{ row }">
-          <el-button
-            size="small"
-            :disabled="row.status === 'CONFIRMED' || !row.confirmType"
-            @click="startConfirm(row)"
-          >
-            确认
-          </el-button>
-        </template>
-      </el-table-column>
-    </el-table>
+    <p class="match-hint">可先运行匹配使用确定性规则快速处理，再用 AI 智能匹配补充复杂或模糊场景；两者没有强制顺序。</p>
+    <div class="account-table-scroll">
+      <el-table v-loading="workspace.isLoading" :data="rows" class="compact-account-table" stripe>
+        <el-table-column prop="sourceCompleteness" label="完整性" width="116" />
+        <el-table-column prop="date" label="日期" width="112" />
+        <el-table-column prop="directionType" label="类型" width="88" />
+        <el-table-column prop="transactionCounterparty" label="交易对方" min-width="150" show-overflow-tooltip />
+        <el-table-column prop="invoiceCounterparty" label="发票对方" min-width="150" show-overflow-tooltip />
+        <el-table-column prop="remark" label="摘要/备注" min-width="180" show-overflow-tooltip />
+        <el-table-column label="状态" width="130">
+          <template #default="{ row }"><StatusTag :status="row.status" /></template>
+        </el-table-column>
+        <el-table-column prop="confidence" label="置信度" width="100" align="right" />
+        <el-table-column prop="businessType" label="业务类型" width="140" />
+        <el-table-column prop="amount" label="金额" width="130" align="right" />
+        <el-table-column prop="tax" label="税额" width="120" align="right" />
+        <el-table-column label="操作" width="120">
+          <template #default="{ row }">
+            <el-button
+              size="small"
+              :disabled="row.status === 'CONFIRMED' || !row.confirmType"
+              @click="startConfirm(row)"
+            >
+              确认
+            </el-button>
+          </template>
+        </el-table-column>
+      </el-table>
+    </div>
   </DataTableShell>
   <el-dialog v-model="confirmDialogVisible" title="确认待处理事项" width="440px">
     <el-form label-width="96px">
@@ -74,6 +77,7 @@ const activeFilter = ref('all')
 const confirmDialogVisible = ref(false)
 const isConfirming = ref(false)
 const isAiMatching = ref(false)
+const isRuleMatching = ref(false)
 const currentRow = ref(null)
 const confirmForm = ref({
   businessType: '',
@@ -111,11 +115,14 @@ async function runMatching() {
     ElMessage.warning('请先创建月度工作包')
     return
   }
+  isRuleMatching.value = true
   try {
     await workspace.runMatching(activePackage.id)
     ElMessage.success('匹配已完成，列表已刷新')
   } catch (error) {
     ElMessage.error(error?.response?.data?.detail || error?.message || '运行匹配失败')
+  } finally {
+    isRuleMatching.value = false
   }
 }
 
@@ -193,17 +200,30 @@ function defaultBusinessType(row) {
 .account-toolbar__actions {
   display: flex;
   align-items: center;
+  flex: 0 0 auto;
   gap: 8px;
 }
 
+.match-hint {
+  margin: 0;
+  padding: 0 16px 12px;
+  color: var(--fw-text-muted);
+  font-size: 12px;
+}
+
+.account-table-scroll {
+  max-width: 100%;
+  overflow-x: auto;
+}
+
 .compact-account-table {
-  width: 100%;
+  min-width: 1120px;
 }
 
 @media (max-width: 900px) {
   .account-toolbar {
-    align-items: flex-start;
-    flex-direction: column;
+    align-items: center;
+    overflow-x: auto;
   }
 }
 </style>
