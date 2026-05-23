@@ -45,6 +45,7 @@ export const api = {
   reports: {
     generateHealth: (packageId) => apiClient.post(`/monthly-packages/${packageId}/reports/health`, undefined, { timeout: AI_REQUEST_TIMEOUT_MS }),
     viewHealthUrl: (reportId) => `/api/reports/${reportId}/html`,
+    downloadHealthPdfUrl: (reportId) => `/api/reports/${reportId}/pdf`,
   },
   rules: {
     list: (enterpriseId) => apiClient.get('/rules', { params: enterpriseId ? { enterprise_id: enterpriseId } : {} }),

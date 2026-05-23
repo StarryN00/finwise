@@ -3,7 +3,7 @@ from __future__ import annotations
 from uuid import UUID
 
 from fastapi import APIRouter, Depends, HTTPException, status
-from fastapi.responses import HTMLResponse
+from fastapi.responses import FileResponse, HTMLResponse
 from pathlib import Path
 from sqlalchemy import select
 from sqlalchemy.orm import Session
@@ -40,3 +40,19 @@ def report_html_endpoint(report_id: UUID, db: Session = Depends(get_db)):
     if not path.exists():
         raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Report html not found.")
     return HTMLResponse(path.read_text(encoding="utf-8"))
+
+
+@router.get("/api/reports/{report_id}/pdf")
+def report_pdf_endpoint(report_id: UUID, db: Session = Depends(get_db)):
+    report = db.scalar(
+        select(Report).where(
+            Report.id == report_id,
+            Report.organization_id == get_current_organization_id(),
+        )
+    )
+    if report is None or not report.export_path:
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Report pdf not found.")
+    path = Path(report.export_path)
+    if not path.exists():
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Report pdf not found.")
+    return FileResponse(path, media_type="application/pdf", filename=path.name)

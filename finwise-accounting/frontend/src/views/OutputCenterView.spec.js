@@ -20,6 +20,12 @@ describe('OutputCenterView', () => {
     expect(source).toContain('openHealthReportView')
   })
 
+  it('shows a PDF download action for completed health reports', () => {
+    expect(source).toContain('下载 PDF')
+    expect(source).toContain('downloadHealthReportPdf')
+    expect(source).toContain('downloadHealthPdfUrl')
+  })
+
   it('keeps tax draft generation, review, and export in one filing module', () => {
     expect(source).toContain('辅助申报表')
     expect(source).toContain('生成申报草稿')

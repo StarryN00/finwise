@@ -16,6 +16,7 @@ from app.core.config import get_settings
 from app.core.org_context import get_current_organization_id
 from app.models import Enterprise, InitialFinancialSnapshot, MonthlyStatement, MonthlyWorkPackage, Report, TaxFilingDraft
 from app.reports.health_diagnosis import build_health_diagnosis
+from app.reports.health_pdf import render_health_report_pdf
 
 
 class ReportDomainError(Exception):
@@ -90,6 +91,7 @@ def generate_health_report(
         "name": enterprise.name if enterprise else "未命名企业",
         "industry": enterprise.industry if enterprise else "",
         "unified_social_credit_code": enterprise.unified_social_credit_code if enterprise else "",
+        "taxpayer_type": enterprise.taxpayer_type if enterprise else "一般纳税人",
     }
     initial_snapshot = (
         db.scalar(select(InitialFinancialSnapshot).where(InitialFinancialSnapshot.enterprise_id == package.enterprise_id))
@@ -106,6 +108,7 @@ def generate_health_report(
         tax_draft=tax_data,
     )
     used_ai_report = False
+    ai_sections: list[dict] = []
     if diagnosis["status"] == "READY" and should_auto_generate_ai:
         ai_response = _generate_ai_health_report(
             enterprise=enterprise_data,
@@ -115,12 +118,13 @@ def generate_health_report(
             ai_client=ai_client,
         )
         if ai_response is not None:
+            ai_sections = ai_response.get("sections", [])
             diagnosis["html"] = render_ai_health_report_html(
                 enterprise=enterprise_data,
                 period=period,
                 statement=statement_data,
                 tax_draft=tax_data,
-                sections=ai_response.get("sections", []),
+                sections=ai_sections,
             )
             used_ai_report = True
 
@@ -128,6 +132,16 @@ def generate_health_report(
     output_dir.mkdir(parents=True, exist_ok=True)
     html_path = output_dir / f"health-report-{package.id}.html"
     html_path.write_text(diagnosis["html"], encoding="utf-8")
+    pdf_path = output_dir / f"health-report-{package.id}.pdf"
+    if diagnosis["status"] == "READY":
+        render_health_report_pdf(
+            output_path=pdf_path,
+            enterprise=enterprise_data,
+            period=period,
+            statement=statement_data,
+            tax_draft=tax_data,
+            sections=ai_sections,
+        )
 
     report = db.scalar(
         select(Report).where(
@@ -149,6 +163,7 @@ def generate_health_report(
         "source": "ai_health_report" if used_ai_report else "confirmed_monthly_data",
     }
     report.html_path = str(html_path)
+    report.export_path = str(pdf_path) if pdf_path.exists() else None
     report.status = diagnosis["status"]
     db.commit()
     db.refresh(report)

@@ -15,6 +15,9 @@
         <el-button v-if="item.viewable" :disabled="item.viewDisabled()" @click="item.viewHandler">
           在线查看
         </el-button>
+        <el-button v-if="item.downloadable" :disabled="item.downloadDisabled()" @click="item.downloadHandler">
+          下载 PDF
+        </el-button>
       </div>
     </article>
 
@@ -141,6 +144,9 @@ const outputs = [
     viewable: true,
     viewDisabled: () => !activePackage.value?.reportId,
     viewHandler: () => openHealthReportView(),
+    downloadable: true,
+    downloadDisabled: () => !activePackage.value?.reportId || activePackage.value?.reportStatus !== 'READY',
+    downloadHandler: () => downloadHealthReportPdf(),
   },
 ]
 
@@ -220,6 +226,11 @@ function openTaxDraftPreview() {
 function openHealthReportView() {
   if (!activePackage.value?.reportId) return
   window.open(api.reports.viewHealthUrl(activePackage.value.reportId), '_blank', 'noopener')
+}
+
+function downloadHealthReportPdf() {
+  if (!activePackage.value?.reportId) return
+  window.open(api.reports.downloadHealthPdfUrl(activePackage.value.reportId), '_blank', 'noopener')
 }
 </script>
 
