@@ -14,6 +14,11 @@ from app.models import AccountingLine, BankTransaction, Enterprise, Invoice, Mat
 from app.services.matching_service import MonthlyPackageNotFoundError, refresh_package_matching_summary
 
 
+AI_PAYLOAD_MAX_TRANSACTIONS = 32
+AI_PAYLOAD_MAX_INVOICES = 48
+AI_TEXT_LIMIT = 80
+
+
 class AiMatchingUnavailableError(Exception):
     pass
 
@@ -96,9 +101,30 @@ def run_ai_matching(db: Session, *, monthly_work_package_id: UUID, ai_client: Ai
         base_url=settings.moonshot_base_url,
         model=settings.moonshot_model,
     )
-    ai_response = client.propose_matches(payload)
     threshold = settings.ai_match_confidence_threshold
     existing_pairs = _existing_match_pairs(db, package.id)
+    try:
+        ai_response = client.propose_matches(payload)
+    except AiMatchingUnavailableError:
+        created_matches = _create_local_fallback_matches(
+            db,
+            package=package,
+            transactions=transactions,
+            invoices=invoices,
+            existing_pairs=existing_pairs,
+        )
+        pending_confirmations = refresh_package_matching_summary(db, monthly_work_package_id=package.id)
+        db.commit()
+        return {
+            "aiStatus": "FALLBACK",
+            "message": "AI 响应超时，已用本地候选规则生成待确认建议。",
+            "created_matches": created_matches,
+            "uncertain_matches": 0,
+            "candidate_transactions": len(transactions),
+            "candidate_invoices": len(invoices),
+            "pending_confirmations": pending_confirmations,
+        }
+
     created_matches = 0
     uncertain_matches = 0
     used_transaction_ids: set[UUID] = set()
@@ -143,6 +169,63 @@ def run_ai_matching(db: Session, *, monthly_work_package_id: UUID, ai_client: Ai
         "candidate_invoices": len(invoices),
         "pending_confirmations": pending_confirmations,
     }
+
+
+def _create_local_fallback_matches(
+    db: Session,
+    *,
+    package: MonthlyWorkPackage,
+    transactions: list[BankTransaction],
+    invoices: list[Invoice],
+    existing_pairs: set[tuple[UUID, UUID]],
+) -> int:
+    candidates = []
+    for transaction in transactions:
+        for invoice in invoices:
+            score = _candidate_score(transaction, invoice)
+            if score is None:
+                continue
+            amount_gap, date_gap, party_penalty = score
+            allowed_fallback_gap = max(Decimal("10.00"), abs(_transaction_amount(transaction)) * Decimal("0.02"))
+            if amount_gap > allowed_fallback_gap or date_gap > 15:
+                continue
+            candidates.append((score, transaction, invoice))
+    candidates.sort(key=lambda item: item[0])
+
+    created_matches = 0
+    used_transaction_ids: set[UUID] = set()
+    used_invoice_ids: set[UUID] = set()
+    for score, transaction, invoice in candidates:
+        if transaction.id in used_transaction_ids or invoice.id in used_invoice_ids:
+            continue
+        if (transaction.id, invoice.id) in existing_pairs:
+            continue
+        db.add(
+            MatchRecord(
+                organization_id=package.organization_id,
+                monthly_work_package_id=package.id,
+                bank_transaction_id=transaction.id,
+                invoice_id=invoice.id,
+                match_method="AI_FALLBACK_RULE",
+                confidence=_fallback_confidence(score),
+                explanation="AI 服务超时后由本地金额、日期和方向候选规则生成",
+                confirmation_status="PENDING",
+            )
+        )
+        existing_pairs.add((transaction.id, invoice.id))
+        used_transaction_ids.add(transaction.id)
+        used_invoice_ids.add(invoice.id)
+        created_matches += 1
+        if created_matches >= 20:
+            break
+    return created_matches
+
+
+def _fallback_confidence(score: tuple[Decimal, int, int]) -> int:
+    amount_gap, date_gap, party_penalty = score
+    amount_penalty = min(int(amount_gap * Decimal("10")), 8)
+    date_penalty = min(date_gap, 7)
+    return max(70, 88 - amount_penalty - date_penalty - party_penalty * 10)
 
 
 def _candidate_transactions(db: Session, package_id: UUID) -> list[BankTransaction]:
@@ -212,6 +295,7 @@ def _build_ai_payload(
     invoices: list[Invoice],
     enterprise_name: str,
 ) -> tuple[dict, dict[str, BankTransaction], dict[str, Invoice]]:
+    transactions, invoices = _select_ai_candidates(transactions=transactions, invoices=invoices)
     party_aliases: dict[str, str] = {}
 
     def party_ref(name: str | None) -> str:
@@ -251,7 +335,7 @@ def _build_ai_payload(
                 "date": transaction.transaction_date.isoformat(),
                 "direction": "OUT" if transaction.debit_amount and transaction.debit_amount != 0 else "IN",
                 "amount": _format_decimal((transaction.debit_amount or Decimal("0")) or (transaction.credit_amount or Decimal("0"))),
-                "summary": mask_text(transaction.summary),
+                "summary": _truncate_text(mask_text(transaction.summary)),
                 "counterparty_ref": party_ref(transaction.counterparty_name),
             }
         )
@@ -267,10 +351,75 @@ def _build_ai_payload(
                 "tax_amount": _format_decimal(invoice.tax_amount),
                 "seller_ref": party_ref(invoice.seller_name),
                 "buyer_ref": party_ref(invoice.buyer_name),
-                "remark": mask_text(_invoice_remark(invoice)),
+                "remark": _truncate_text(mask_text(_invoice_remark(invoice))),
             }
         )
     return {"bank_transactions": bank_payload, "invoices": invoice_payload}, transaction_by_ref, invoice_by_ref
+
+
+def _select_ai_candidates(
+    *,
+    transactions: list[BankTransaction],
+    invoices: list[Invoice],
+) -> tuple[list[BankTransaction], list[Invoice]]:
+    scored_transactions: list[tuple[tuple[Decimal, int, int], BankTransaction, list[Invoice]]] = []
+    for transaction in transactions:
+        scored_invoices = []
+        for invoice in invoices:
+            score = _candidate_score(transaction, invoice)
+            if score is not None:
+                scored_invoices.append((score, invoice))
+        scored_invoices.sort(key=lambda item: item[0])
+        if scored_invoices:
+            scored_transactions.append((scored_invoices[0][0], transaction, [invoice for _score, invoice in scored_invoices[:3]]))
+
+    if not scored_transactions:
+        return transactions[:AI_PAYLOAD_MAX_TRANSACTIONS], invoices[:AI_PAYLOAD_MAX_INVOICES]
+
+    scored_transactions.sort(key=lambda item: item[0])
+    selected_transactions = [transaction for _score, transaction, _invoices in scored_transactions[:AI_PAYLOAD_MAX_TRANSACTIONS]]
+    selected_invoices: list[Invoice] = []
+    for _score, _transaction, candidate_invoices in scored_transactions[:AI_PAYLOAD_MAX_TRANSACTIONS]:
+        for invoice in candidate_invoices:
+            if not _contains_identity(selected_invoices, invoice):
+                selected_invoices.append(invoice)
+            if len(selected_invoices) >= AI_PAYLOAD_MAX_INVOICES:
+                break
+        if len(selected_invoices) >= AI_PAYLOAD_MAX_INVOICES:
+            break
+    return selected_transactions, selected_invoices
+
+
+def _candidate_score(transaction: BankTransaction, invoice: Invoice) -> tuple[Decimal, int, int] | None:
+    bank_direction = "OUT" if transaction.debit_amount and transaction.debit_amount != 0 else "IN"
+    if bank_direction == "OUT" and invoice.invoice_direction != "INPUT":
+        return None
+    if bank_direction == "IN" and invoice.invoice_direction != "OUTPUT":
+        return None
+
+    transaction_amount = _transaction_amount(transaction)
+    amount_gap = abs(Decimal(str(transaction_amount)) - Decimal(str(invoice.total_amount or Decimal("0"))))
+    allowed_gap = max(Decimal("1.00"), abs(Decimal(str(transaction_amount))) * Decimal("0.05"))
+    if amount_gap > allowed_gap:
+        return None
+
+    date_gap = abs((transaction.transaction_date - invoice.invoice_date).days)
+    if date_gap > 45:
+        return None
+
+    counterparty = (transaction.counterparty_name or "").strip()
+    invoice_counterparty_name = invoice.seller_name if invoice.invoice_direction == "INPUT" else invoice.buyer_name
+    invoice_counterparty = (invoice_counterparty_name or "").strip()
+    party_penalty = 0 if counterparty and invoice_counterparty and counterparty == invoice_counterparty else 1
+    return amount_gap, date_gap, party_penalty
+
+
+def _transaction_amount(transaction: BankTransaction) -> Decimal:
+    return (transaction.debit_amount or Decimal("0")) or (transaction.credit_amount or Decimal("0"))
+
+
+def _contains_identity(items: list[Invoice], target: Invoice) -> bool:
+    return any(item is target for item in items)
 
 
 def _invoice_remark(invoice: Invoice) -> str:
@@ -278,6 +427,12 @@ def _invoice_remark(invoice: Invoice) -> str:
         if invoice.raw_row_data and invoice.raw_row_data.get(key):
             return str(invoice.raw_row_data[key])
     return ""
+
+
+def _truncate_text(value: str) -> str:
+    if len(value) <= AI_TEXT_LIMIT:
+        return value
+    return f"{value[: AI_TEXT_LIMIT - 1]}…"
 
 
 def _format_decimal(value: Decimal) -> str:

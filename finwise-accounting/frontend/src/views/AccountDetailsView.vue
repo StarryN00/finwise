@@ -149,6 +149,10 @@ async function runAiMatching() {
   try {
     const result = await workspace.runAiMatching(activePackage.id)
     aiProgress.value = 100
+    if (result?.aiStatus === 'FALLBACK') {
+      ElMessage.warning(`${result.message || 'AI 响应较慢，已用本地候选规则生成待确认建议'}（${result?.created_matches ?? 0} 条）`)
+      return
+    }
     if (result?.aiStatus === 'UNAVAILABLE') {
       ElMessage.warning(result.message || 'AI 服务暂时不可用，请稍后重试')
       return
@@ -277,6 +281,9 @@ function defaultBusinessType(row) {
 }
 
 .scroll-affordance {
+  position: sticky;
+  bottom: 0;
+  z-index: 2;
   display: flex;
   justify-content: flex-end;
   padding: 0 16px 8px;
@@ -292,8 +299,10 @@ function defaultBusinessType(row) {
 }
 
 .account-table-scroll {
+  max-height: calc(100vh - 360px);
   max-width: 100%;
   overflow-x: auto;
+  overflow-y: auto;
   border-top: 1px solid var(--fw-line);
   scrollbar-color: var(--fw-brand) #eaf2ff;
   scrollbar-width: thin;

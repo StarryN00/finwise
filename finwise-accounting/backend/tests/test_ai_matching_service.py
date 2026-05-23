@@ -4,7 +4,7 @@ from json import dumps
 from uuid import UUID
 
 from app.models import BankTransaction, Enterprise, Invoice, MatchRecord, MonthlyWorkPackage
-from app.services.ai_matching_service import run_ai_matching
+from app.services.ai_matching_service import AiMatchingUnavailableError, run_ai_matching
 
 
 ORG = UUID("00000000-0000-0000-0000-000000000001")
@@ -36,6 +36,11 @@ class FakeAiMatchingClient:
                 },
             ]
         }
+
+
+class TimeoutAiMatchingClient:
+    def propose_matches(self, payload):
+        raise AiMatchingUnavailableError("AI 服务响应超时，请稍后重试，或先使用规则匹配。")
 
 
 def make_package(db_session):
@@ -132,3 +137,27 @@ def test_run_ai_matching_creates_pending_matches_from_desensitized_payload(db_se
     assert "91320500AI0000001" not in payload_text
     assert client.payloads[0]["bank_transactions"][0]["ref"] == "T001"
     assert client.payloads[0]["invoices"][0]["ref"] == "I001"
+
+
+def test_run_ai_matching_falls_back_to_local_candidates_when_ai_times_out(db_session):
+    _enterprise, package = make_package(db_session)
+    transaction = add_transaction(
+        db_session,
+        package,
+        summary="收到苏州客户有限公司货款",
+        amount="1130.00",
+        counterparty="苏州客户有限公司",
+    )
+    invoice = add_invoice(db_session, package, number="OUT-AI-FALLBACK", total_amount="1130.00", buyer="苏州客户有限公司")
+    db_session.commit()
+
+    result = run_ai_matching(db_session, monthly_work_package_id=package.id, ai_client=TimeoutAiMatchingClient())
+
+    assert result["aiStatus"] == "FALLBACK"
+    assert result["created_matches"] == 1
+    assert result["message"] == "AI 响应超时，已用本地候选规则生成待确认建议。"
+    match = db_session.query(MatchRecord).one()
+    assert match.bank_transaction_id == transaction.id
+    assert match.invoice_id == invoice.id
+    assert match.match_method == "AI_FALLBACK_RULE"
+    assert match.confirmation_status == "PENDING"
