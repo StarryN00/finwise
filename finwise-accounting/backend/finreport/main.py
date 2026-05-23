@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import base64
 import os
 import re
 from pathlib import Path
@@ -23,7 +24,7 @@ def generate_finhealth_report(
     metrics = analyzer.compute_all_metrics(financial_data)
     chart_dir = output_path / "charts"
     charts = chart_maker.make_all_charts(metrics, chart_dir)
-    charts = {key: Path(value).resolve().as_uri() for key, value in charts.items()}
+    charts = {key: _image_data_uri(Path(value)) for key, value in charts.items()}
     texts = kimi_writer.generate_all_sections(metrics["kimi_context"])
 
     context = _build_template_context(financial_data, metrics, charts, texts)
@@ -116,3 +117,8 @@ def _pct(value) -> str:
 
 def _safe_filename(value: str) -> str:
     return re.sub(r"[\\\\/:*?\"<>|\\s]+", "_", value).strip("_")
+
+
+def _image_data_uri(path: Path) -> str:
+    data = base64.b64encode(path.read_bytes()).decode("ascii")
+    return f"data:image/png;base64,{data}"

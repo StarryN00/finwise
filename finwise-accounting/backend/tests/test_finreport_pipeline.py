@@ -47,3 +47,21 @@ def test_finreport_full_pipeline_generates_20_page_pdf(tmp_path, monkeypatch):
     assert "FINANCIALHEALTHDIAGNOSTIC" in compact_text
     assert "企业财务健康诊断报告" in text
     assert "总结展望" in text
+
+
+def test_finreport_pdf_embeds_real_chart_images(tmp_path, monkeypatch):
+    monkeypatch.delenv("MOONSHOT_API_KEY", raising=False)
+
+    pdf_path = generate_finhealth_report(load_sample(), output_dir=str(tmp_path))
+
+    reader = PdfReader(pdf_path)
+    for page_index in [4, 6, 8, 12]:
+        xobjects = (reader.pages[page_index].get("/Resources") or {}).get("/XObject")
+        assert xobjects is not None
+        image_sizes = []
+        for key in xobjects.keys():
+            obj = xobjects[key].get_object()
+            if obj.get("/Subtype") == "/Image":
+                image_sizes.append((int(obj.get("/Width")), int(obj.get("/Height"))))
+        assert image_sizes
+        assert max(width for width, _height in image_sizes) > 500
