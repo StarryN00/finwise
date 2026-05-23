@@ -1,18 +1,5 @@
 <template>
-  <section class="operation-context">
-    <div>
-      <span>当前操作企业</span>
-      <strong>{{ activePackage?.company || '暂无月度工作包' }}</strong>
-    </div>
-    <div>
-      <span>工作期间</span>
-      <strong>{{ activePackage?.period || '-' }}</strong>
-    </div>
-    <div>
-      <span>输出状态</span>
-      <strong>{{ outputStateText }}</strong>
-    </div>
-  </section>
+  <PackageContextBar status-label="输出状态" :status-value="outputStateText" />
 
   <section class="output-grid">
     <article v-for="item in outputs" :key="item.title" class="output-card" :class="{ disabled: item.disabled() }">
@@ -106,6 +93,7 @@
 import { computed, reactive, ref } from 'vue'
 import { ElMessage } from 'element-plus'
 import { api } from '../api/client'
+import PackageContextBar from '../components/PackageContextBar.vue'
 import StatusTag from '../components/StatusTag.vue'
 import { useWorkspaceStore } from '../stores/workspace'
 
@@ -236,31 +224,11 @@ function openHealthReportView() {
 </script>
 
 <style scoped>
-.operation-context {
-  display: grid;
-  grid-template-columns: repeat(3, minmax(0, 1fr));
-  gap: 16px;
-  padding: 16px;
-  border: 1px solid var(--fw-line);
-  border-radius: var(--fw-radius);
-  background: var(--fw-surface);
-}
-
-.operation-context span {
-  color: var(--fw-text-muted);
-  font-size: 12px;
-}
-
-.operation-context strong {
-  display: block;
-  margin-top: 6px;
-  font-size: 16px;
-}
-
 .output-grid {
   display: grid;
   grid-template-columns: repeat(3, minmax(0, 1fr));
   gap: 16px;
+  margin-top: 16px;
 }
 
 .output-card {
@@ -392,7 +360,6 @@ function openHealthReportView() {
 }
 
 @media (max-width: 960px) {
-  .operation-context,
   .output-grid,
   .tax-flow,
   .tax-actions,

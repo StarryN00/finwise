@@ -7,9 +7,14 @@ const __dirname = dirname(fileURLToPath(import.meta.url))
 const source = readFileSync(resolve(__dirname, 'OutputCenterView.vue'), 'utf8')
 
 describe('OutputCenterView', () => {
-  it('shows active operation context and online report viewing actions', () => {
-    expect(source).toContain('operation-context')
-    expect(source).toContain('当前操作企业')
+  it('lets operators switch the active enterprise package before generating outputs', () => {
+    expect(source).toContain('PackageContextBar')
+    expect(source).toContain('status-label="输出状态"')
+    expect(source).toContain(':status-value="outputStateText"')
+    expect(source).not.toContain('operation-context')
+  })
+
+  it('shows online report viewing actions', () => {
     expect(source).toContain('在线查看')
     expect(source).toContain('openStatementView')
     expect(source).toContain('openHealthReportView')
