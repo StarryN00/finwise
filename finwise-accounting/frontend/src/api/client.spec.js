@@ -10,6 +10,7 @@ describe('api client', () => {
   it('uses extended timeouts for AI operations that can exceed the default request budget', () => {
     expect(source).toContain('AI_REQUEST_TIMEOUT_MS')
     expect(source).toContain('runAi: (packageId) => apiClient.post(`/monthly-packages/${packageId}/matching/ai-run`, undefined, { timeout: AI_REQUEST_TIMEOUT_MS })')
+    expect(source).toContain('preprocess: (packageId) => apiClient.post(`/monthly-packages/${packageId}/vouchers/preprocess`, undefined, { timeout: AI_REQUEST_TIMEOUT_MS })')
     expect(source).toContain('generateHealth: (packageId) => apiClient.post(`/monthly-packages/${packageId}/reports/health`, undefined, { timeout: AI_REQUEST_TIMEOUT_MS })')
     expect(source).toContain('downloadHealthPdfUrl: (reportId) => `/api/reports/${reportId}/pdf`')
   })

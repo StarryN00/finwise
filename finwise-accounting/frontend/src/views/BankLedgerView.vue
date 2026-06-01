@@ -22,47 +22,7 @@
         </div>
       </div>
 
-      <div class="ledger-table-scroll">
-        <el-table
-          v-loading="isLoading"
-          :data="filteredRows"
-          class="ledger-table"
-          stripe
-          empty-text="暂无资金流水"
-        >
-          <el-table-column prop="transaction_date" label="日期" width="112" />
-          <el-table-column prop="summary" label="摘要" min-width="180" show-overflow-tooltip />
-          <el-table-column prop="direction_label" label="收支方向" width="104" />
-          <el-table-column prop="counterparty_name" label="交易对方" min-width="190" show-overflow-tooltip />
-          <el-table-column label="收入金额" width="130" align="right">
-            <template #default="{ row }">{{ formatAmount(row.credit_amount) }}</template>
-          </el-table-column>
-          <el-table-column label="支出金额" width="130" align="right">
-            <template #default="{ row }">{{ formatAmount(row.debit_amount) }}</template>
-          </el-table-column>
-          <el-table-column label="余额" width="130" align="right">
-            <template #default="{ row }">{{ row.balance == null ? '-' : formatAmount(row.balance) }}</template>
-          </el-table-column>
-          <el-table-column label="匹配状态" width="112">
-            <template #default="{ row }">
-              <el-tag :type="row.matching_status === 'MATCHED' ? 'success' : 'warning'" size="small">
-                {{ row.matching_status_label }}
-              </el-tag>
-            </template>
-          </el-table-column>
-          <el-table-column label="凭证状态" width="112">
-            <template #default="{ row }">
-              <el-tag :type="voucherStatusTag(row.voucher_status)" size="small">
-                {{ row.voucher_status_label }}
-              </el-tag>
-            </template>
-          </el-table-column>
-          <el-table-column prop="linked_invoice_count" label="关联发票" width="96" align="right" />
-          <el-table-column label="凭证号" width="120" show-overflow-tooltip>
-            <template #default="{ row }">{{ row.linked_voucher_numbers?.join('、') || '-' }}</template>
-          </el-table-column>
-        </el-table>
-      </div>
+      <BankLedgerTable :rows="filteredRows" :loading="isLoading" />
     </div>
   </section>
 </template>
@@ -71,6 +31,8 @@
 import { computed, onMounted, ref, watch } from 'vue'
 import { ElMessage } from 'element-plus'
 import PackageContextBar from '../components/PackageContextBar.vue'
+import BankLedgerTable from '../components/source-ledgers/BankLedgerTable.vue'
+import { sourceRowMatchesKeyword } from '../components/source-ledgers/ledgerFormatters'
 import { api } from '../api/client'
 import { useWorkspaceStore } from '../stores/workspace'
 
@@ -84,17 +46,15 @@ const filteredRows = computed(() => {
   const text = keyword.value.trim()
   if (!text) return bankRows.value
   return bankRows.value.filter((row) =>
-    [
-      row.transaction_date,
-      row.summary,
-      row.direction_label,
-      row.counterparty_name,
-      row.transaction_amount,
-      row.matching_status_label,
-      row.voucher_status_label,
-    ]
-      .join(' ')
-      .includes(text),
+    sourceRowMatchesKeyword(row, text, [
+      'transaction_date',
+      'summary',
+      'direction_label',
+      'counterparty_name',
+      'transaction_amount',
+      'matching_status_label',
+      'voucher_status_label',
+    ]),
   )
 })
 
@@ -125,17 +85,6 @@ async function refreshBankLedger() {
   } finally {
     isLoading.value = false
   }
-}
-
-function formatAmount(value) {
-  const number = Number(value || 0)
-  return number.toLocaleString('zh-CN', { minimumFractionDigits: 2, maximumFractionDigits: 2 })
-}
-
-function voucherStatusTag(status) {
-  if (status === 'CONFIRMED') return 'success'
-  if (status === 'PENDING_CONFIRMATION') return 'warning'
-  return 'info'
 }
 </script>
 
@@ -170,33 +119,6 @@ function voucherStatusTag(status) {
 
 .ledger-search {
   width: 280px;
-}
-
-.ledger-table-scroll {
-  width: 100%;
-  max-width: 100%;
-  overflow-x: auto;
-  scrollbar-color: var(--fw-brand) #eaf2ff;
-  scrollbar-width: thin;
-}
-
-.ledger-table-scroll::-webkit-scrollbar {
-  height: 12px;
-}
-
-.ledger-table-scroll::-webkit-scrollbar-track {
-  background: #eaf2ff;
-}
-
-.ledger-table-scroll::-webkit-scrollbar-thumb {
-  border: 2px solid #eaf2ff;
-  border-radius: 999px;
-  background: var(--fw-brand);
-}
-
-.ledger-table {
-  width: 100%;
-  min-width: 1420px;
 }
 
 @media (max-width: 760px) {

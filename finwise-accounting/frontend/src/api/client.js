@@ -52,6 +52,7 @@ export const api = {
   vouchers: {
     list: (packageId) => apiClient.get(`/monthly-packages/${packageId}/vouchers`),
     generate: (packageId) => apiClient.post(`/monthly-packages/${packageId}/vouchers/generate`),
+    preprocess: (packageId) => apiClient.post(`/monthly-packages/${packageId}/vouchers/preprocess`, undefined, { timeout: AI_REQUEST_TIMEOUT_MS }),
     confirm: (voucherId, payload) => apiClient.post(`/vouchers/${voucherId}/confirm`, payload),
     reject: (voucherId, payload) => apiClient.post(`/vouchers/${voucherId}/reject`, payload),
     reopen: (voucherId, payload) => apiClient.post(`/vouchers/${voucherId}/reopen`, payload),
