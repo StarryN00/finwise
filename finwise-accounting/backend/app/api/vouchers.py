@@ -13,6 +13,7 @@ from app.schemas.voucher import (
     VoucherConfirmRequest,
     VoucherGenerateResponse,
     VoucherLedgerSummaryRead,
+    VoucherPreprocessResponse,
     VoucherRead,
     VoucherRejectRequest,
     VoucherReopenRequest,
@@ -37,6 +38,7 @@ from app.services.voucher_service import (
     reopen_voucher,
     update_single_source_voucher_treatment,
 )
+from app.services.voucher_ai_preprocess_service import VoucherAiPreprocessFailedError, run_voucher_ai_preprocessing
 
 
 router = APIRouter(tags=["vouchers"])
@@ -70,6 +72,22 @@ def list_account_subjects_endpoint(enterprise_id: UUID, db: Session = Depends(ge
 def generate_vouchers_endpoint(package_id: UUID, db: Session = Depends(get_db)):
     try:
         return generate_voucher_drafts(db, monthly_work_package_id=package_id)
+    except VoucherValidationError as exc:
+        raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail=str(exc)) from exc
+    except VoucherDomainError as exc:
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail=str(exc)) from exc
+
+
+@router.post(
+    "/api/monthly-packages/{package_id}/vouchers/preprocess",
+    response_model=VoucherPreprocessResponse,
+    status_code=status.HTTP_201_CREATED,
+)
+def preprocess_vouchers_endpoint(package_id: UUID, db: Session = Depends(get_db)):
+    try:
+        return run_voucher_ai_preprocessing(db, monthly_work_package_id=package_id)
+    except VoucherAiPreprocessFailedError as exc:
+        raise HTTPException(status_code=status.HTTP_503_SERVICE_UNAVAILABLE, detail=str(exc)) from exc
     except VoucherValidationError as exc:
         raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail=str(exc)) from exc
     except VoucherDomainError as exc:

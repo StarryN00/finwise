@@ -85,6 +85,29 @@ class VoucherLedgerLinkRead(BaseModel):
     ai_confidence: int
 
 
+class VoucherPreprocessAuditRead(BaseModel):
+    used_kimi: bool
+    ai_status: str
+    model: str
+    input_bank_count: int
+    input_invoice_count: int
+    generated_task_counts: dict
+    created_vouchers: int
+    duration_ms: int
+    error_summary: str = ""
+
+
+class VoucherPreprocessResponse(BaseModel):
+    model_config = ConfigDict(from_attributes=True)
+
+    ai_status: str
+    used_kimi: bool
+    message: str
+    created_vouchers: int
+    vouchers: list[VoucherRead]
+    audit: VoucherPreprocessAuditRead
+
+
 class BankLedgerRowRead(BaseModel):
     id: UUID
     source_type: str = "BANK"

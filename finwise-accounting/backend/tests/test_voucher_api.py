@@ -1,3 +1,4 @@
+import json
 from datetime import date
 from decimal import Decimal
 from uuid import UUID
@@ -11,7 +12,7 @@ from app.api.deps import get_db
 from app.core.database import Base
 from app.core.org_context import ensure_default_organization
 from app.main import create_app
-from app.models import AccountSubject, BankTransaction, Enterprise, Invoice, MatchRecord, MonthlyWorkPackage, Voucher
+from app.models import AccountSubject, AuditLog, BankTransaction, Enterprise, Invoice, MatchRecord, MonthlyWorkPackage, Voucher
 
 
 ORG = UUID("00000000-0000-0000-0000-000000000001")
@@ -43,10 +44,10 @@ def make_context():
     return TestClient(app, raise_server_exceptions=False), db_session
 
 
-def make_package(db_session):
+def make_package(db_session, *, company_name="苏州凭证接口测试有限公司"):
     enterprise = Enterprise(
         organization_id=ORG,
-        name="苏州凭证接口测试有限公司",
+        name=company_name,
         unified_social_credit_code="91320500VAPI000001",
         taxpayer_type="GENERAL",
         industry="制造业",
@@ -101,6 +102,19 @@ def add_output_match(db_session, package):
     db_session.add(match)
     db_session.commit()
     return match
+
+
+class StubVoucherPreprocessClient:
+    def __init__(self, response=None, error=None):
+        self.response = response or {"task_suggestions": []}
+        self.error = error
+        self.payloads = []
+
+    def propose_voucher_tasks(self, payload):
+        self.payloads.append(payload)
+        if self.error:
+            raise self.error
+        return self.response
 
 
 def test_subjects_endpoint_initializes_and_lists_subjects():
@@ -261,6 +275,66 @@ def test_source_ledger_rows_include_linked_voucher_ids():
     assert bank_link["task_type"] == "FULL_MATCH"
     assert bank_link["ai_confidence"] == voucher["ai_confidence"]
     assert invoice_link["id"] == voucher_id
+
+
+def test_voucher_preprocess_endpoint_calls_kimi_client_and_records_audit(monkeypatch):
+    from app.services import voucher_ai_preprocess_service as service
+
+    client, db_session = make_context()
+    _enterprise, package = make_package(db_session, company_name="昆山黛珂特电子科技有限公司")
+    add_output_match(db_session, package)
+    stub = StubVoucherPreprocessClient(
+        response={
+            "task_suggestions": [
+                {
+                    "source_key": "output-receipt:T001:I001",
+                    "task_type": "FULL_MATCH",
+                    "confidence": 96,
+                    "reason": "金额一致、日期一致、方向一致",
+                    "summary": "确认销售收入并收款",
+                }
+            ]
+        }
+    )
+    monkeypatch.setattr(service, "create_default_voucher_preprocess_client", lambda: stub)
+
+    response = client.post(f"/api/monthly-packages/{package.id}/vouchers/preprocess")
+
+    assert response.status_code == 201
+    payload = response.json()
+    assert payload["ai_status"] == "SUCCESS"
+    assert payload["used_kimi"] is True
+    assert payload["created_vouchers"] >= 1
+    assert stub.payloads
+    first_payload = stub.payloads[0]
+    assert "昆山黛珂特电子科技有限公司" not in json.dumps(first_payload, ensure_ascii=False)
+    assert first_payload["package"]["enterprise_alias"] == "企业主体"
+    assert first_payload["bank_transactions"][0]["counterparty_alias"].startswith("交易对方")
+
+    audit = db_session.query(AuditLog).filter(AuditLog.action == "VOUCHER_AI_PREPROCESS").one()
+    assert audit.after_data["ai_status"] == "SUCCESS"
+    assert audit.after_data["used_kimi"] is True
+    assert audit.after_data["model"]
+
+
+def test_voucher_preprocess_endpoint_interrupts_when_kimi_fails(monkeypatch):
+    from app.services import voucher_ai_preprocess_service as service
+
+    client, db_session = make_context()
+    _enterprise, package = make_package(db_session)
+    add_output_match(db_session, package)
+    stub = StubVoucherPreprocessClient(error=service.VoucherAiPreprocessUnavailableError("timeout"))
+    monkeypatch.setattr(service, "create_default_voucher_preprocess_client", lambda: stub)
+
+    response = client.post(f"/api/monthly-packages/{package.id}/vouchers/preprocess")
+
+    assert response.status_code == 503
+    payload = response.json()
+    assert "AI 预处理失败" in payload["detail"]
+    assert db_session.query(Voucher).count() == 0
+    audit = db_session.query(AuditLog).filter(AuditLog.action == "VOUCHER_AI_PREPROCESS").one()
+    assert audit.after_data["ai_status"] == "FAILED"
+    assert audit.after_data["created_vouchers"] == 0
 
 
 def test_reject_voucher_api_marks_voucher_as_rejected_without_number():
