@@ -38,6 +38,17 @@ SUMMARY_CATEGORY_KEYWORDS = {
     "货款": ("货款", "销售款", "采购款", "收款", "付款"),
     "房租": ("房租", "租金", "租赁"),
 }
+INDUSTRY_CATEGORY_KEYWORDS = {
+    "制造业": ("制造", "生产", "加工"),
+    "服务业": ("服务", "咨询"),
+    "批发零售": ("批发", "零售", "商贸"),
+    "建筑业": ("建筑", "工程", "施工"),
+    "科技": ("科技", "软件", "信息技术"),
+    "物流": ("物流", "运输", "货运"),
+    "餐饮": ("餐饮", "食品"),
+}
+POST_GENERATION_ERROR_SUMMARY = "POST_GENERATION_PERSISTENCE_FAILED"
+POST_GENERATION_OPERATOR_MESSAGE = "生成结果保存失败"
 
 VOUCHER_PREPROCESS_SYSTEM_PROMPT = (
     "你是代账公司的凭证预处理助手。只能根据脱敏后的金额、日期、方向、摘要关键词、发票方向、税额、"
@@ -170,7 +181,6 @@ def run_voucher_ai_preprocessing(
         _write_audit_log(db, package=package, audit=audit)
         db.commit()
     except Exception as exc:
-        error_summary = str(exc) or exc.__class__.__name__
         _cleanup_created_vouchers(db, voucher_ids=created_voucher_ids)
         audit = _build_audit(
             started_at=started_at,
@@ -180,11 +190,11 @@ def run_voucher_ai_preprocessing(
             ai_status="FAILED",
             created_vouchers=0,
             generated_task_counts={},
-            error_summary=error_summary,
+            error_summary=POST_GENERATION_ERROR_SUMMARY,
         )
         _write_audit_log(db, package=package, audit=audit)
         db.commit()
-        raise VoucherAiPreprocessFailedError(f"AI 预处理失败：{error_summary}", audit) from exc
+        raise VoucherAiPreprocessFailedError(f"AI 预处理失败：{POST_GENERATION_OPERATOR_MESSAGE}", audit) from exc
 
     return {
         "ai_status": "SUCCESS",
@@ -246,7 +256,7 @@ def build_voucher_preprocess_payload(db: Session, *, package: MonthlyWorkPackage
         "package": {
             "period": f"{package.period_year}-{package.period_month:02d}",
             "enterprise_alias": "企业主体",
-            "industry": enterprise.industry if enterprise else "",
+            "industry_categories": _safe_industry_categories(enterprise.industry if enterprise else ""),
         },
         "bank_transactions": [
             {
@@ -364,6 +374,16 @@ def _safe_summary_keywords(text: str) -> list[str]:
         if any(keyword in redacted for keyword in keywords)
     ]
     return categories or ["其他"]
+
+
+def _safe_industry_categories(text: str) -> list[str]:
+    redacted = _safe_words(text)
+    categories = [
+        category
+        for category, keywords in INDUSTRY_CATEGORY_KEYWORDS.items()
+        if any(keyword in redacted for keyword in keywords)
+    ]
+    return categories or ["未分类"]
 
 
 def _alias_for(name: str, aliases: dict[str, str], *, prefix: str) -> str:

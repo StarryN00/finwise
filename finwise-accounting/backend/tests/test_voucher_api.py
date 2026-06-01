@@ -394,6 +394,7 @@ def test_voucher_preprocess_payload_redacts_raw_summary_and_rule_keywords(monkey
 
     client, db_session = make_context()
     enterprise, package = make_package(db_session, company_name="昆山黛珂特电子科技有限公司")
+    enterprise.industry = "制造业 昆山敏感企业有限公司 91320500INDUSTRY000001"
     db_session.add(
         BankTransaction(
             organization_id=ORG,
@@ -447,6 +448,8 @@ def test_voucher_preprocess_payload_redacts_raw_summary_and_rule_keywords(monkey
     for raw_secret in [
         "昆山黛珂特电子科技有限公司",
         "上海敏感客户有限公司",
+        "昆山敏感企业有限公司",
+        "91320500INDUSTRY000001",
         "6222020202020202020",
         "32002605090012345678",
         "91320500REDACT000001",
@@ -549,7 +552,7 @@ def test_voucher_preprocess_cleans_created_vouchers_when_post_generation_fails(m
     monkeypatch.setattr(service, "create_default_voucher_preprocess_client", lambda: stub)
 
     def fail_metadata(*args, **kwargs):
-        raise RuntimeError("metadata persistence failed")
+        raise RuntimeError("metadata persistence failed for 昆山敏感企业有限公司 91320500SECRET000001")
 
     monkeypatch.setattr(service, "_attach_preprocess_metadata", fail_metadata)
 
@@ -560,7 +563,12 @@ def test_voucher_preprocess_cleans_created_vouchers_when_post_generation_fails(m
     audit = db_session.query(AuditLog).filter(AuditLog.action == "VOUCHER_AI_PREPROCESS").one()
     assert audit.after_data["ai_status"] == "FAILED"
     assert audit.after_data["created_vouchers"] == 0
-    assert "metadata persistence failed" in audit.after_data["error_summary"]
+    assert audit.after_data["error_summary"] == "POST_GENERATION_PERSISTENCE_FAILED"
+    response_text = json.dumps(response.json(), ensure_ascii=False)
+    audit_text = json.dumps(audit.after_data, ensure_ascii=False)
+    for raw_secret in ["昆山敏感企业有限公司", "91320500SECRET000001", "metadata persistence failed"]:
+        assert raw_secret not in response_text
+        assert raw_secret not in audit_text
 
 
 def test_voucher_preprocess_matches_full_match_suggestions_by_source_refs(monkeypatch):
