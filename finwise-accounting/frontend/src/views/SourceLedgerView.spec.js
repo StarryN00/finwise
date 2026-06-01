@@ -1,6 +1,10 @@
+// @vitest-environment happy-dom
+import { mount } from '@vue/test-utils'
 import { describe, expect, it } from 'vitest'
 import { readFileSync } from 'node:fs'
 import { resolve } from 'node:path'
+import BankLedgerTable from '../components/source-ledgers/BankLedgerTable.vue'
+import { matchingStatusTag } from '../components/source-ledgers/ledgerFormatters'
 
 const root = resolve(__dirname, '..')
 const clientSource = readFileSync(resolve(root, 'api/client.js'), 'utf8')
@@ -54,5 +58,51 @@ describe('source ledger views', () => {
     expect(invoiceComponent).toContain('linked_vouchers')
     expect(bankComponent).toContain('凭证号')
     expect(invoiceComponent).toContain('凭证号')
+  })
+
+  it('keeps unmatched ledger rows in the warning attention state', () => {
+    expect(matchingStatusTag('UNMATCHED')).toBe('warning')
+  })
+
+  it('emits row-select with the ledger row payload when a bank row is selected', async () => {
+    const ledgerRow = {
+      id: 'bank-row-1',
+      transaction_date: '2026-04-08',
+      summary: '收到客户货款',
+      direction_label: '收入',
+      counterparty_name: '客户A',
+      credit_amount: '1130.00',
+      debit_amount: '0',
+      balance: null,
+      matching_status: 'UNMATCHED',
+      matching_status_label: '未匹配',
+      voucher_status: 'UNPROCESSED',
+      voucher_status_label: '未处理',
+      linked_invoice_count: 0,
+      linked_vouchers: [{ id: 'voucher-1', voucher_number: '记-001' }],
+    }
+    const wrapper = mount(BankLedgerTable, {
+      props: {
+        rows: [ledgerRow],
+      },
+      global: {
+        directives: {
+          loading: {},
+        },
+        stubs: {
+          ElTable: {
+            props: ['data'],
+            template: '<button type="button" @click="$emit(`row-click`, data[0])">select row</button>',
+          },
+          ElTableColumn: true,
+          ElTag: { template: '<span><slot /></span>' },
+        },
+      },
+    })
+
+    await wrapper.find('button').trigger('click')
+
+    expect(wrapper.emitted('row-select')?.[0]?.[0]).toStrictEqual(ledgerRow)
+    expect(wrapper.emitted('row-select')?.[0]?.[0]).not.toHaveProperty('target')
   })
 })

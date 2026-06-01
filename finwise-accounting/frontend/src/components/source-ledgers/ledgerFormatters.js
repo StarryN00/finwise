@@ -12,6 +12,7 @@ export function voucherStatusTag(status) {
 
 export function matchingStatusTag(status) {
   if (status === 'MATCHED') return 'success'
+  if (status === 'UNMATCHED') return 'warning'
   if (status === 'PARTIAL') return 'warning'
   return 'info'
 }
