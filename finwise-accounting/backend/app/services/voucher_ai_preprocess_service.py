@@ -52,8 +52,10 @@ POST_GENERATION_OPERATOR_MESSAGE = "生成结果保存失败"
 
 VOUCHER_PREPROCESS_SYSTEM_PROMPT = (
     "你是代账公司的凭证预处理助手。只能根据脱敏后的金额、日期、方向、摘要关键词、发票方向、税额、"
-    "对方别名和历史规则判断。不要输出企业全称、税号、银行账号或完整发票号。返回 JSON，格式为 "
-    '{"task_suggestions":[{"source_key":"string","task_type":"FULL_MATCH|DIFFERENCE_COMPLETION|'
+    "对方别名和历史规则判断。不要输出企业全称、税号、银行账号或完整发票号。先完整比对全部流水和发票，"
+    "但只返回最需要人工关注或最能代表处理规则的重点建议，task_suggestions 最多 30 条。返回 JSON，格式为 "
+    '{"analysis_summary":"中文概括，说明已比对范围、主要处理策略和需人工关注点",'
+    '"task_suggestions":[{"source_key":"string","task_type":"FULL_MATCH|DIFFERENCE_COMPLETION|'
     'SINGLE_SOURCE|HISTORICAL_REVIEW","confidence":0-100,"summary":"中文凭证摘要",'
     '"reason":"中文原因","bank_refs":["T001"],"invoice_refs":["I001"],'
     '"entries":[{"direction":"DEBIT|CREDIT","account_code":"1002","account_name":"银行存款",'
@@ -91,7 +93,8 @@ class MoonshotVoucherPreprocessClient:
         body = {
             "model": self.model,
             "response_format": {"type": "json_object"},
-            "temperature": 0.2,
+            "temperature": _temperature_for_model(self.model),
+            "max_tokens": 4000,
             "messages": [
                 {"role": "system", "content": VOUCHER_PREPROCESS_SYSTEM_PROMPT},
                 {"role": "user", "content": json.dumps(payload, ensure_ascii=False)},
@@ -124,6 +127,12 @@ def create_default_voucher_preprocess_client() -> VoucherPreprocessClient:
     )
 
 
+def _temperature_for_model(model: str) -> float:
+    if model.strip().lower() == "kimi-k2.6":
+        return 1
+    return 0.2
+
+
 def run_voucher_ai_preprocessing(
     db: Session,
     *,
@@ -145,7 +154,8 @@ def run_voucher_ai_preprocessing(
     client = ai_client or create_default_voucher_preprocess_client()
     try:
         ai_response = client.propose_voucher_tasks(payload)
-        normalized_suggestions = _normalize_ai_response(ai_response, payload_ref_index=_payload_ref_index(payload))
+        normalized_ai = _normalize_ai_response(ai_response, payload_ref_index=_payload_ref_index(payload))
+        normalized_suggestions = normalized_ai["task_suggestions"]
     except VoucherAiPreprocessUnavailableError as exc:
         audit = _build_audit(
             started_at=started_at,
@@ -177,6 +187,8 @@ def run_voucher_ai_preprocessing(
             created_vouchers=generated["created_vouchers"],
             generated_task_counts=_task_counts(vouchers),
             error_summary="",
+            analysis_summary=normalized_ai["analysis_summary"],
+            suggestion_count=len(normalized_suggestions),
         )
         _write_audit_log(db, package=package, audit=audit)
         db.commit()
@@ -324,6 +336,8 @@ def _build_audit(
     created_vouchers: int,
     generated_task_counts: dict,
     error_summary: str,
+    analysis_summary: str = "",
+    suggestion_count: int = 0,
 ) -> dict:
     return {
         "used_kimi": used_kimi,
@@ -335,6 +349,8 @@ def _build_audit(
         "created_vouchers": created_vouchers,
         "duration_ms": int((time.monotonic() - started_at) * 1000),
         "error_summary": error_summary,
+        "analysis_summary": analysis_summary,
+        "suggestion_count": suggestion_count,
     }
 
 
@@ -407,12 +423,15 @@ def _task_counts(vouchers: list[Voucher]) -> dict:
     return counts
 
 
-def _normalize_ai_response(ai_response: dict, *, payload_ref_index: dict[str, set[str]]) -> list[dict]:
+def _normalize_ai_response(ai_response: dict, *, payload_ref_index: dict[str, set[str]]) -> dict:
     if not isinstance(ai_response, dict):
         raise VoucherAiPreprocessUnavailableError("AI 返回格式无效")
     suggestions = ai_response.get("task_suggestions")
+    analysis_summary = str(ai_response.get("analysis_summary") or "").strip()
     if not isinstance(suggestions, list) or not suggestions:
         raise VoucherAiPreprocessUnavailableError("AI 未返回有效预处理建议")
+    if not analysis_summary:
+        analysis_summary = "AI 已完成流水与发票比对，并返回凭证处理建议。"
 
     normalized = []
     for index, suggestion in enumerate(suggestions, start=1):
@@ -440,7 +459,7 @@ def _normalize_ai_response(ai_response: dict, *, payload_ref_index: dict[str, se
                 "entries": suggestion.get("entries") if isinstance(suggestion.get("entries"), list) else [],
             }
         )
-    return normalized
+    return {"analysis_summary": analysis_summary[:500], "task_suggestions": normalized}
 
 
 def _payload_ref_index(payload: dict) -> dict[str, set[str]]:

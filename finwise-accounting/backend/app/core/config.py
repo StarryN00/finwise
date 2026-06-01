@@ -18,7 +18,7 @@ class Settings(BaseSettings):
     enable_ai: bool = False
     moonshot_api_key: str = ""
     moonshot_base_url: str = "https://api.moonshot.cn/v1"
-    moonshot_model: str = "kimi-k2.6"
+    moonshot_model: str = "moonshot-v1-32k"
     moonshot_report_model: str = "moonshot-v1-8k"
     ai_match_confidence_threshold: int = 90
 

@@ -369,6 +369,13 @@ def test_voucher_preprocess_endpoint_calls_kimi_client_and_records_audit(monkeyp
     assert audit.after_data["model"]
 
 
+def test_voucher_preprocess_uses_kimi_k26_supported_temperature():
+    from app.services import voucher_ai_preprocess_service as service
+
+    assert service._temperature_for_model("kimi-k2.6") == 1
+    assert service._temperature_for_model(" moonshot-v1-32k ") == 0.2
+
+
 def test_voucher_preprocess_endpoint_interrupts_when_kimi_fails(monkeypatch):
     from app.services import voucher_ai_preprocess_service as service
 
