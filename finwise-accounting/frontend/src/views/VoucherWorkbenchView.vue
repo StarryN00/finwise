@@ -655,7 +655,6 @@ const ledgerSummary = ref(emptyLedgerSummary())
 const selectedVoucherId = ref('')
 const selectedEnterpriseId = ref('')
 const selectedPeriodPackageId = ref('')
-const statusFilter = ref('all')
 const activeLedgerTab = ref('bank')
 const bankLedgerRows = ref([])
 const invoiceLedgerRows = ref([])
@@ -687,17 +686,7 @@ const treatmentForm = ref({
   note: '',
 })
 let voucherLoadRequestId = 0
-
-const filterOptions = [
-  { label: '全部', value: 'all' },
-  { label: '完全配对', value: 'fullMatch' },
-  { label: '差额补齐', value: 'difference' },
-  { label: '单边补齐', value: 'singleSource' },
-  { label: '历史延续', value: 'historical' },
-  { label: '待确认', value: 'pending' },
-  { label: '已确认', value: 'confirmed' },
-  { label: '异常', value: 'error' },
-]
+let preprocessRequestId = 0
 
 const rematchModeOptions = [
   { label: '保留流水重选发票', value: 'replace-invoice' },
@@ -907,31 +896,6 @@ const filteredInvoiceLedgerRows = computed(() =>
   }),
 )
 
-const filteredVouchers = computed(() => {
-  if (statusFilter.value === 'confirmed') return vouchers.value.filter((voucher) => isConfirmed(voucher))
-  if (statusFilter.value === 'pending') {
-    return vouchers.value.filter(
-      (voucher) => !isConfirmed(voucher) && !isRejected(voucher) && !(voucher.validation_errors || []).length,
-    )
-  }
-  if (statusFilter.value === 'error') {
-    return vouchers.value.filter((voucher) => isRejected(voucher) || (voucher.validation_errors || []).length)
-  }
-  if (statusFilter.value === 'fullMatch') {
-    return vouchers.value.filter((voucher) => voucherTaskType(voucher) === 'FULL_MATCH')
-  }
-  if (statusFilter.value === 'difference') {
-    return vouchers.value.filter((voucher) => voucherTaskType(voucher) === 'DIFFERENCE_COMPLETION')
-  }
-  if (statusFilter.value === 'singleSource') {
-    return vouchers.value.filter((voucher) => voucherTaskType(voucher) === 'SINGLE_SOURCE')
-  }
-  if (statusFilter.value === 'historical') {
-    return vouchers.value.filter((voucher) => voucherTaskType(voucher) === 'HISTORICAL_REVIEW')
-  }
-  return vouchers.value
-})
-
 watch(
   activePackage,
   (packageItem) => {
@@ -995,18 +959,15 @@ async function loadVouchers(packageId = activePackageId.value) {
   const requestId = ++voucherLoadRequestId
   isLoading.value = true
   try {
-    const [voucherResponse, summaryResponse, bankLedgerResponse, invoiceLedgerResponse] = await Promise.all([
+    const [voucherResponse, summaryResponse] = await Promise.all([
       api.vouchers.list(packageId),
       api.sourceLedgers.summary(packageId),
-      api.sourceLedgers.bank(packageId),
-      api.sourceLedgers.invoices(packageId),
     ])
     if (isStaleVoucherLoad(requestId, packageId)) return false
     vouchers.value = normalizeVoucherList(voucherResponse.data)
     ledgerSummary.value = normalizeLedgerSummary(summaryResponse.data)
-    bankLedgerRows.value = bankLedgerResponse.data || []
-    invoiceLedgerRows.value = invoiceLedgerResponse.data || []
     keepSelection()
+    await loadSourceLedgers(packageId, requestId)
     return true
   } catch (error) {
     if (isStaleVoucherLoad(requestId, packageId)) return false
@@ -1020,30 +981,58 @@ async function loadVouchers(packageId = activePackageId.value) {
   }
 }
 
+async function loadSourceLedgers(packageId, requestId) {
+  const [bankLedgerResult, invoiceLedgerResult] = await Promise.allSettled([
+    api.sourceLedgers.bank(packageId),
+    api.sourceLedgers.invoices(packageId),
+  ])
+  if (isStaleVoucherLoad(requestId, packageId)) return false
+  if (bankLedgerResult.status === 'fulfilled') {
+    bankLedgerRows.value = bankLedgerResult.value.data || []
+  }
+  if (invoiceLedgerResult.status === 'fulfilled') {
+    invoiceLedgerRows.value = invoiceLedgerResult.value.data || []
+  }
+  const failedResult = [bankLedgerResult, invoiceLedgerResult].find((result) => result.status === 'rejected')
+  if (failedResult) {
+    ElMessage.warning(
+      failedResult.reason?.response?.data?.detail ||
+        failedResult.reason?.message ||
+        '部分原始台账加载失败，已保留当前凭证列表',
+    )
+    return false
+  }
+  return true
+}
+
 async function preprocessVouchers() {
   const packageId = activePackageId.value
   if (!packageId) {
     ElMessage.warning('请先选择企业主体和工作期间')
     return
   }
+  const requestId = ++preprocessRequestId
   isGenerating.value = true
   preprocessAudit.value = null
   try {
     const response = await api.vouchers.preprocess(packageId)
-    if (packageId !== activePackageId.value) return
+    if (isStalePreprocess(requestId, packageId)) return
     preprocessAudit.value = response.data?.audit || null
     const generatedVouchers = normalizeVoucherList(response.data)
     const createdVoucherCount = Number(response.data?.created_vouchers ?? generatedVouchers.length)
     await workspace.loadWorkspace(packageId)
+    if (isStalePreprocess(requestId, packageId)) return
     const didLoadCurrentPackage = await loadVouchers(packageId)
-    if (!didLoadCurrentPackage || packageId !== activePackageId.value) return
+    if (!didLoadCurrentPackage || isStalePreprocess(requestId, packageId)) return
     selectGeneratedVoucher(generatedVouchers)
     ElMessage.success(`AI 预处理完成，本次新增 ${createdVoucherCount} 张凭证任务`)
   } catch (error) {
-    if (packageId !== activePackageId.value) return
+    if (isStalePreprocess(requestId, packageId)) return
     ElMessage.error(error?.response?.data?.detail || error?.message || 'AI 预处理失败')
   } finally {
-    isGenerating.value = false
+    if (!isStalePreprocess(requestId, packageId)) {
+      isGenerating.value = false
+    }
   }
 }
 
@@ -1262,6 +1251,10 @@ function isStaleVoucherLoad(requestId, packageId) {
   return requestId !== voucherLoadRequestId || packageId !== activePackageId.value
 }
 
+function isStalePreprocess(requestId, packageId) {
+  return requestId !== preprocessRequestId || packageId !== activePackageId.value
+}
+
 function selectGeneratedVoucher(generatedVouchers) {
   const generatedIds = generatedVouchers.map((voucher) => voucher.id).filter(Boolean)
   const nextVoucher = vouchers.value.find((voucher) => generatedIds.includes(voucher.id)) || vouchers.value[0]
@@ -1296,10 +1289,6 @@ function firstLinkedVoucherId(row) {
   return pending?.id || links[0]?.id || ''
 }
 
-function selectVoucher(voucher) {
-  selectedVoucherId.value = voucher.id
-}
-
 function selectNextPendingVoucher(previousVoucherId) {
   const previousIndex = vouchers.value.findIndex((voucher) => voucher.id === previousVoucherId)
   const orderedVouchers = [
@@ -1313,6 +1302,7 @@ function selectNextPendingVoucher(previousVoucherId) {
 }
 
 function clearVouchers() {
+  preprocessRequestId += 1
   vouchers.value = []
   ledgerSummary.value = emptyLedgerSummary()
   bankLedgerRows.value = []
@@ -1443,25 +1433,6 @@ function sourceGroupTypeLabel(value) {
     ONE_BANK_TRANSACTION_MULTIPLE_INVOICES: '一笔银行流水对应多张发票',
   }
   return labels[value] || value || '组合来源'
-}
-
-function voucherTaskType(voucher) {
-  const data = normalizeSourceData(voucher?.source_data ?? voucher?.sourceData)
-  if (data.voucher_task_type) return data.voucher_task_type
-  if (data.source_group_type === 'DIFFERENCE_COMPLETION') return 'DIFFERENCE_COMPLETION'
-  if (['BANK_ONLY', 'INVOICE_ONLY'].includes(data.source_group_type)) return 'SINGLE_SOURCE'
-  if (data.source_group_type) return 'FULL_MATCH'
-  return 'SINGLE_SOURCE'
-}
-
-function taskTypeLabel(value) {
-  const labels = {
-    FULL_MATCH: '完全配对',
-    DIFFERENCE_COMPLETION: '差额补齐',
-    SINGLE_SOURCE: '单边补齐',
-    HISTORICAL_REVIEW: '历史延续',
-  }
-  return labels[value] || value || '单边补齐'
 }
 
 function matchStatusLabel(value) {
@@ -1737,7 +1708,7 @@ function formatAmount(value) {
 
 .voucher-layout {
   display: grid;
-  grid-template-columns: minmax(520px, 0.78fr) minmax(520px, 0.52fr);
+  grid-template-columns: minmax(0, 1.15fr) minmax(360px, 0.85fr);
   gap: 16px;
   align-items: start;
 }
@@ -1799,6 +1770,7 @@ function formatAmount(value) {
 }
 
 .voucher-detail {
+  min-width: 0;
   min-height: 420px;
   padding: 18px;
   border: 1px solid #bfdbfe;
@@ -2169,7 +2141,7 @@ function formatAmount(value) {
   background: #f8fafc !important;
 }
 
-@media (max-width: 980px) {
+@media (max-width: 1180px) {
   .voucher-context {
     grid-template-columns: 1fr;
   }

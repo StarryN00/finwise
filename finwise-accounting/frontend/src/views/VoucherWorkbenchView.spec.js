@@ -1,7 +1,46 @@
-import { describe, expect, it } from 'vitest'
+// @vitest-environment happy-dom
+import { flushPromises, mount } from '@vue/test-utils'
+import { createPinia, setActivePinia } from 'pinia'
+import { beforeEach, describe, expect, it, vi } from 'vitest'
 import { readFileSync } from 'node:fs'
 import { fileURLToPath } from 'node:url'
 import { dirname, resolve } from 'node:path'
+import VoucherWorkbenchView from './VoucherWorkbenchView.vue'
+import BankLedgerTable from '../components/source-ledgers/BankLedgerTable.vue'
+import InvoiceLedgerTable from '../components/source-ledgers/InvoiceLedgerTable.vue'
+import { api } from '../api/client'
+import { useWorkspaceStore } from '../stores/workspace'
+
+vi.mock('element-plus', () => ({
+  ElMessage: {
+    error: vi.fn(),
+    success: vi.fn(),
+    warning: vi.fn(),
+  },
+}))
+
+vi.mock('../api/client', () => ({
+  api: {
+    sourceLedgers: {
+      bank: vi.fn(),
+      invoices: vi.fn(),
+      summary: vi.fn(),
+    },
+    vouchers: {
+      list: vi.fn(),
+      preprocess: vi.fn(),
+      confirm: vi.fn(),
+      reject: vi.fn(),
+      reopen: vi.fn(),
+      rematchCandidates: vi.fn(),
+      rematch: vi.fn(),
+      adjustTreatment: vi.fn(),
+    },
+    workspace: {
+      snapshot: vi.fn(),
+    },
+  },
+}))
 
 const __dirname = dirname(fileURLToPath(import.meta.url))
 const viewSource = readFileSync(resolve(__dirname, 'VoucherWorkbenchView.vue'), 'utf8')
@@ -9,6 +48,23 @@ const clientSource = readFileSync(resolve(__dirname, '../api/client.js'), 'utf8'
 const routerSource = readFileSync(resolve(__dirname, '../router/index.js'), 'utf8')
 
 describe('VoucherWorkbenchView', () => {
+  beforeEach(() => {
+    setActivePinia(createPinia())
+    vi.clearAllMocks()
+    api.vouchers.list.mockResolvedValue({ data: [] })
+    api.sourceLedgers.summary.mockResolvedValue({ data: {} })
+    api.sourceLedgers.bank.mockResolvedValue({ data: [] })
+    api.sourceLedgers.invoices.mockResolvedValue({ data: [] })
+    api.workspace.snapshot.mockImplementation((packageId) =>
+      Promise.resolve({
+        data: {
+          workPackages: workPackages(),
+          selectedPackageId: packageId || 'package-1',
+        },
+      }),
+    )
+  })
+
   it('wires the voucher workbench page, API client, and route', () => {
     expect(viewSource).toContain('凭证生成工作台')
     expect(viewSource).toContain('AI 预处理')
@@ -38,8 +94,6 @@ describe('VoucherWorkbenchView', () => {
     expect(viewSource).toContain('单边补齐')
     expect(viewSource).toContain('历史延续')
     expect(viewSource).toContain('api.sourceLedgers.summary')
-    expect(viewSource).toContain('taskTypeLabel')
-    expect(viewSource).toContain('voucherTaskType')
     expect(viewSource).toContain('请按顺序核对 AI 推荐、异常提示和分录金额')
     expect(viewSource).toContain('第 1 步：原始数据')
     expect(viewSource).toContain('银行流水')
@@ -76,7 +130,7 @@ describe('VoucherWorkbenchView', () => {
     expect(viewSource).toContain('function invoiceDirectionLabel(value)')
     expect(viewSource).toContain("OUTPUT: '销项发票'")
     expect(viewSource).toContain('function matchMethodLabel(value)')
-    expect(viewSource).toContain('grid-template-columns: minmax(520px, 0.78fr) minmax(520px, 0.52fr)')
+    expect(viewSource).toContain('grid-template-columns: minmax(0, 1.15fr) minmax(360px, 0.85fr)')
     expect(viewSource).toContain('size="large"')
     expect(viewSource).toContain('position: sticky')
     expect(viewSource).toContain('第 2 步：AI 推荐说明')
@@ -90,14 +144,6 @@ describe('VoucherWorkbenchView', () => {
     expect(viewSource).toContain('const didRefresh = await loadVouchers(activePackageId.value)')
     expect(viewSource).toContain('凭证列表已刷新')
     expect(viewSource).not.toContain('@click="loadVouchers"')
-    expect(viewSource).toContain('全部')
-    expect(viewSource).toContain('待确认')
-    expect(viewSource).toContain('已确认')
-    expect(viewSource).toContain('异常')
-    expect(viewSource).toContain("value: 'fullMatch'")
-    expect(viewSource).toContain("value: 'difference'")
-    expect(viewSource).toContain("value: 'singleSource'")
-    expect(viewSource).toContain("value: 'historical'")
     expect(viewSource).toContain('确认凭证')
     expect(viewSource).toContain('标记不正确')
     expect(viewSource).toContain('重新匹配')
@@ -163,6 +209,9 @@ describe('VoucherWorkbenchView', () => {
     expect(viewSource).toContain('await workspace.loadWorkspace(packageId)')
     expect(viewSource).toContain('async function preprocessVouchers()')
     expect(viewSource).toContain('api.vouchers.preprocess')
+    expect(viewSource).toContain('loadSourceLedgers(packageId, requestId)')
+    expect(viewSource).toContain('Promise.allSettled')
+    expect(viewSource).toContain('部分原始台账加载失败，已保留当前凭证列表')
     expect(viewSource).toContain('created_vouchers')
     expect(viewSource).toContain('Kimi AI 预处理已完成')
     expect(viewSource).toContain('AI 预处理失败')
@@ -177,6 +226,7 @@ describe('VoucherWorkbenchView', () => {
     expect(viewSource).toContain('return `${Math.round(confidence)}%`')
     expect(viewSource).not.toContain('confidence * 100')
     expect(viewSource).toContain('voucherLoadRequestId')
+    expect(viewSource).toContain('preprocessRequestId')
     expect(viewSource).toContain('requestId !== voucherLoadRequestId')
     expect(viewSource).toContain('packageId !== activePackageId.value')
     expect(clientSource).toContain('vouchers')
@@ -206,4 +256,181 @@ describe('VoucherWorkbenchView', () => {
     expect(viewSource).toContain('请先点击 AI 预处理')
     expect(viewSource).not.toContain('待处理凭证列表')
   })
+
+  it('clicks AI preprocessing through the voucher preprocess API', async () => {
+    const wrapper = mountWorkbench()
+    api.vouchers.preprocess.mockResolvedValue({
+      data: {
+        created_vouchers: 1,
+        vouchers: [voucherFixture('voucher-2', '预处理新增凭证')],
+        audit: preprocessAudit(),
+      },
+    })
+
+    await flushPromises()
+    await aiButton(wrapper).trigger('click')
+    await flushPromises()
+
+    expect(api.vouchers.preprocess).toHaveBeenCalledWith('package-1')
+    expect(api.workspace.snapshot).toHaveBeenCalledWith('package-1')
+    expect(wrapper.text()).toContain('Kimi AI 预处理已完成')
+  })
+
+  it('keeps the current preprocess loading state when a stale request finishes', async () => {
+    const oldPreprocess = deferred()
+    const currentPreprocess = deferred()
+    api.vouchers.preprocess
+      .mockReturnValueOnce(oldPreprocess.promise)
+      .mockReturnValueOnce(currentPreprocess.promise)
+    const wrapper = mountWorkbench()
+
+    await flushPromises()
+    await aiButton(wrapper).trigger('click')
+    expect(api.vouchers.preprocess).toHaveBeenCalledTimes(1)
+    await aiButton(wrapper).trigger('click')
+    expect(api.vouchers.preprocess).toHaveBeenCalledTimes(2)
+    await wrapper.vm.$nextTick()
+    expect(wrapper.vm.isGenerating).toBe(true)
+    oldPreprocess.resolve({ data: { created_vouchers: 0, vouchers: [], audit: preprocessAudit() } })
+    await flushPromises()
+
+    expect(api.vouchers.preprocess).toHaveBeenNthCalledWith(1, 'package-1')
+    expect(api.vouchers.preprocess).toHaveBeenNthCalledWith(2, 'package-1')
+    expect(wrapper.vm.isGenerating).toBe(true)
+
+    currentPreprocess.resolve({ data: { created_vouchers: 0, vouchers: [], audit: preprocessAudit() } })
+    await flushPromises()
+  })
+
+  it('preserves loaded voucher review state when source ledger loading fails', async () => {
+    api.vouchers.list.mockResolvedValue({ data: [voucherFixture()] })
+    api.sourceLedgers.bank.mockRejectedValue(new Error('bank ledger timeout'))
+
+    const wrapper = mountWorkbench()
+    await flushPromises()
+
+    expect(wrapper.text()).toContain('收到客户货款')
+    expect(wrapper.text()).toContain('第 2 步：AI 推荐说明')
+  })
+
+  it('selects a linked voucher from embedded bank and invoice ledger rows', async () => {
+    api.vouchers.list.mockResolvedValue({
+      data: [
+        voucherFixture('voucher-bank', '银行流水凭证'),
+        voucherFixture('voucher-invoice', '发票台账凭证'),
+      ],
+    })
+    api.sourceLedgers.bank.mockResolvedValue({
+      data: [{ id: 'bank-row', linked_vouchers: [{ id: 'voucher-bank', status: 'PENDING_CONFIRMATION' }] }],
+    })
+    api.sourceLedgers.invoices.mockResolvedValue({
+      data: [{ id: 'invoice-row', linked_vouchers: [{ id: 'voucher-invoice', status: 'PENDING_CONFIRMATION' }] }],
+    })
+    const wrapper = mountWorkbench()
+    await flushPromises()
+
+    await wrapper.findComponent(BankLedgerTable).vm.$emit('row-select', {
+      linked_vouchers: [{ id: 'voucher-bank', status: 'PENDING_CONFIRMATION' }],
+    })
+    await flushPromises()
+    expect(wrapper.text()).toContain('银行流水凭证')
+
+    await wrapper.find('.voucher-filter button:last-child').trigger('click')
+    await flushPromises()
+    await wrapper.findComponent(InvoiceLedgerTable).vm.$emit('row-select', {
+      linked_vouchers: [{ id: 'voucher-invoice', status: 'PENDING_CONFIRMATION' }],
+    })
+    await flushPromises()
+    expect(wrapper.text()).toContain('发票台账凭证')
+  })
 })
+
+function mountWorkbench() {
+  const workspace = useWorkspaceStore()
+  workspace.workPackages = workPackages()
+  workspace.selectedPackageId = 'package-1'
+  return mount(VoucherWorkbenchView, {
+    global: {
+      directives: {
+        loading: {},
+      },
+      stubs: elementStubs(),
+    },
+  })
+}
+
+function elementStubs() {
+  return {
+    ElAlert: { template: '<section><slot name="title" /><slot /></section>' },
+    ElButton: {
+      props: ['disabled', 'loading'],
+      emits: ['click'],
+      template: '<button type="button" :disabled="disabled" :data-loading="String(Boolean(loading))" @click="$emit(`click`)"><slot /></button>',
+    },
+    ElCheckbox: { template: '<input type="checkbox" />' },
+    ElDialog: { template: '<section><slot /><slot name="footer" /></section>' },
+    ElEmpty: { props: ['description'], template: '<p>{{ description }}</p>' },
+    ElInput: { template: '<input />' },
+    ElOption: true,
+    ElPopover: { template: '<span><slot name="reference" /><slot /></span>' },
+    ElSegmented: {
+      props: ['modelValue', 'options'],
+      emits: ['update:modelValue'],
+      template: '<div><button v-for="option in options" :key="option.value" type="button" @click="$emit(`update:modelValue`, option.value)">{{ option.label }}</button></div>',
+    },
+    ElSelect: { template: '<select><slot /></select>' },
+    ElTable: { props: ['data'], template: '<table><tbody><tr v-for="row in data" :key="row.id"><td>{{ row.summary }}</td></tr></tbody></table>' },
+    ElTableColumn: true,
+    ElTag: { template: '<span><slot /></span>' },
+  }
+}
+
+function workPackages() {
+  return [
+    { id: 'package-1', enterpriseId: 'enterprise-1', company: '昆山黛珂特电子科技有限公司', period: '2026-04', status: 'PENDING_CONFIRMATION', pending: 1 },
+    { id: 'package-2', enterpriseId: 'enterprise-1', company: '昆山黛珂特电子科技有限公司', period: '2026-05', status: 'PENDING_CONFIRMATION', pending: 1 },
+  ]
+}
+
+function voucherFixture(id = 'voucher-1', summary = '收到客户货款') {
+  return {
+    id,
+    voucher_number: '未编号',
+    voucher_date: '2026-04-08',
+    summary,
+    status: 'PENDING_CONFIRMATION',
+    ai_confidence: 92,
+    ai_reason: 'AI 推荐说明',
+    validation_errors: [],
+    entries: [
+      { direction: 'DEBIT', account_code: '1002', account_name: '银行存款', amount: '1130.00' },
+      { direction: 'CREDIT', account_code: '1122', account_name: '应收账款', amount: '1130.00' },
+    ],
+    source_data: {
+      bank_transaction: { id: 'bank-1', transaction_date: '2026-04-08', summary: '收款', credit_amount: '1130.00' },
+    },
+  }
+}
+
+function preprocessAudit() {
+  return {
+    model: 'kimi-k2',
+    input_bank_count: 1,
+    input_invoice_count: 1,
+    duration_ms: 321,
+  }
+}
+
+function aiButton(wrapper) {
+  return wrapper.findAll('button').find((button) => button.text() === 'AI 预处理')
+}
+
+function deferred() {
+  let resolve
+  let reject
+  const promise = new Promise((promiseResolve, promiseReject) => {
+    resolve = promiseResolve
+    reject = promiseReject
+  })
+  return { promise, resolve, reject }
+}
