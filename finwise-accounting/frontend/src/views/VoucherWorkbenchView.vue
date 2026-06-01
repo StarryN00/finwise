@@ -12,9 +12,9 @@
             type="primary"
             :loading="isGenerating"
             :disabled="!activePackage"
-            @click="generateVouchers"
+            @click="preprocessVouchers"
           >
-            生成草稿并 AI 推荐
+            AI 预处理
           </el-button>
         </div>
       </div>
@@ -99,13 +99,13 @@
       <div class="voucher-flow" aria-label="凭证处理流程">
         <div class="flow-step" :class="{ active: flowStep >= 1, done: vouchers.length > 0 }">
           <span>1</span>
-          <strong>生成草稿</strong>
-          <small>{{ vouchers.length ? `已生成 ${vouchers.length} 张凭证草稿` : '从流水和发票匹配结果生成' }}</small>
+          <strong>AI 预处理</strong>
+          <small>{{ vouchers.length ? `已形成 ${vouchers.length} 张凭证任务` : '全量比对流水、发票和历史规则' }}</small>
         </div>
         <div class="flow-step" :class="{ active: flowStep >= 2, done: hasAiSuggestion }">
           <span>2</span>
-          <strong>AI 推荐科目</strong>
-          <small>{{ hasAiSuggestion ? '已给出摘要、科目、金额和判断说明' : '生成后展示 AI 置信度和说明' }}</small>
+          <strong>AI 推荐处理</strong>
+          <small>{{ hasAiSuggestion ? '已给出摘要、科目、金额和判断说明' : '预处理后展示 AI 置信度和说明' }}</small>
         </div>
         <div class="flow-step" :class="{ active: flowStep >= 3, done: confirmedVoucherCount > 0 }">
           <span>3</span>
@@ -114,45 +114,62 @@
         </div>
       </div>
 
+      <el-alert
+        v-if="preprocessAudit"
+        class="preprocess-alert"
+        type="success"
+        :closable="false"
+        show-icon
+      >
+        <template #title>
+          Kimi AI 预处理已完成
+        </template>
+        <template #default>
+          模型：{{ preprocessAudit.model }}；流水 {{ preprocessAudit.input_bank_count }} 条；发票 {{ preprocessAudit.input_invoice_count }} 张；耗时 {{ preprocessAudit.duration_ms }}ms
+        </template>
+      </el-alert>
+
       <div class="voucher-layout">
-        <div class="voucher-list-card">
+        <div class="voucher-list-card source-workbench-card">
           <div class="list-header">
             <div>
-              <strong>待处理凭证列表</strong>
-              <span>先选择一张凭证，再在右侧核对并确认</span>
+              <strong>原始台账凭证整理</strong>
+              <span>从资金流水或发票台账进入凭证核对</span>
             </div>
-            <el-segmented v-model="statusFilter" :options="filterOptions" class="voucher-filter" />
+            <el-segmented
+              v-model="activeLedgerTab"
+              :options="[
+                { label: '按资金流水整理', value: 'bank' },
+                { label: '按发票台账整理', value: 'invoice' },
+              ]"
+              class="voucher-filter"
+            />
           </div>
 
-          <el-table
-            v-loading="isLoading"
-            :data="filteredVouchers"
-            stripe
-            highlight-current-row
-            empty-text="暂无凭证草稿"
-            @row-click="selectVoucher"
-          >
-            <el-table-column prop="voucher_date" label="日期" width="108" />
-            <el-table-column prop="voucher_number" label="凭证号" width="92" />
-            <el-table-column prop="summary" label="摘要" min-width="150" show-overflow-tooltip />
-            <el-table-column label="任务类型" width="96">
-              <template #default="{ row }">
-                <el-tag size="small" type="info">{{ taskTypeLabel(voucherTaskType(row)) }}</el-tag>
-              </template>
-            </el-table-column>
-            <el-table-column label="AI" width="82">
-              <template #default="{ row }">
-                <el-tag :type="confidenceTagType(row.ai_confidence)" size="small">
-                  {{ formatConfidence(row.ai_confidence) }}
-                </el-tag>
-              </template>
-            </el-table-column>
-            <el-table-column label="状态" width="82">
-              <template #default="{ row }">
-                <el-tag :type="statusTagType(row)" size="small">{{ statusLabel(row) }}</el-tag>
-              </template>
-            </el-table-column>
-          </el-table>
+          <div v-if="activeLedgerTab === 'bank'" class="ledger-toolbar">
+            <el-input v-model="bankLedgerKeyword" clearable placeholder="搜索日期、摘要、对方、金额" />
+          </div>
+          <div v-else class="ledger-toolbar invoice-ledger-toolbar">
+            <el-select v-model="invoiceDirectionFilter" class="direction-filter" placeholder="发票方向">
+              <el-option label="全部发票" value="all" />
+              <el-option label="进项发票" value="INPUT" />
+              <el-option label="销项发票" value="OUTPUT" />
+            </el-select>
+            <el-input v-model="invoiceLedgerKeyword" clearable placeholder="搜索发票号、对方、金额" />
+          </div>
+
+          <BankLedgerTable
+            v-if="activeLedgerTab === 'bank'"
+            :rows="filteredBankLedgerRows"
+            :loading="isLoading"
+            @row-select="selectBankLedgerRow"
+          />
+          <InvoiceLedgerTable
+            v-else
+            :rows="filteredInvoiceLedgerRows"
+            :loading="isLoading"
+            @row-select="selectInvoiceLedgerRow"
+          />
         </div>
 
         <aside class="voucher-detail">
@@ -375,7 +392,7 @@
                 </section>
               </div>
 
-              <p v-else class="source-empty">暂无原始数据，请重新生成凭证草稿或检查来源记录。</p>
+              <p v-else class="source-empty">暂无原始数据，请重新执行 AI 预处理或检查来源记录。</p>
             </div>
 
             <div class="ai-reason">
@@ -628,6 +645,9 @@ import { computed, ref, watch } from 'vue'
 import { ElMessage } from 'element-plus'
 import { api } from '../api/client'
 import { useWorkspaceStore } from '../stores/workspace'
+import BankLedgerTable from '../components/source-ledgers/BankLedgerTable.vue'
+import InvoiceLedgerTable from '../components/source-ledgers/InvoiceLedgerTable.vue'
+import { sourceRowMatchesKeyword } from '../components/source-ledgers/ledgerFormatters'
 
 const workspace = useWorkspaceStore()
 const vouchers = ref([])
@@ -636,6 +656,13 @@ const selectedVoucherId = ref('')
 const selectedEnterpriseId = ref('')
 const selectedPeriodPackageId = ref('')
 const statusFilter = ref('all')
+const activeLedgerTab = ref('bank')
+const bankLedgerRows = ref([])
+const invoiceLedgerRows = ref([])
+const bankLedgerKeyword = ref('')
+const invoiceLedgerKeyword = ref('')
+const invoiceDirectionFilter = ref('all')
+const preprocessAudit = ref(null)
 const isLoading = ref(false)
 const isGenerating = ref(false)
 const isConfirming = ref(false)
@@ -850,6 +877,36 @@ const rematchDisabled = computed(() => {
   return isConfirmed(selectedVoucher.value)
 })
 
+const filteredBankLedgerRows = computed(() =>
+  bankLedgerRows.value.filter((row) =>
+    sourceRowMatchesKeyword(row, bankLedgerKeyword.value, [
+      'transaction_date',
+      'summary',
+      'direction_label',
+      'counterparty_name',
+      'transaction_amount',
+      'matching_status_label',
+      'voucher_status_label',
+    ]),
+  ),
+)
+
+const filteredInvoiceLedgerRows = computed(() =>
+  invoiceLedgerRows.value.filter((row) => {
+    if (invoiceDirectionFilter.value !== 'all' && row.invoice_direction !== invoiceDirectionFilter.value) return false
+    return sourceRowMatchesKeyword(row, invoiceLedgerKeyword.value, [
+      'invoice_direction_label',
+      'invoice_number',
+      'invoice_date',
+      'counterparty_role',
+      'counterparty_name',
+      'total_amount',
+      'matching_status_label',
+      'voucher_status_label',
+    ])
+  }),
+)
+
 const filteredVouchers = computed(() => {
   if (statusFilter.value === 'confirmed') return vouchers.value.filter((voucher) => isConfirmed(voucher))
   if (statusFilter.value === 'pending') {
@@ -938,13 +995,17 @@ async function loadVouchers(packageId = activePackageId.value) {
   const requestId = ++voucherLoadRequestId
   isLoading.value = true
   try {
-    const [voucherResponse, summaryResponse] = await Promise.all([
+    const [voucherResponse, summaryResponse, bankLedgerResponse, invoiceLedgerResponse] = await Promise.all([
       api.vouchers.list(packageId),
       api.sourceLedgers.summary(packageId),
+      api.sourceLedgers.bank(packageId),
+      api.sourceLedgers.invoices(packageId),
     ])
     if (isStaleVoucherLoad(requestId, packageId)) return false
     vouchers.value = normalizeVoucherList(voucherResponse.data)
     ledgerSummary.value = normalizeLedgerSummary(summaryResponse.data)
+    bankLedgerRows.value = bankLedgerResponse.data || []
+    invoiceLedgerRows.value = invoiceLedgerResponse.data || []
     keepSelection()
     return true
   } catch (error) {
@@ -959,30 +1020,28 @@ async function loadVouchers(packageId = activePackageId.value) {
   }
 }
 
-async function generateVouchers() {
+async function preprocessVouchers() {
   const packageId = activePackageId.value
   if (!packageId) {
     ElMessage.warning('请先选择企业主体和工作期间')
     return
   }
   isGenerating.value = true
+  preprocessAudit.value = null
   try {
-    const response = await api.vouchers.generate(packageId)
+    const response = await api.vouchers.preprocess(packageId)
     if (packageId !== activePackageId.value) return
+    preprocessAudit.value = response.data?.audit || null
     const generatedVouchers = normalizeVoucherList(response.data)
     const createdVoucherCount = Number(response.data?.created_vouchers ?? generatedVouchers.length)
     await workspace.loadWorkspace(packageId)
     const didLoadCurrentPackage = await loadVouchers(packageId)
     if (!didLoadCurrentPackage || packageId !== activePackageId.value) return
     selectGeneratedVoucher(generatedVouchers)
-    if (createdVoucherCount > 0) {
-      ElMessage.success(`凭证草稿已生成，本次新增 ${createdVoucherCount} 张`)
-    } else {
-      ElMessage.warning('本次没有生成新的凭证草稿，请确认已运行匹配并完成必要确认')
-    }
+    ElMessage.success(`AI 预处理完成，本次新增 ${createdVoucherCount} 张凭证任务`)
   } catch (error) {
     if (packageId !== activePackageId.value) return
-    ElMessage.error(error?.response?.data?.detail || error?.message || '凭证草稿生成失败')
+    ElMessage.error(error?.response?.data?.detail || error?.message || 'AI 预处理失败')
   } finally {
     isGenerating.value = false
   }
@@ -1214,6 +1273,29 @@ function keepSelection() {
   selectedVoucherId.value = vouchers.value[0]?.id || ''
 }
 
+function selectBankLedgerRow(row) {
+  selectVoucherFromLedgerRow(row, '资金流水')
+}
+
+function selectInvoiceLedgerRow(row) {
+  selectVoucherFromLedgerRow(row, '发票')
+}
+
+function selectVoucherFromLedgerRow(row, sourceLabel) {
+  const linkedVoucherId = firstLinkedVoucherId(row)
+  if (linkedVoucherId) {
+    selectedVoucherId.value = linkedVoucherId
+    return
+  }
+  ElMessage.warning(`${sourceLabel}暂未生成凭证任务，请先点击 AI 预处理`)
+}
+
+function firstLinkedVoucherId(row) {
+  const links = row?.linked_vouchers || []
+  const pending = links.find((item) => item.status === 'PENDING_CONFIRMATION')
+  return pending?.id || links[0]?.id || ''
+}
+
 function selectVoucher(voucher) {
   selectedVoucherId.value = voucher.id
 }
@@ -1233,6 +1315,9 @@ function selectNextPendingVoucher(previousVoucherId) {
 function clearVouchers() {
   vouchers.value = []
   ledgerSummary.value = emptyLedgerSummary()
+  bankLedgerRows.value = []
+  invoiceLedgerRows.value = []
+  preprocessAudit.value = null
   selectedVoucherId.value = ''
 }
 
@@ -1657,8 +1742,17 @@ function formatAmount(value) {
   align-items: start;
 }
 
+.preprocess-alert {
+  margin-bottom: 14px;
+}
+
 .voucher-list-card {
   min-width: 0;
+}
+
+.source-workbench-card {
+  display: grid;
+  gap: 10px;
 }
 
 .list-header {
@@ -1687,6 +1781,21 @@ function formatAmount(value) {
 
 .voucher-filter {
   flex: 0 0 auto;
+}
+
+.ledger-toolbar {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr);
+  gap: 10px;
+  margin-bottom: 2px;
+}
+
+.invoice-ledger-toolbar {
+  grid-template-columns: minmax(140px, 180px) minmax(0, 1fr);
+}
+
+.direction-filter {
+  width: 100%;
 }
 
 .voucher-detail {
