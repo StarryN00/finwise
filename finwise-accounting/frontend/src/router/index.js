@@ -32,6 +32,31 @@ const routes = [
     component: () => import('../views/AccountDetailsView.vue'),
   },
   {
+    path: '/bank-ledger',
+    name: 'bank-ledger',
+    component: () => import('../views/BankLedgerView.vue'),
+  },
+  {
+    path: '/invoice-ledger',
+    name: 'invoice-ledger',
+    component: () => import('../views/InvoiceLedgerView.vue'),
+  },
+  {
+    path: '/account-subjects',
+    name: 'account-subjects',
+    component: () => import('../views/AccountSubjectsView.vue'),
+  },
+  {
+    path: '/historical-import',
+    name: 'historical-import',
+    component: () => import('../views/HistoricalImportView.vue'),
+  },
+  {
+    path: '/vouchers',
+    name: 'vouchers',
+    component: () => import('../views/VoucherWorkbenchView.vue'),
+  },
+  {
     path: '/output-center',
     name: 'output-center',
     component: () => import('../views/OutputCenterView.vue'),
