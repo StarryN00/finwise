@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import json
+import re
 import time
 from decimal import Decimal
 from typing import Protocol
@@ -26,6 +27,18 @@ from app.models import (
 from app.services.voucher_service import VoucherDomainError, generate_voucher_drafts
 
 
+VALID_TASK_TYPES = {"FULL_MATCH", "DIFFERENCE_COMPLETION", "SINGLE_SOURCE", "HISTORICAL_REVIEW"}
+SUMMARY_CATEGORY_KEYWORDS = {
+    "电子转账": ("电子转账", "网银", "转账", "银企"),
+    "手续费": ("手续费", "工本费"),
+    "工资": ("工资", "薪资", "社保", "公积金"),
+    "税费": ("税费", "税款", "增值税", "所得税", "附加税", "印花税"),
+    "利息": ("利息", "结息"),
+    "服务费": ("服务费", "咨询费", "技术服务"),
+    "货款": ("货款", "销售款", "采购款", "收款", "付款"),
+    "房租": ("房租", "租金", "租赁"),
+}
+
 VOUCHER_PREPROCESS_SYSTEM_PROMPT = (
     "你是代账公司的凭证预处理助手。只能根据脱敏后的金额、日期、方向、摘要关键词、发票方向、税额、"
     "对方别名和历史规则判断。不要输出企业全称、税号、银行账号或完整发票号。返回 JSON，格式为 "
@@ -38,7 +51,9 @@ VOUCHER_PREPROCESS_SYSTEM_PROMPT = (
 
 
 class VoucherAiPreprocessUnavailableError(Exception):
-    pass
+    def __init__(self, message: str, *, used_kimi: bool = True):
+        super().__init__(message)
+        self.used_kimi = used_kimi
 
 
 class VoucherAiPreprocessFailedError(Exception):
@@ -60,7 +75,7 @@ class MoonshotVoucherPreprocessClient:
 
     def propose_voucher_tasks(self, payload: dict) -> dict:
         if not self.api_key:
-            raise VoucherAiPreprocessUnavailableError("Moonshot API key is not configured.")
+            raise VoucherAiPreprocessUnavailableError("Moonshot API key is not configured.", used_kimi=False)
 
         body = {
             "model": self.model,
@@ -82,11 +97,11 @@ class MoonshotVoucherPreprocessClient:
                 response_data = json.loads(response.read().decode("utf-8"))
             return json.loads(response_data["choices"][0]["message"]["content"])
         except TimeoutError as exc:
-            raise VoucherAiPreprocessUnavailableError("AI 服务响应超时") from exc
+            raise VoucherAiPreprocessUnavailableError("AI 服务响应超时", used_kimi=True) from exc
         except error.HTTPError as exc:
-            raise VoucherAiPreprocessUnavailableError(f"AI 服务返回错误：HTTP {exc.code}") from exc
+            raise VoucherAiPreprocessUnavailableError(f"AI 服务返回错误：HTTP {exc.code}", used_kimi=True) from exc
         except (OSError, KeyError, json.JSONDecodeError) as exc:
-            raise VoucherAiPreprocessUnavailableError("AI 服务暂时不可用") from exc
+            raise VoucherAiPreprocessUnavailableError("AI 服务暂时不可用", used_kimi=True) from exc
 
 
 def create_default_voucher_preprocess_client() -> VoucherPreprocessClient:
@@ -119,11 +134,13 @@ def run_voucher_ai_preprocessing(
     client = ai_client or create_default_voucher_preprocess_client()
     try:
         ai_response = client.propose_voucher_tasks(payload)
+        normalized_suggestions = _normalize_ai_response(ai_response)
     except VoucherAiPreprocessUnavailableError as exc:
         audit = _build_audit(
             started_at=started_at,
             payload=payload,
             model=settings.moonshot_model,
+            used_kimi=exc.used_kimi,
             ai_status="FAILED",
             created_vouchers=0,
             generated_task_counts={},
@@ -135,12 +152,14 @@ def run_voucher_ai_preprocessing(
 
     generated = generate_voucher_drafts(db, monthly_work_package_id=package.id)
     vouchers = generated["vouchers"]
-    _attach_preprocess_metadata(vouchers, ai_response=ai_response, ai_status="SUCCESS")
+    source_ref_index = _source_ref_index(db, package=package)
+    _attach_preprocess_metadata(vouchers, suggestions=normalized_suggestions, source_ref_index=source_ref_index, ai_status="SUCCESS")
 
     audit = _build_audit(
         started_at=started_at,
         payload=payload,
         model=settings.moonshot_model,
+        used_kimi=True,
         ai_status="SUCCESS",
         created_vouchers=generated["created_vouchers"],
         generated_task_counts=_task_counts(vouchers),
@@ -217,7 +236,7 @@ def build_voucher_preprocess_payload(db: Session, *, package: MonthlyWorkPackage
                 "direction": "RECEIPT" if _money(item.credit_amount) > 0 else "PAYMENT",
                 "amount": str(abs(_money(item.credit_amount) - _money(item.debit_amount))),
                 "counterparty_alias": _alias_for(item.counterparty_name or "", party_aliases, prefix="交易对方"),
-                "summary_keywords": _safe_words(item.summary),
+                "summary_keywords": _safe_summary_keywords(item.summary),
             }
             for item in transactions
         ],
@@ -250,13 +269,15 @@ def build_voucher_preprocess_payload(db: Session, *, package: MonthlyWorkPackage
         ],
         "historical_rules": [
             {
-                "scope": item.scope,
-                "summary_keywords": item.summary_keywords or [],
+                "rule_name": _safe_words(item.rule_name),
+                "summary_keywords": _safe_summary_keywords(" ".join(str(keyword) for keyword in (item.summary_keywords or []))),
                 "counterparty_alias": _alias_for(item.counterparty_pattern or "", party_aliases, prefix="交易对方")
                 if item.counterparty_pattern
                 else "",
+                "source_direction": item.source_direction or "",
                 "invoice_direction": item.invoice_direction or "",
-                "suggested_business_type": item.suggested_business_type,
+                "debit_account_code": item.debit_account_code,
+                "credit_account_code": item.credit_account_code,
             }
             for item in rules
         ],
@@ -268,13 +289,14 @@ def _build_audit(
     started_at: float,
     payload: dict,
     model: str,
+    used_kimi: bool,
     ai_status: str,
     created_vouchers: int,
     generated_task_counts: dict,
     error_summary: str,
 ) -> dict:
     return {
-        "used_kimi": True,
+        "used_kimi": used_kimi,
         "ai_status": ai_status,
         "model": model,
         "input_bank_count": len(payload["bank_transactions"]),
@@ -310,7 +332,18 @@ def _money(value) -> Decimal:
 
 
 def _safe_words(text: str) -> str:
-    return " ".join(str(text or "").replace("\n", " ").split())[:80]
+    text = re.sub(r"[A-Za-z0-9]{6,}", "[REDACTED]", str(text or ""))
+    return " ".join(text.replace("\n", " ").split())[:80]
+
+
+def _safe_summary_keywords(text: str) -> list[str]:
+    redacted = _safe_words(text)
+    categories = [
+        category
+        for category, keywords in SUMMARY_CATEGORY_KEYWORDS.items()
+        if any(keyword in redacted for keyword in keywords)
+    ]
+    return categories or ["其他"]
 
 
 def _alias_for(name: str, aliases: dict[str, str], *, prefix: str) -> str:
@@ -334,17 +367,83 @@ def _task_counts(vouchers: list[Voucher]) -> dict:
     return counts
 
 
-def _attach_preprocess_metadata(vouchers: list[Voucher], *, ai_response: dict, ai_status: str) -> None:
-    suggestions = ai_response.get("task_suggestions") if isinstance(ai_response, dict) else []
-    suggestion_by_type = {
-        str(item.get("task_type")): item
-        for item in suggestions or []
-        if isinstance(item, dict) and item.get("task_type")
+def _normalize_ai_response(ai_response: dict) -> list[dict]:
+    if not isinstance(ai_response, dict):
+        raise VoucherAiPreprocessUnavailableError("AI 返回格式无效")
+    suggestions = ai_response.get("task_suggestions")
+    if not isinstance(suggestions, list) or not suggestions:
+        raise VoucherAiPreprocessUnavailableError("AI 未返回有效预处理建议")
+
+    normalized = []
+    for index, suggestion in enumerate(suggestions, start=1):
+        if not isinstance(suggestion, dict):
+            raise VoucherAiPreprocessUnavailableError(f"AI 建议 {index} 格式无效")
+        task_type = str(suggestion.get("task_type") or "")
+        if task_type not in VALID_TASK_TYPES:
+            raise VoucherAiPreprocessUnavailableError(f"AI 建议 {index} 任务类型无效")
+        confidence = suggestion.get("confidence")
+        if not isinstance(confidence, int) or confidence < 0 or confidence > 100:
+            raise VoucherAiPreprocessUnavailableError(f"AI 建议 {index} 置信度无效")
+        normalized.append(
+            {
+                "source_key": str(suggestion.get("source_key") or ""),
+                "task_type": task_type,
+                "confidence": confidence,
+                "summary": str(suggestion.get("summary") or ""),
+                "reason": str(suggestion.get("reason") or ""),
+                "bank_refs": _normalize_ref_list(suggestion.get("bank_refs")),
+                "invoice_refs": _normalize_ref_list(suggestion.get("invoice_refs")),
+                "entries": suggestion.get("entries") if isinstance(suggestion.get("entries"), list) else [],
+            }
+        )
+    return normalized
+
+
+def _normalize_ref_list(value) -> list[str]:
+    if value is None:
+        return []
+    if not isinstance(value, list):
+        raise VoucherAiPreprocessUnavailableError("AI 建议来源引用格式无效")
+    return [str(item) for item in value if str(item or "").strip()]
+
+
+def _source_ref_index(db: Session, *, package: MonthlyWorkPackage) -> dict[str, dict[str, UUID]]:
+    transactions = list(
+        db.scalars(
+            select(BankTransaction)
+            .where(
+                BankTransaction.organization_id == package.organization_id,
+                BankTransaction.monthly_work_package_id == package.id,
+            )
+            .order_by(BankTransaction.transaction_date, BankTransaction.id)
+        )
+    )
+    invoices = list(
+        db.scalars(
+            select(Invoice)
+            .where(
+                Invoice.organization_id == package.organization_id,
+                Invoice.monthly_work_package_id == package.id,
+            )
+            .order_by(Invoice.invoice_date, Invoice.id)
+        )
+    )
+    return {
+        "bank": {f"T{index:03d}": item.id for index, item in enumerate(transactions, start=1)},
+        "invoice": {f"I{index:03d}": item.id for index, item in enumerate(invoices, start=1)},
     }
+
+
+def _attach_preprocess_metadata(
+    vouchers: list[Voucher],
+    *,
+    suggestions: list[dict],
+    source_ref_index: dict[str, dict[str, UUID]],
+    ai_status: str,
+) -> None:
     for voucher in vouchers:
         source_data = dict(voucher.source_data or {})
-        task_type = str(source_data.get("voucher_task_type") or "")
-        suggestion = suggestion_by_type.get(task_type)
+        suggestion = _matching_suggestion(source_data, voucher_source_key=voucher.source_key, suggestions=suggestions, source_ref_index=source_ref_index)
         source_data["ai_preprocess"] = {
             "ai_status": ai_status,
             "kimi_suggestion": suggestion or {},
@@ -354,3 +453,41 @@ def _attach_preprocess_metadata(vouchers: list[Voucher], *, ai_response: dict, a
         if suggestion and suggestion.get("confidence") is not None:
             voucher.ai_confidence = max(0, min(100, int(suggestion["confidence"])))
         voucher.source_data = source_data
+
+
+def _matching_suggestion(
+    source_data: dict,
+    *,
+    voucher_source_key: str,
+    suggestions: list[dict],
+    source_ref_index: dict[str, dict[str, UUID]],
+) -> dict | None:
+    for suggestion in suggestions:
+        if suggestion.get("source_key") and suggestion["source_key"] == voucher_source_key:
+            return suggestion
+
+    voucher_bank_ids = {str(item) for item in _source_values(source_data, singular="bank_transaction_id", plural="bank_transaction_ids")}
+    voucher_invoice_ids = {str(item) for item in _source_values(source_data, singular="invoice_id", plural="invoice_ids")}
+    for suggestion in suggestions:
+        bank_ids = {str(source_ref_index["bank"].get(ref)) for ref in suggestion.get("bank_refs", []) if source_ref_index["bank"].get(ref)}
+        invoice_ids = {
+            str(source_ref_index["invoice"].get(ref))
+            for ref in suggestion.get("invoice_refs", [])
+            if source_ref_index["invoice"].get(ref)
+        }
+        if bank_ids and invoice_ids and bank_ids == voucher_bank_ids and invoice_ids == voucher_invoice_ids:
+            return suggestion
+        if bank_ids and not invoice_ids and bank_ids == voucher_bank_ids:
+            return suggestion
+        if invoice_ids and not bank_ids and invoice_ids == voucher_invoice_ids:
+            return suggestion
+    return None
+
+
+def _source_values(source_data: dict, *, singular: str, plural: str) -> list[str]:
+    if source_data.get(plural):
+        value = source_data[plural]
+        return [str(item) for item in value] if isinstance(value, list) else [str(value)]
+    if source_data.get(singular):
+        return [str(source_data[singular])]
+    return []

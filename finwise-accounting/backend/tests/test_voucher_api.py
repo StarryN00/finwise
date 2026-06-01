@@ -3,6 +3,7 @@ from datetime import date
 from decimal import Decimal
 from uuid import UUID
 
+import pytest
 from fastapi.testclient import TestClient
 from sqlalchemy import create_engine, event
 from sqlalchemy.orm import sessionmaker
@@ -12,7 +13,7 @@ from app.api.deps import get_db
 from app.core.database import Base
 from app.core.org_context import ensure_default_organization
 from app.main import create_app
-from app.models import AccountSubject, AuditLog, BankTransaction, Enterprise, Invoice, MatchRecord, MonthlyWorkPackage, Voucher
+from app.models import AccountSubject, AuditLog, BankTransaction, Enterprise, Invoice, MatchRecord, MonthlyWorkPackage, Voucher, VoucherRule
 
 
 ORG = UUID("00000000-0000-0000-0000-000000000001")
@@ -86,6 +87,57 @@ def add_output_match(db_session, package):
         debit_amount=Decimal("0.00"),
         credit_amount=Decimal("1130.00"),
         counterparty_name="苏州客户有限公司",
+    )
+    db_session.add_all([invoice, transaction])
+    db_session.flush()
+    match = MatchRecord(
+        organization_id=ORG,
+        monthly_work_package_id=package.id,
+        bank_transaction_id=transaction.id,
+        invoice_id=invoice.id,
+        match_method="AUTO_EXACT",
+        confidence=95,
+        explanation="测试确认",
+        confirmation_status="AUTO_CONFIRMED",
+    )
+    db_session.add(match)
+    db_session.commit()
+    return match
+
+
+def add_output_match_with_values(
+    db_session,
+    package,
+    *,
+    invoice_number,
+    invoice_date,
+    transaction_date,
+    buyer_name,
+    total_amount,
+    summary,
+):
+    amount = (total_amount / Decimal("1.13")).quantize(Decimal("0.01"))
+    tax_amount = total_amount - amount
+    invoice = Invoice(
+        organization_id=ORG,
+        monthly_work_package_id=package.id,
+        invoice_direction="OUTPUT",
+        invoice_number=invoice_number,
+        invoice_date=invoice_date,
+        amount=amount,
+        tax_amount=tax_amount,
+        total_amount=total_amount,
+        seller_name="苏州凭证接口测试有限公司",
+        buyer_name=buyer_name,
+    )
+    transaction = BankTransaction(
+        organization_id=ORG,
+        monthly_work_package_id=package.id,
+        transaction_date=transaction_date,
+        summary=summary,
+        debit_amount=Decimal("0.00"),
+        credit_amount=total_amount,
+        counterparty_name=buyer_name,
     )
     db_session.add_all([invoice, transaction])
     db_session.flush()
@@ -335,6 +387,180 @@ def test_voucher_preprocess_endpoint_interrupts_when_kimi_fails(monkeypatch):
     audit = db_session.query(AuditLog).filter(AuditLog.action == "VOUCHER_AI_PREPROCESS").one()
     assert audit.after_data["ai_status"] == "FAILED"
     assert audit.after_data["created_vouchers"] == 0
+
+
+def test_voucher_preprocess_payload_redacts_raw_summary_and_rule_keywords(monkeypatch):
+    from app.services import voucher_ai_preprocess_service as service
+
+    client, db_session = make_context()
+    enterprise, package = make_package(db_session, company_name="昆山黛珂特电子科技有限公司")
+    db_session.add(
+        BankTransaction(
+            organization_id=ORG,
+            monthly_work_package_id=package.id,
+            transaction_date=date(2026, 5, 10),
+            summary=(
+                "电子转账 昆山黛珂特电子科技有限公司 收到上海敏感客户有限公司 账号6222020202020202020 "
+                "发票32002605090012345678 税号91320500REDACT000001 货款"
+            ),
+            debit_amount=Decimal("0.00"),
+            credit_amount=Decimal("1130.00"),
+            counterparty_name="上海敏感客户有限公司",
+        )
+    )
+    db_session.add(
+        Invoice(
+            organization_id=ORG,
+            monthly_work_package_id=package.id,
+            invoice_direction="OUTPUT",
+            invoice_number="32002605090012345678",
+            invoice_date=date(2026, 5, 9),
+            amount=Decimal("1000.00"),
+            tax_amount=Decimal("130.00"),
+            total_amount=Decimal("1130.00"),
+            seller_name=enterprise.name,
+            buyer_name="上海敏感客户有限公司",
+        )
+    )
+    db_session.add(
+        VoucherRule(
+            organization_id=ORG,
+            enterprise_id=enterprise.id,
+            rule_name="敏感规则",
+            summary_keywords=["昆山黛珂特电子科技有限公司", "账号6222020202020202020", "发票32002605090012345678", "货款"],
+            counterparty_pattern="上海敏感客户有限公司",
+            source_direction="RECEIPT",
+            invoice_direction="OUTPUT",
+            summary_template="确认销售收款",
+            debit_account_code="1002",
+            credit_account_code="6001",
+        )
+    )
+    db_session.commit()
+    stub = StubVoucherPreprocessClient(response={"task_suggestions": [{"task_type": "SINGLE_SOURCE", "confidence": 80}]})
+    monkeypatch.setattr(service, "create_default_voucher_preprocess_client", lambda: stub)
+
+    response = client.post(f"/api/monthly-packages/{package.id}/vouchers/preprocess")
+
+    assert response.status_code == 201
+    payload_text = json.dumps(stub.payloads[0], ensure_ascii=False)
+    for raw_secret in [
+        "昆山黛珂特电子科技有限公司",
+        "上海敏感客户有限公司",
+        "6222020202020202020",
+        "32002605090012345678",
+        "91320500REDACT000001",
+        "账号6222020202020202020",
+    ]:
+        assert raw_secret not in payload_text
+    assert "电子转账" in payload_text
+    assert "货款" in payload_text
+
+
+@pytest.mark.parametrize(
+    "ai_response",
+    [
+        {},
+        {"task_suggestions": []},
+        {"task_suggestions": "FULL_MATCH"},
+        {"task_suggestions": [{"task_type": "FULL_MATCH", "confidence": 101}]},
+        {"task_suggestions": [{"task_type": "BAD_TASK", "confidence": 80}]},
+    ],
+)
+def test_voucher_preprocess_endpoint_interrupts_on_invalid_kimi_output(monkeypatch, ai_response):
+    from app.services import voucher_ai_preprocess_service as service
+
+    client, db_session = make_context()
+    _enterprise, package = make_package(db_session)
+    add_output_match(db_session, package)
+    stub = StubVoucherPreprocessClient(response=ai_response)
+    monkeypatch.setattr(service, "create_default_voucher_preprocess_client", lambda: stub)
+
+    response = client.post(f"/api/monthly-packages/{package.id}/vouchers/preprocess")
+
+    assert response.status_code == 503
+    assert db_session.query(Voucher).count() == 0
+    audit = db_session.query(AuditLog).filter(AuditLog.action == "VOUCHER_AI_PREPROCESS").one()
+    assert audit.after_data["ai_status"] == "FAILED"
+    assert audit.after_data["used_kimi"] is True
+    assert audit.after_data["created_vouchers"] == 0
+
+
+def test_voucher_preprocess_missing_api_key_records_no_kimi_call(monkeypatch):
+    from app.services import voucher_ai_preprocess_service as service
+
+    client, db_session = make_context()
+    _enterprise, package = make_package(db_session)
+    add_output_match(db_session, package)
+    monkeypatch.setattr(
+        service,
+        "create_default_voucher_preprocess_client",
+        lambda: service.MoonshotVoucherPreprocessClient(api_key="", base_url="https://api.moonshot.cn/v1", model="kimi-test"),
+    )
+
+    response = client.post(f"/api/monthly-packages/{package.id}/vouchers/preprocess")
+
+    assert response.status_code == 503
+    assert db_session.query(Voucher).count() == 0
+    audit = db_session.query(AuditLog).filter(AuditLog.action == "VOUCHER_AI_PREPROCESS").one()
+    assert audit.after_data["ai_status"] == "FAILED"
+    assert audit.after_data["used_kimi"] is False
+    assert audit.after_data["created_vouchers"] == 0
+
+
+def test_voucher_preprocess_matches_full_match_suggestions_by_source_refs(monkeypatch):
+    from app.services import voucher_ai_preprocess_service as service
+
+    client, db_session = make_context()
+    _enterprise, package = make_package(db_session)
+    add_output_match_with_values(
+        db_session,
+        package,
+        invoice_number="OUT-KIMI-001",
+        invoice_date=date(2026, 5, 8),
+        transaction_date=date(2026, 5, 9),
+        buyer_name="苏州第一客户有限公司",
+        total_amount=Decimal("1130.00"),
+        summary="收到第一客户货款",
+    )
+    add_output_match_with_values(
+        db_session,
+        package,
+        invoice_number="OUT-KIMI-002",
+        invoice_date=date(2026, 5, 10),
+        transaction_date=date(2026, 5, 11),
+        buyer_name="苏州第二客户有限公司",
+        total_amount=Decimal("2260.00"),
+        summary="收到第二客户货款",
+    )
+    stub = StubVoucherPreprocessClient(
+        response={
+            "task_suggestions": [
+                {
+                    "task_type": "FULL_MATCH",
+                    "confidence": 91,
+                    "reason": "第一笔匹配理由",
+                    "bank_refs": ["T001"],
+                    "invoice_refs": ["I001"],
+                },
+                {
+                    "task_type": "FULL_MATCH",
+                    "confidence": 97,
+                    "reason": "第二笔匹配理由",
+                    "bank_refs": ["T002"],
+                    "invoice_refs": ["I002"],
+                },
+            ]
+        }
+    )
+    monkeypatch.setattr(service, "create_default_voucher_preprocess_client", lambda: stub)
+
+    response = client.post(f"/api/monthly-packages/{package.id}/vouchers/preprocess")
+
+    assert response.status_code == 201
+    vouchers = db_session.query(Voucher).order_by(Voucher.voucher_date).all()
+    assert [voucher.ai_reason for voucher in vouchers] == ["第一笔匹配理由", "第二笔匹配理由"]
+    assert [voucher.ai_confidence for voucher in vouchers] == [91, 97]
 
 
 def test_reject_voucher_api_marks_voucher_as_rejected_without_number():
