@@ -217,6 +217,7 @@ def list_bank_ledger(db: Session, *, monthly_work_package_id: UUID) -> list[dict
                 "linked_invoice_count": len({match.invoice_id for match in linked_matches if match.invoice_id}),
                 "linked_voucher_count": len(linked_vouchers),
                 "linked_voucher_numbers": _linked_voucher_numbers(linked_vouchers),
+                "linked_vouchers": _linked_voucher_reads(linked_vouchers),
             }
         )
     return rows
@@ -261,6 +262,7 @@ def list_invoice_ledger(db: Session, *, monthly_work_package_id: UUID) -> list[d
                 "linked_bank_count": len({match.bank_transaction_id for match in linked_matches if match.bank_transaction_id}),
                 "linked_voucher_count": len(linked_vouchers),
                 "linked_voucher_numbers": _linked_voucher_numbers(linked_vouchers),
+                "linked_vouchers": _linked_voucher_reads(linked_vouchers),
             }
         )
     return rows
@@ -1825,6 +1827,21 @@ def _matching_status_label(status_value: str) -> str:
 
 def _linked_voucher_numbers(vouchers: list[Voucher]) -> list[str]:
     return [voucher.voucher_number or "未编号" for voucher in vouchers]
+
+
+def _linked_voucher_reads(vouchers: list[Voucher]) -> list[dict]:
+    return [
+        {
+            "id": voucher.id,
+            "voucher_number": voucher.voucher_number or "未编号",
+            "status": voucher.status,
+            "status_label": _ledger_voucher_status_label(voucher.status),
+            "summary": voucher.summary,
+            "task_type": str((voucher.source_data or {}).get("voucher_task_type") or "UNKNOWN"),
+            "ai_confidence": voucher.ai_confidence,
+        }
+        for voucher in vouchers
+    ]
 
 
 def _bank_transaction_direction(transaction: BankTransaction) -> str:

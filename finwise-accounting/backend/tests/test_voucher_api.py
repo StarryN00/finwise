@@ -236,6 +236,33 @@ def test_voucher_ledger_summary_api_counts_processed_sources():
     assert summary["single_source_total_amount"] == "500.00"
 
 
+def test_source_ledger_rows_include_linked_voucher_ids():
+    client, db_session = make_context()
+    _enterprise, package = make_package(db_session)
+    add_output_match(db_session, package)
+
+    generate_response = client.post(f"/api/monthly-packages/{package.id}/vouchers/generate")
+    assert generate_response.status_code == 201
+    voucher = generate_response.json()["vouchers"][0]
+    voucher_id = voucher["id"]
+
+    bank_response = client.get(f"/api/monthly-packages/{package.id}/bank-ledger")
+    invoice_response = client.get(f"/api/monthly-packages/{package.id}/invoice-ledger")
+
+    assert bank_response.status_code == 200
+    assert invoice_response.status_code == 200
+    bank_link = bank_response.json()[0]["linked_vouchers"][0]
+    invoice_link = invoice_response.json()[0]["linked_vouchers"][0]
+    assert bank_link["id"] == voucher_id
+    assert bank_link["voucher_number"] == "未编号"
+    assert bank_link["status"] == "PENDING_CONFIRMATION"
+    assert bank_link["status_label"] == "待确认"
+    assert bank_link["summary"] == voucher["summary"]
+    assert bank_link["task_type"] == "FULL_MATCH"
+    assert bank_link["ai_confidence"] == voucher["ai_confidence"]
+    assert invoice_link["id"] == voucher_id
+
+
 def test_reject_voucher_api_marks_voucher_as_rejected_without_number():
     client, db_session = make_context()
     _enterprise, package = make_package(db_session)

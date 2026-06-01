@@ -75,6 +75,16 @@ class VoucherGenerateResponse(BaseModel):
     vouchers: list[VoucherRead]
 
 
+class VoucherLedgerLinkRead(BaseModel):
+    id: UUID
+    voucher_number: str
+    status: str
+    status_label: str
+    summary: str
+    task_type: str
+    ai_confidence: int
+
+
 class BankLedgerRowRead(BaseModel):
     id: UUID
     source_type: str = "BANK"
@@ -94,6 +104,7 @@ class BankLedgerRowRead(BaseModel):
     linked_invoice_count: int = 0
     linked_voucher_count: int = 0
     linked_voucher_numbers: list[str] = []
+    linked_vouchers: list[VoucherLedgerLinkRead] = []
 
 
 class InvoiceLedgerRowRead(BaseModel):
@@ -115,6 +126,7 @@ class InvoiceLedgerRowRead(BaseModel):
     linked_bank_count: int = 0
     linked_voucher_count: int = 0
     linked_voucher_numbers: list[str] = []
+    linked_vouchers: list[VoucherLedgerLinkRead] = []
 
 
 class VoucherLedgerSummaryRead(BaseModel):
