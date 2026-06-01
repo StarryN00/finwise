@@ -134,7 +134,7 @@ def run_voucher_ai_preprocessing(
     client = ai_client or create_default_voucher_preprocess_client()
     try:
         ai_response = client.propose_voucher_tasks(payload)
-        normalized_suggestions = _normalize_ai_response(ai_response)
+        normalized_suggestions = _normalize_ai_response(ai_response, payload_ref_index=_payload_ref_index(payload))
     except VoucherAiPreprocessUnavailableError as exc:
         audit = _build_audit(
             started_at=started_at,
@@ -152,21 +152,40 @@ def run_voucher_ai_preprocessing(
 
     generated = generate_voucher_drafts(db, monthly_work_package_id=package.id)
     vouchers = generated["vouchers"]
-    source_ref_index = _source_ref_index(db, package=package)
-    _attach_preprocess_metadata(vouchers, suggestions=normalized_suggestions, source_ref_index=source_ref_index, ai_status="SUCCESS")
+    created_voucher_ids = [voucher.id for voucher in vouchers]
+    try:
+        source_ref_index = _source_ref_index(db, package=package)
+        _attach_preprocess_metadata(vouchers, suggestions=normalized_suggestions, source_ref_index=source_ref_index, ai_status="SUCCESS")
 
-    audit = _build_audit(
-        started_at=started_at,
-        payload=payload,
-        model=settings.moonshot_model,
-        used_kimi=True,
-        ai_status="SUCCESS",
-        created_vouchers=generated["created_vouchers"],
-        generated_task_counts=_task_counts(vouchers),
-        error_summary="",
-    )
-    _write_audit_log(db, package=package, audit=audit)
-    db.commit()
+        audit = _build_audit(
+            started_at=started_at,
+            payload=payload,
+            model=settings.moonshot_model,
+            used_kimi=True,
+            ai_status="SUCCESS",
+            created_vouchers=generated["created_vouchers"],
+            generated_task_counts=_task_counts(vouchers),
+            error_summary="",
+        )
+        _write_audit_log(db, package=package, audit=audit)
+        db.commit()
+    except Exception as exc:
+        error_summary = str(exc) or exc.__class__.__name__
+        _cleanup_created_vouchers(db, voucher_ids=created_voucher_ids)
+        audit = _build_audit(
+            started_at=started_at,
+            payload=payload,
+            model=settings.moonshot_model,
+            used_kimi=True,
+            ai_status="FAILED",
+            created_vouchers=0,
+            generated_task_counts={},
+            error_summary=error_summary,
+        )
+        _write_audit_log(db, package=package, audit=audit)
+        db.commit()
+        raise VoucherAiPreprocessFailedError(f"AI 预处理失败：{error_summary}", audit) from exc
+
     return {
         "ai_status": "SUCCESS",
         "used_kimi": True,
@@ -269,7 +288,8 @@ def build_voucher_preprocess_payload(db: Session, *, package: MonthlyWorkPackage
         ],
         "historical_rules": [
             {
-                "rule_name": _safe_words(item.rule_name),
+                "rule_alias": f"R{index:03d}",
+                "treatment_type": _safe_summary_keywords(item.summary_template),
                 "summary_keywords": _safe_summary_keywords(" ".join(str(keyword) for keyword in (item.summary_keywords or []))),
                 "counterparty_alias": _alias_for(item.counterparty_pattern or "", party_aliases, prefix="交易对方")
                 if item.counterparty_pattern
@@ -279,7 +299,7 @@ def build_voucher_preprocess_payload(db: Session, *, package: MonthlyWorkPackage
                 "debit_account_code": item.debit_account_code,
                 "credit_account_code": item.credit_account_code,
             }
-            for item in rules
+            for index, item in enumerate(rules, start=1)
         ],
     }
 
@@ -367,7 +387,7 @@ def _task_counts(vouchers: list[Voucher]) -> dict:
     return counts
 
 
-def _normalize_ai_response(ai_response: dict) -> list[dict]:
+def _normalize_ai_response(ai_response: dict, *, payload_ref_index: dict[str, set[str]]) -> list[dict]:
     if not isinstance(ai_response, dict):
         raise VoucherAiPreprocessUnavailableError("AI 返回格式无效")
     suggestions = ai_response.get("task_suggestions")
@@ -391,20 +411,44 @@ def _normalize_ai_response(ai_response: dict) -> list[dict]:
                 "confidence": confidence,
                 "summary": str(suggestion.get("summary") or ""),
                 "reason": str(suggestion.get("reason") or ""),
-                "bank_refs": _normalize_ref_list(suggestion.get("bank_refs")),
-                "invoice_refs": _normalize_ref_list(suggestion.get("invoice_refs")),
+                "bank_refs": _normalize_ref_list(suggestion.get("bank_refs"), valid_refs=payload_ref_index["bank"], ref_label="bank_refs"),
+                "invoice_refs": _normalize_ref_list(
+                    suggestion.get("invoice_refs"),
+                    valid_refs=payload_ref_index["invoice"],
+                    ref_label="invoice_refs",
+                ),
                 "entries": suggestion.get("entries") if isinstance(suggestion.get("entries"), list) else [],
             }
         )
     return normalized
 
 
-def _normalize_ref_list(value) -> list[str]:
+def _payload_ref_index(payload: dict) -> dict[str, set[str]]:
+    return {
+        "bank": {str(item.get("ref")) for item in payload.get("bank_transactions", []) if item.get("ref")},
+        "invoice": {str(item.get("ref")) for item in payload.get("invoices", []) if item.get("ref")},
+    }
+
+
+def _normalize_ref_list(value, *, valid_refs: set[str], ref_label: str) -> list[str]:
     if value is None:
         return []
     if not isinstance(value, list):
         raise VoucherAiPreprocessUnavailableError("AI 建议来源引用格式无效")
-    return [str(item) for item in value if str(item or "").strip()]
+    refs = [str(item) for item in value if str(item or "").strip()]
+    unknown_refs = sorted(ref for ref in refs if ref not in valid_refs)
+    if unknown_refs:
+        raise VoucherAiPreprocessUnavailableError(f"AI 建议包含未知来源引用：{ref_label}={','.join(unknown_refs)}")
+    return refs
+
+
+def _cleanup_created_vouchers(db: Session, *, voucher_ids: list[UUID]) -> None:
+    db.rollback()
+    for voucher_id in voucher_ids:
+        voucher = db.get(Voucher, voucher_id)
+        if voucher is not None:
+            db.delete(voucher)
+    db.flush()
 
 
 def _source_ref_index(db: Session, *, package: MonthlyWorkPackage) -> dict[str, dict[str, UUID]]:

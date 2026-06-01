@@ -426,7 +426,7 @@ def test_voucher_preprocess_payload_redacts_raw_summary_and_rule_keywords(monkey
         VoucherRule(
             organization_id=ORG,
             enterprise_id=enterprise.id,
-            rule_name="敏感规则",
+            rule_name="上海敏感客户有限公司 专属销售收款规则",
             summary_keywords=["昆山黛珂特电子科技有限公司", "账号6222020202020202020", "发票32002605090012345678", "货款"],
             counterparty_pattern="上海敏感客户有限公司",
             source_direction="RECEIPT",
@@ -453,6 +453,7 @@ def test_voucher_preprocess_payload_redacts_raw_summary_and_rule_keywords(monkey
         "账号6222020202020202020",
     ]:
         assert raw_secret not in payload_text
+    assert stub.payloads[0]["historical_rules"][0]["rule_alias"] == "R001"
     assert "电子转账" in payload_text
     assert "货款" in payload_text
 
@@ -506,6 +507,60 @@ def test_voucher_preprocess_missing_api_key_records_no_kimi_call(monkeypatch):
     assert audit.after_data["ai_status"] == "FAILED"
     assert audit.after_data["used_kimi"] is False
     assert audit.after_data["created_vouchers"] == 0
+
+
+def test_voucher_preprocess_endpoint_interrupts_on_unknown_kimi_refs(monkeypatch):
+    from app.services import voucher_ai_preprocess_service as service
+
+    client, db_session = make_context()
+    _enterprise, package = make_package(db_session)
+    add_output_match(db_session, package)
+    stub = StubVoucherPreprocessClient(
+        response={
+            "task_suggestions": [
+                {
+                    "task_type": "FULL_MATCH",
+                    "confidence": 90,
+                    "reason": "引用不存在的发票",
+                    "bank_refs": ["T001"],
+                    "invoice_refs": ["I999"],
+                }
+            ]
+        }
+    )
+    monkeypatch.setattr(service, "create_default_voucher_preprocess_client", lambda: stub)
+
+    response = client.post(f"/api/monthly-packages/{package.id}/vouchers/preprocess")
+
+    assert response.status_code == 503
+    assert db_session.query(Voucher).count() == 0
+    audit = db_session.query(AuditLog).filter(AuditLog.action == "VOUCHER_AI_PREPROCESS").one()
+    assert audit.after_data["ai_status"] == "FAILED"
+    assert audit.after_data["created_vouchers"] == 0
+
+
+def test_voucher_preprocess_cleans_created_vouchers_when_post_generation_fails(monkeypatch):
+    from app.services import voucher_ai_preprocess_service as service
+
+    client, db_session = make_context()
+    _enterprise, package = make_package(db_session)
+    add_output_match(db_session, package)
+    stub = StubVoucherPreprocessClient(response={"task_suggestions": [{"task_type": "FULL_MATCH", "confidence": 90}]})
+    monkeypatch.setattr(service, "create_default_voucher_preprocess_client", lambda: stub)
+
+    def fail_metadata(*args, **kwargs):
+        raise RuntimeError("metadata persistence failed")
+
+    monkeypatch.setattr(service, "_attach_preprocess_metadata", fail_metadata)
+
+    response = client.post(f"/api/monthly-packages/{package.id}/vouchers/preprocess")
+
+    assert response.status_code == 503
+    assert db_session.query(Voucher).count() == 0
+    audit = db_session.query(AuditLog).filter(AuditLog.action == "VOUCHER_AI_PREPROCESS").one()
+    assert audit.after_data["ai_status"] == "FAILED"
+    assert audit.after_data["created_vouchers"] == 0
+    assert "metadata persistence failed" in audit.after_data["error_summary"]
 
 
 def test_voucher_preprocess_matches_full_match_suggestions_by_source_refs(monkeypatch):
