@@ -4,7 +4,7 @@
 
 **Goal:** Replace the voucher workbench’s standalone draft list with bank-ledger and invoice-ledger working views, and make the “AI 预处理” button verifiably call Kimi to compare both sides and produce voucher treatment suggestions.
 
-**Architecture:** Backend keeps the existing voucher draft model and ledger APIs, adds source-row voucher links plus a Kimi preprocessing orchestration layer with audit logs and explicit fallback status. Frontend refactors the source ledgers into reusable components, embeds them in `VoucherWorkbenchView`, and routes row clicks into the existing right-side voucher review panel. The old generate endpoint remains compatible, but the primary frontend action becomes `/vouchers/preprocess`.
+**Architecture:** Backend keeps the existing voucher draft model and ledger APIs, adds source-row voucher links plus a Kimi preprocessing orchestration layer with audit logs and explicit failure status. Frontend refactors the source ledgers into reusable components, embeds them in `VoucherWorkbenchView`, and routes row clicks into the existing right-side voucher review panel. The old generate endpoint remains compatible, but the primary frontend action becomes `/vouchers/preprocess`; if Kimi fails, the endpoint returns an error and does not create new voucher tasks.
 
 **Tech Stack:** FastAPI, SQLAlchemy, Pydantic, pytest, Vue 3, Element Plus, Pinia, Vitest, Playwright/browser verification.
 
@@ -18,13 +18,13 @@
 
 - Modify `finwise-accounting/backend/app/services/voucher_service.py`
   - Reuse existing source link indexes to expose voucher IDs, numbers, statuses, summaries and task types on ledger rows.
-  - Keep `generate_voucher_drafts()` as local deterministic/fallback generator.
+  - Keep `generate_voucher_drafts()` as the legacy local deterministic generator for the old compatibility endpoint.
 
 - Create `finwise-accounting/backend/app/services/voucher_ai_preprocess_service.py`
   - Build desensitized Kimi payload from bank transactions, invoices, matched records, historical rules, and package context.
   - Call Moonshot/Kimi API with JSON response format.
   - Persist an `AuditLog` entry with action `VOUCHER_AI_PREPROCESS`.
-  - Run local voucher draft generation after Kimi returns or after fallback.
+  - Run local voucher draft generation only after Kimi returns successfully.
   - Attach AI preprocessing metadata to generated vouchers where source keys can be matched.
 
 - Modify `finwise-accounting/backend/app/api/vouchers.py`
@@ -54,7 +54,7 @@
   - Replace the left “待处理凭证列表” with two tabs: `按资金流水整理` and `按发票台账整理`.
   - Load bank ledger, invoice ledger, voucher list, and summary together.
   - Clicking a ledger row selects its linked voucher or the best related voucher.
-  - Display Kimi/fallback status message from preprocessing response.
+  - Display Kimi success status or Kimi failure error from preprocessing response.
 
 - Modify tests:
   - `finwise-accounting/backend/tests/test_voucher_api.py`
@@ -217,7 +217,7 @@ git commit -m "feat(vouchers): expose voucher links on source ledgers"
 - Modify: `finwise-accounting/backend/app/api/vouchers.py`
 - Test: `finwise-accounting/backend/tests/test_voucher_api.py`
 
-- [ ] **Step 1: Write backend tests for Kimi success and fallback**
+- [ ] **Step 1: Write backend tests for Kimi success and failure interruption**
 
 Add these tests to `finwise-accounting/backend/tests/test_voucher_api.py`:
 
@@ -282,7 +282,6 @@ def test_voucher_preprocess_endpoint_calls_kimi_client_and_records_audit(db_sess
     payload = response.json()
     assert payload["ai_status"] == "SUCCESS"
     assert payload["used_kimi"] is True
-    assert payload["fallback_used"] is False
     assert payload["created_vouchers"] >= 1
     assert stub.payloads
     first_payload = stub.payloads[0]
@@ -296,7 +295,7 @@ def test_voucher_preprocess_endpoint_calls_kimi_client_and_records_audit(db_sess
     assert audit.after_data["model"]
 
 
-def test_voucher_preprocess_endpoint_falls_back_visibly_when_kimi_fails(db_session, monkeypatch):
+def test_voucher_preprocess_endpoint_interrupts_when_kimi_fails(db_session, monkeypatch):
     from app.services import voucher_ai_preprocess_service as service
 
     enterprise, package = create_enterprise_with_package(db_session)
@@ -327,19 +326,20 @@ def test_voucher_preprocess_endpoint_falls_back_visibly_when_kimi_fails(db_sessi
 
     response = client.post(f"/api/monthly-packages/{package.id}/vouchers/preprocess")
 
-    assert response.status_code == 201
+    assert response.status_code == 503
     payload = response.json()
-    assert payload["ai_status"] == "FALLBACK"
-    assert payload["used_kimi"] is True
-    assert payload["fallback_used"] is True
-    assert "AI 调用失败，已使用本地规则兜底" in payload["message"]
+    assert "AI 预处理失败" in payload["detail"]
+    assert db_session.query(Voucher).count() == 0
+    audit = db_session.query(AuditLog).filter(AuditLog.action == "VOUCHER_AI_PREPROCESS").one()
+    assert audit.after_data["ai_status"] == "FAILED"
+    assert audit.after_data["created_vouchers"] == 0
 ```
 
 At the top of the file, add imports if missing:
 
 ```python
 import json
-from app.models import AuditLog
+from app.models import AuditLog, Voucher
 ```
 
 - [ ] **Step 2: Run the failing tests**
@@ -348,7 +348,7 @@ Run:
 
 ```bash
 cd /Users/starryn/project/finwise/finwise-accounting/backend
-uv run pytest tests/test_voucher_api.py::test_voucher_preprocess_endpoint_calls_kimi_client_and_records_audit tests/test_voucher_api.py::test_voucher_preprocess_endpoint_falls_back_visibly_when_kimi_fails -q
+uv run pytest tests/test_voucher_api.py::test_voucher_preprocess_endpoint_calls_kimi_client_and_records_audit tests/test_voucher_api.py::test_voucher_preprocess_endpoint_interrupts_when_kimi_fails -q
 ```
 
 Expected: FAIL because the endpoint and service do not exist.
@@ -360,12 +360,12 @@ In `finwise-accounting/backend/app/schemas/voucher.py`, add:
 ```python
 class VoucherPreprocessAuditRead(BaseModel):
     used_kimi: bool
-    fallback_used: bool
     ai_status: str
     model: str
     input_bank_count: int
     input_invoice_count: int
     generated_task_counts: dict
+    created_vouchers: int
     duration_ms: int
     error_summary: str = ""
 
@@ -375,7 +375,6 @@ class VoucherPreprocessResponse(BaseModel):
 
     ai_status: str
     used_kimi: bool
-    fallback_used: bool
     message: str
     created_vouchers: int
     vouchers: list[VoucherRead]
@@ -406,6 +405,12 @@ from app.services.voucher_service import VoucherDomainError, generate_voucher_dr
 
 class VoucherAiPreprocessUnavailableError(Exception):
     pass
+
+
+class VoucherAiPreprocessFailedError(Exception):
+    def __init__(self, message: str, audit: dict):
+        super().__init__(message)
+        self.audit = audit
 
 
 class VoucherPreprocessClient(Protocol):
@@ -490,15 +495,41 @@ def run_voucher_ai_preprocessing(
     settings = get_settings()
     client = ai_client or create_default_voucher_preprocess_client()
     ai_status = "SUCCESS"
-    fallback_used = False
     error_summary = ""
     ai_response = {"task_suggestions": []}
     try:
         ai_response = client.propose_voucher_tasks(payload)
     except VoucherAiPreprocessUnavailableError as exc:
-        ai_status = "FALLBACK"
-        fallback_used = True
+        ai_status = "FAILED"
         error_summary = str(exc)
+        audit = {
+            "used_kimi": True,
+            "ai_status": ai_status,
+            "model": settings.moonshot_model,
+            "input_bank_count": len(payload["bank_transactions"]),
+            "input_invoice_count": len(payload["invoices"]),
+            "generated_task_counts": {},
+            "created_vouchers": 0,
+            "duration_ms": int((time.monotonic() - started_at) * 1000),
+            "error_summary": error_summary,
+        }
+        db.add(
+            AuditLog(
+                organization_id=package.organization_id,
+                monthly_work_package_id=package.id,
+                actor="system",
+                action="VOUCHER_AI_PREPROCESS",
+                before_data={
+                    "payload_summary": {
+                        "bank_transactions": audit["input_bank_count"],
+                        "invoices": audit["input_invoice_count"],
+                    }
+                },
+                after_data=audit,
+            )
+        )
+        db.commit()
+        raise VoucherAiPreprocessFailedError(f"AI 预处理失败：{error_summary}", audit) from exc
 
     generated = generate_voucher_drafts(db, monthly_work_package_id=package.id)
     vouchers = generated["vouchers"]
@@ -506,12 +537,12 @@ def run_voucher_ai_preprocessing(
 
     audit = {
         "used_kimi": True,
-        "fallback_used": fallback_used,
         "ai_status": ai_status,
         "model": settings.moonshot_model,
         "input_bank_count": len(payload["bank_transactions"]),
         "input_invoice_count": len(payload["invoices"]),
         "generated_task_counts": _task_counts(vouchers),
+        "created_vouchers": generated["created_vouchers"],
         "duration_ms": int((time.monotonic() - started_at) * 1000),
         "error_summary": error_summary,
     }
@@ -534,8 +565,7 @@ def run_voucher_ai_preprocessing(
     return {
         "ai_status": ai_status,
         "used_kimi": True,
-        "fallback_used": fallback_used,
-        "message": "AI 预处理完成" if not fallback_used else "AI 调用失败，已使用本地规则兜底",
+        "message": "AI 预处理完成",
         "created_vouchers": generated["created_vouchers"],
         "vouchers": vouchers,
         "audit": audit,
@@ -653,7 +683,7 @@ In `finwise-accounting/backend/app/api/vouchers.py`, import:
 
 ```python
 from app.schemas.voucher import VoucherPreprocessResponse
-from app.services.voucher_ai_preprocess_service import run_voucher_ai_preprocessing
+from app.services.voucher_ai_preprocess_service import VoucherAiPreprocessFailedError, run_voucher_ai_preprocessing
 ```
 
 Then add below `generate_vouchers_endpoint`:
@@ -667,6 +697,8 @@ Then add below `generate_vouchers_endpoint`:
 def preprocess_vouchers_endpoint(package_id: UUID, db: Session = Depends(get_db)):
     try:
         return run_voucher_ai_preprocessing(db, monthly_work_package_id=package_id)
+    except VoucherAiPreprocessFailedError as exc:
+        raise HTTPException(status_code=status.HTTP_503_SERVICE_UNAVAILABLE, detail=str(exc)) from exc
     except VoucherValidationError as exc:
         raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail=str(exc)) from exc
     except VoucherDomainError as exc:
@@ -679,7 +711,7 @@ Run:
 
 ```bash
 cd /Users/starryn/project/finwise/finwise-accounting/backend
-uv run pytest tests/test_voucher_api.py::test_voucher_preprocess_endpoint_calls_kimi_client_and_records_audit tests/test_voucher_api.py::test_voucher_preprocess_endpoint_falls_back_visibly_when_kimi_fails -q
+uv run pytest tests/test_voucher_api.py::test_voucher_preprocess_endpoint_calls_kimi_client_and_records_audit tests/test_voucher_api.py::test_voucher_preprocess_endpoint_interrupts_when_kimi_fails -q
 ```
 
 Expected: PASS.
@@ -1190,11 +1222,7 @@ async function preprocessVouchers() {
     const didLoadCurrentPackage = await loadVouchers(packageId)
     if (!didLoadCurrentPackage || packageId !== activePackageId.value) return
     selectGeneratedVoucher(generatedVouchers)
-    if (response.data?.fallback_used) {
-      ElMessage.warning(response.data?.message || 'AI 调用失败，已使用本地规则兜底')
-    } else {
-      ElMessage.success(`AI 预处理完成，本次新增 ${createdVoucherCount} 张凭证任务`)
-    }
+    ElMessage.success(`AI 预处理完成，本次新增 ${createdVoucherCount} 张凭证任务`)
   } catch (error) {
     if (packageId !== activePackageId.value) return
     ElMessage.error(error?.response?.data?.detail || error?.message || 'AI 预处理失败')
@@ -1216,7 +1244,7 @@ Update flow labels:
 <small>{{ hasAiSuggestion ? '已给出摘要、科目、金额和判断说明' : '预处理后展示 AI 置信度和说明' }}</small>
 ```
 
-- [ ] **Step 7: Add fallback/audit visible status**
+- [ ] **Step 7: Add Kimi audit visible status**
 
 Under the flow or summary cards, add:
 
@@ -1224,12 +1252,12 @@ Under the flow or summary cards, add:
 <el-alert
   v-if="preprocessAudit"
   class="preprocess-alert"
-  :type="preprocessAudit.fallback_used ? 'warning' : 'success'"
+  type="success"
   :closable="false"
   show-icon
 >
   <template #title>
-    {{ preprocessAudit.fallback_used ? 'AI 调用失败，已使用本地规则兜底' : 'Kimi AI 预处理已完成' }}
+    Kimi AI 预处理已完成
   </template>
   <template #default>
     模型：{{ preprocessAudit.model }}；流水 {{ preprocessAudit.input_bank_count }} 条；发票 {{ preprocessAudit.input_invoice_count }} 张；耗时 {{ preprocessAudit.duration_ms }}ms
@@ -1336,7 +1364,8 @@ Verify visually and functionally:
 - Button says `AI 预处理`.
 - Click `AI 预处理`; observe API path `/api/monthly-packages/{id}/vouchers/preprocess`.
 - Confirm no path contains `[object PointerEvent]`.
-- After completion, the visible alert says either `Kimi AI 预处理已完成` or `AI 调用失败，已使用本地规则兜底`.
+- After a successful run, the visible alert says `Kimi AI 预处理已完成`.
+- When Kimi fails, the browser shows an `AI 预处理失败` error and no new voucher rows are created.
 - Left workbench shows `按资金流水整理` and `按发票台账整理`.
 - Click one bank row with linked voucher; right panel updates to that voucher.
 - Switch to invoice tab; click one invoice row with linked voucher; right panel updates.
@@ -1360,7 +1389,7 @@ git commit -m "test(vouchers): cover source-ledger workbench flow"
 - “AI 预处理” button naming: Task 4.
 - Kimi API call from `.env` / settings: Task 2 uses `settings.moonshot_api_key`, `moonshot_base_url`, `moonshot_model`.
 - Full bank + invoice comparison payload: Task 2 sends all package transactions and invoices in desensitized form.
-- Fallback visible and not disguised as AI success: Task 2 response and Task 4 alert.
+- Kimi failure interrupts operation instead of generating fallback tasks: Task 2 error response and Task 4 error handling.
 - Audit proof of Kimi call: Task 2 writes `AuditLog` with action `VOUCHER_AI_PREPROCESS`.
 - Embedded bank/invoice workbench tabs: Task 4.
 - Standalone bank/invoice menus remain: Task 3 refactors but keeps views.
@@ -1369,4 +1398,4 @@ git commit -m "test(vouchers): cover source-ledger workbench flow"
 
 **Placeholder scan:** No forbidden placeholder markers or deferred unspecified implementation remains in this plan.
 
-**Type consistency:** Backend response names `ai_status`, `used_kimi`, `fallback_used`, `created_vouchers`, `audit`, and `vouchers` are used consistently by API, frontend client and Vue view.
+**Type consistency:** Backend response names `ai_status`, `used_kimi`, `created_vouchers`, `audit`, and `vouchers` are used consistently by API, frontend client and Vue view.
