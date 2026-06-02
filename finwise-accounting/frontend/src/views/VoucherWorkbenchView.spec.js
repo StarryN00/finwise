@@ -96,8 +96,19 @@ describe('VoucherWorkbenchView', () => {
     expect(viewSource).toContain('api.sourceLedgers.summary')
     expect(viewSource).toContain('请按顺序核对 AI 推荐、异常提示和分录金额')
     expect(viewSource).toContain('第 1 步：原始数据')
+    expect(viewSource).toContain('来源汇总')
+    expect(viewSource).toContain('sourceSummary')
+    expect(viewSource).toContain('银行流水合计')
+    expect(viewSource).toContain('发票合计')
+    expect(viewSource).toContain('差额金额')
+    expect(viewSource).toContain('AI 补齐建议')
+    expect(viewSource).toContain('来源明细')
+    expect(viewSource).toContain('sourceDetailRows')
+    expect(viewSource).toContain('source-line-bank')
+    expect(viewSource).toContain('source-line-invoice')
+    expect(viewSource).toContain('source-line-difference')
     expect(viewSource).toContain('银行流水')
-    expect(viewSource).toContain('发票信息')
+    expect(viewSource).toContain('发票合计')
     expect(viewSource).toContain('匹配记录')
     expect(viewSource).toContain('sourceBankTransaction')
     expect(viewSource).toContain('sourceBankTransactions')
@@ -114,8 +125,7 @@ describe('VoucherWorkbenchView', () => {
     expect(viewSource).toContain('applyTreatmentAdjustment')
     expect(viewSource).toContain('ONE_INVOICE_MULTIPLE_BANK_TRANSACTIONS')
     expect(viewSource).toContain('ONE_BANK_TRANSACTION_MULTIPLE_INVOICES')
-    expect(viewSource).toContain('v-for="(transaction, index) in sourceBankTransactions"')
-    expect(viewSource).toContain('v-for="(invoice, index) in sourceInvoices"')
+    expect(viewSource).toContain('v-for="row in sourceDetailRows"')
     expect(viewSource).toContain('sourceInvoiceSellerName')
     expect(viewSource).toContain('invoiceSellerName')
     expect(viewSource).toContain('invoiceBuyerName')
@@ -313,6 +323,25 @@ describe('VoucherWorkbenchView', () => {
     expect(wrapper.text()).toContain('第 2 步：AI 推荐说明')
   })
 
+  it('renders matched source summary as bank, invoice, and AI difference rows', async () => {
+    api.vouchers.list.mockResolvedValue({ data: [multiSourceVoucherFixture()] })
+
+    const wrapper = mountWorkbench()
+    await flushPromises()
+
+    expect(wrapper.text()).toContain('来源汇总')
+    expect(wrapper.text()).toContain('银行流水合计')
+    expect(wrapper.text()).toContain('1 笔 / 200.00')
+    expect(wrapper.text()).toContain('发票合计')
+    expect(wrapper.text()).toContain('2 张 / 150.00')
+    expect(wrapper.text()).toContain('差额金额')
+    expect(wrapper.text()).toContain('50.00')
+    expect(wrapper.text()).toContain('AI 补齐建议')
+    expect(wrapper.findAll('.source-line-bank')).toHaveLength(1)
+    expect(wrapper.findAll('.source-line-invoice')).toHaveLength(2)
+    expect(wrapper.findAll('.source-line-difference')).toHaveLength(1)
+  })
+
   it('selects a linked voucher from embedded bank and invoice ledger rows', async () => {
     api.vouchers.list.mockResolvedValue({
       data: [
@@ -408,6 +437,56 @@ function voucherFixture(id = 'voucher-1', summary = '收到客户货款') {
     ],
     source_data: {
       bank_transaction: { id: 'bank-1', transaction_date: '2026-04-08', summary: '收款', credit_amount: '1130.00' },
+    },
+  }
+}
+
+function multiSourceVoucherFixture() {
+  return {
+    id: 'voucher-multi',
+    voucher_number: '未编号',
+    voucher_date: '2026-04-20',
+    summary: '确认多张销售发票并补齐收款差额',
+    status: 'PENDING_CONFIRMATION',
+    ai_confidence: 90,
+    ai_reason: '流水金额大于发票，AI 建议将差额暂挂预收账款。',
+    validation_errors: [],
+    entries: [
+      { direction: 'DEBIT', account_code: '1002', account_name: '银行存款', amount: '200.00' },
+      { direction: 'CREDIT', account_code: '1122', account_name: '应收账款', amount: '150.00' },
+      { direction: 'CREDIT', account_code: '2203', account_name: '预收账款', amount: '50.00' },
+    ],
+    source_data: {
+      source_group_type: 'ONE_BANK_TRANSACTION_MULTIPLE_INVOICES',
+      bank_transaction: {
+        id: 'bank-1',
+        transaction_date: '2026-04-20',
+        summary: '电子汇入',
+        counterparty_name: '上海安费诺永亿通讯电子有限公司',
+        credit_amount: '200.00',
+        debit_amount: '0.00',
+      },
+      invoices: [
+        {
+          id: 'invoice-1',
+          invoice_direction: 'OUTPUT',
+          invoice_date: '2026-04-20',
+          invoice_number: 'INV-001',
+          buyer_name: '上海安费诺永亿通讯电子有限公司',
+          seller_name: '昆山黛珂特电子科技有限公司',
+          total_amount: '80.00',
+        },
+        {
+          id: 'invoice-2',
+          invoice_direction: 'OUTPUT',
+          invoice_date: '2026-04-20',
+          invoice_number: 'INV-002',
+          buyer_name: '上海安费诺永亿通讯电子有限公司',
+          seller_name: '昆山黛珂特电子科技有限公司',
+          total_amount: '70.00',
+        },
+      ],
+      difference_amount: '50.00',
     },
   }
 }

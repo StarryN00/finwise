@@ -200,78 +200,68 @@
                 <span>先核对来源，再判断 AI 推荐是否合理</span>
               </div>
 
-              <div v-if="hasSourceData" class="source-grid">
-                <section v-if="sourceData.source_group_type" class="source-card source-card-wide source-group-card">
+              <div v-if="hasSourceData" class="source-ledger-detail">
+                <section v-if="sourceData.source_group_type" class="source-group-card">
                   <strong>组合来源</strong>
                   <p>{{ sourceGroupTypeLabel(sourceData.source_group_type) }}</p>
                 </section>
 
-                <section
-                  v-for="(transaction, index) in sourceBankTransactions"
-                  :key="transaction.id || `bank-${index}`"
-                  class="source-card"
-                >
-                  <strong>银行流水{{ sourceBankTransactions.length > 1 ? ` ${index + 1}` : '' }}</strong>
-                  <dl>
+                <section class="source-summary-panel" aria-label="来源汇总">
+                  <div class="source-summary-title">
+                    <strong>来源汇总</strong>
+                    <span>{{ sourceSummary.balanceLabel }}</span>
+                  </div>
+                  <div class="source-summary-grid">
                     <div>
-                      <dt>交易日期</dt>
-                      <dd class="matching-field">{{ transaction.transaction_date || '-' }}</dd>
+                      <span>银行流水合计</span>
+                      <strong>{{ sourceSummary.bankCount }} 笔 / {{ formatAmount(sourceSummary.bankTotal) }}</strong>
                     </div>
                     <div>
-                      <dt>流水摘要</dt>
-                      <dd>{{ transaction.summary || '-' }}</dd>
+                      <span>发票合计</span>
+                      <strong>{{ sourceSummary.invoiceCount }} 张 / {{ formatAmount(sourceSummary.invoiceTotal) }}</strong>
                     </div>
                     <div>
-                      <dt>对方户名</dt>
-                      <dd class="matched-value">{{ transaction.counterparty_name || '-' }}</dd>
+                      <span>差额金额</span>
+                      <strong>{{ formatAmount(Math.abs(sourceSummary.differenceAmount)) }}</strong>
                     </div>
                     <div>
-                      <dt>借方金额</dt>
-                      <dd class="matched-value">{{ formatAmount(transaction.debit_amount) }}</dd>
+                      <span>AI 补齐建议</span>
+                      <strong>{{ sourceSummary.treatmentLabel }}</strong>
                     </div>
-                    <div>
-                      <dt>贷方金额</dt>
-                      <dd class="matched-value">{{ formatAmount(transaction.credit_amount) }}</dd>
-                    </div>
-                    <div>
-                      <dt>余额</dt>
-                      <dd>{{ transaction.balance ? formatAmount(transaction.balance) : '-' }}</dd>
-                    </div>
-                  </dl>
+                  </div>
                 </section>
 
-                <section
-                  v-for="(invoice, index) in sourceInvoices"
-                  :key="invoice.id || `invoice-${index}`"
-                  class="source-card"
-                >
-                  <strong>发票信息{{ sourceInvoices.length > 1 ? ` ${index + 1}` : '' }}</strong>
-                  <dl>
-                    <div>
-                      <dt>发票方向</dt>
-                      <dd>{{ invoiceDirectionLabel(invoice.invoice_direction) }}</dd>
+                <section class="source-lines-section">
+                  <div class="source-lines-title">
+                    <strong>来源明细</strong>
+                    <span>一条流水或一张发票显示为一行，差额用 AI 建议行补齐</span>
+                  </div>
+                  <div class="source-line-table" role="table" aria-label="来源明细">
+                    <div class="source-line source-line-head" role="row">
+                      <span>类型</span>
+                      <span>日期</span>
+                      <span>对方</span>
+                      <span>摘要/票号</span>
+                      <span>方向</span>
+                      <span>金额</span>
+                      <span>说明</span>
                     </div>
-                    <div>
-                      <dt>发票号码</dt>
-                      <dd>{{ invoice.invoice_number || '-' }}</dd>
+                    <div
+                      v-for="row in sourceDetailRows"
+                      :key="row.key"
+                      class="source-line"
+                      :class="row.className"
+                      role="row"
+                    >
+                      <span><b>{{ row.typeLabel }}</b></span>
+                      <span>{{ row.date }}</span>
+                      <span :title="row.counterparty">{{ row.counterparty }}</span>
+                      <span :title="row.description">{{ row.description }}</span>
+                      <span>{{ row.directionLabel }}</span>
+                      <span>{{ formatAmount(row.amount) }}</span>
+                      <span :title="row.note">{{ row.note }}</span>
                     </div>
-                    <div>
-                      <dt>开票日期</dt>
-                      <dd class="matching-field">{{ invoice.invoice_date || '-' }}</dd>
-                    </div>
-                    <div>
-                      <dt>销售方</dt>
-                      <dd class="matched-value">{{ invoiceSellerName(invoice) }}</dd>
-                    </div>
-                    <div>
-                      <dt>购买方</dt>
-                      <dd class="matched-value">{{ invoiceBuyerName(invoice) }}</dd>
-                    </div>
-                    <div>
-                      <dt>价税合计</dt>
-                      <dd class="matched-value">{{ formatAmount(invoice.total_amount) }}</dd>
-                    </div>
-                  </dl>
+                  </div>
                 </section>
 
                 <section v-if="missingSourceTreatment" class="source-card source-card-wide treatment-card">
@@ -786,6 +776,104 @@ const missingSourceTreatment = computed(() => {
   return null
 })
 const existingTreatment = computed(() => sourceData.value.accounting_treatment || null)
+const sourceBankTotal = computed(() =>
+  sourceBankTransactions.value.reduce((total, transaction) => total + bankTransactionAmount(transaction), 0),
+)
+const sourceInvoiceTotal = computed(() =>
+  sourceInvoices.value.reduce((total, invoice) => total + Number(invoice?.total_amount || 0), 0),
+)
+const sourceDifferenceAmount = computed(() => {
+  if (sourceBankTransactions.value.length && !sourceInvoices.value.length) return sourceBankTotal.value
+  if (!sourceBankTransactions.value.length && sourceInvoices.value.length) return -sourceInvoiceTotal.value
+  if (sourceData.value.difference_amount !== undefined && sourceData.value.difference_amount !== null) {
+    return Number(sourceData.value.difference_amount || 0)
+  }
+  return sourceBankTotal.value - sourceInvoiceTotal.value
+})
+const differenceTreatmentEntry = computed(() => {
+  const differenceCodes = new Set(['1122', '1123', '2202', '2203'])
+  const expectedAmount = Math.abs(sourceDifferenceAmount.value)
+  return selectedEntries.value.find((entry) => {
+    const code = String(entry.account_code || '')
+    if (!differenceCodes.has(code)) return false
+    if (expectedAmount <= 0.01) return true
+    return Math.abs(Number(entry.amount || 0) - expectedAmount) <= 0.01
+  }) || null
+})
+const sourceDifferenceTreatment = computed(() => {
+  const treatmentEntry = differenceTreatmentEntry.value
+  if (treatmentEntry) {
+    return {
+      label: `${treatmentEntry.account_code} ${treatmentEntry.account_name}`,
+      direction: directionLabel(treatmentEntry.direction),
+      amount: Number(treatmentEntry.amount || 0),
+      note: selectedVoucher.value?.ai_reason || 'AI 根据流水与发票差额生成补齐分录，需人工确认。',
+    }
+  }
+  if (missingSourceTreatment.value) {
+    return {
+      label: missingSourceTreatment.value.treatmentType,
+      direction: '建议',
+      amount: sourceBankTotal.value || sourceInvoiceTotal.value,
+      note: missingSourceTreatment.value.reason,
+    }
+  }
+  return null
+})
+const sourceSummary = computed(() => {
+  const differenceAmount = sourceDifferenceAmount.value
+  const treatment = sourceDifferenceTreatment.value
+  return {
+    bankCount: sourceBankTransactions.value.length,
+    bankTotal: sourceBankTotal.value,
+    invoiceCount: sourceInvoices.value.length,
+    invoiceTotal: sourceInvoiceTotal.value,
+    differenceAmount,
+    balanceLabel: sourceBalanceLabel(differenceAmount),
+    treatmentLabel: treatment?.label || (Math.abs(differenceAmount) <= 0.01 ? '无需补齐' : '待 AI 建议'),
+  }
+})
+const sourceDetailRows = computed(() => {
+  const rows = [
+    ...sourceBankTransactions.value.map((transaction, index) => ({
+      key: `bank-${transaction.id || index}`,
+      className: 'source-line-bank',
+      typeLabel: '银行流水',
+      date: transaction.transaction_date || '-',
+      counterparty: transaction.counterparty_name || '-',
+      description: transaction.summary || '-',
+      directionLabel: bankTransactionDirectionLabel(transaction),
+      amount: bankTransactionAmount(transaction),
+      note: transaction.balance !== undefined && transaction.balance !== null ? `余额 ${formatAmount(transaction.balance)}` : '-',
+    })),
+    ...sourceInvoices.value.map((invoice, index) => ({
+      key: `invoice-${invoice.id || index}`,
+      className: 'source-line-invoice',
+      typeLabel: '发票',
+      date: invoice.invoice_date || '-',
+      counterparty: invoiceCounterpartyName(invoice),
+      description: invoice.invoice_number || invoice.summary || '-',
+      directionLabel: invoiceDirectionLabel(invoice.invoice_direction),
+      amount: Number(invoice.total_amount || 0),
+      note: `销售方：${invoiceSellerName(invoice)}；购买方：${invoiceBuyerName(invoice)}`,
+    })),
+  ]
+  const treatment = sourceDifferenceTreatment.value
+  if (treatment && (Math.abs(sourceDifferenceAmount.value) > 0.01 || missingSourceTreatment.value)) {
+    rows.push({
+      key: 'difference-treatment',
+      className: 'source-line-difference',
+      typeLabel: 'AI补齐',
+      date: selectedVoucher.value?.voucher_date || '-',
+      counterparty: treatment.label,
+      description: sourceSummary.value.balanceLabel,
+      directionLabel: treatment.direction,
+      amount: treatment.amount,
+      note: treatment.note,
+    })
+  }
+  return rows
+})
 const validationErrors = computed(() => selectedVoucher.value?.validation_errors || [])
 const validationErrorLabels = computed(() => validationErrors.value.map(validationErrorLabel))
 const rematchInvoiceCandidates = computed(() => rematchCandidates.value.invoice_candidates || [])
@@ -1247,6 +1335,10 @@ function invoiceBuyerName(invoice) {
   return invoice?.buyer_name || invoiceRawValue(invoice, ['购买方名称', '购方名称', '购买方']) || '-'
 }
 
+function invoiceCounterpartyName(invoice) {
+  return invoice?.invoice_direction === 'OUTPUT' ? invoiceBuyerName(invoice) : invoiceSellerName(invoice)
+}
+
 function isStaleVoucherLoad(requestId, packageId) {
   return requestId !== voucherLoadRequestId || packageId !== activePackageId.value
 }
@@ -1433,6 +1525,27 @@ function sourceGroupTypeLabel(value) {
     ONE_BANK_TRANSACTION_MULTIPLE_INVOICES: '一笔银行流水对应多张发票',
   }
   return labels[value] || value || '组合来源'
+}
+
+function sourceBalanceLabel(differenceAmount) {
+  const amount = Number(differenceAmount || 0)
+  if (Math.abs(amount) <= 0.01) return '流水与发票金额一致'
+  return amount > 0 ? '流水金额大于发票，需补齐暂收/预付项目' : '发票金额大于流水，需补齐应收/应付项目'
+}
+
+function bankTransactionAmount(transaction) {
+  const debit = Math.abs(Number(transaction?.debit_amount || 0))
+  const credit = Math.abs(Number(transaction?.credit_amount || 0))
+  if (debit || credit) return debit + credit
+  return Math.abs(Number(transaction?.transaction_amount || transaction?.amount || 0))
+}
+
+function bankTransactionDirectionLabel(transaction) {
+  const debit = Number(transaction?.debit_amount || 0)
+  const credit = Number(transaction?.credit_amount || 0)
+  if (credit > 0 && debit <= 0) return '收款/转入'
+  if (debit > 0 && credit <= 0) return '付款/转出'
+  return '银行流水'
 }
 
 function matchStatusLabel(value) {
@@ -1849,9 +1962,8 @@ function formatAmount(value) {
   font-size: 12px;
 }
 
-.source-grid {
+.source-ledger-detail {
   display: grid;
-  grid-template-columns: repeat(2, minmax(0, 1fr));
   gap: 10px;
 }
 
@@ -1868,8 +1980,12 @@ function formatAmount(value) {
   grid-column: 1 / -1;
 }
 
-.source-group-card {
-  border-color: #bfdbfe;
+.source-group-card,
+.source-summary-panel,
+.source-lines-section {
+  padding: 10px;
+  border: 1px solid #bfdbfe;
+  border-radius: var(--fw-radius);
   background: #eff6ff;
 }
 
@@ -1878,6 +1994,103 @@ function formatAmount(value) {
   color: var(--fw-brand);
   font-size: 12px;
   font-weight: 700;
+}
+
+.source-summary-title,
+.source-lines-title {
+  display: flex;
+  justify-content: space-between;
+  gap: 12px;
+  margin-bottom: 8px;
+}
+
+.source-summary-title span,
+.source-lines-title span {
+  color: var(--fw-ink-muted);
+  font-size: 12px;
+}
+
+.source-summary-grid {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: 8px;
+}
+
+.source-summary-grid > div {
+  min-width: 0;
+  padding: 8px;
+  border: 1px solid #dbeafe;
+  border-radius: var(--fw-radius-sm);
+  background: #fff;
+}
+
+.source-summary-grid span,
+.source-summary-grid strong {
+  display: block;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.source-summary-grid span {
+  color: var(--fw-text-muted);
+  font-size: 12px;
+}
+
+.source-summary-grid strong {
+  margin-top: 4px;
+  color: var(--fw-ink);
+  font-size: 13px;
+}
+
+.source-line-table {
+  display: grid;
+  gap: 4px;
+}
+
+.source-line {
+  display: grid;
+  grid-template-columns: 72px 92px minmax(120px, 1.2fr) minmax(120px, 1.2fr) 86px 98px minmax(120px, 1fr);
+  gap: 8px;
+  align-items: center;
+  min-width: 0;
+  padding: 7px 8px;
+  border: 1px solid transparent;
+  border-radius: var(--fw-radius-sm);
+  font-size: 12px;
+}
+
+.source-line span {
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.source-line span:nth-child(6) {
+  text-align: right;
+  font-weight: 700;
+}
+
+.source-line-head {
+  background: #f1f5f9;
+  color: var(--fw-ink-muted);
+  font-weight: 700;
+}
+
+.source-line-bank {
+  border-color: #bfdbfe;
+  background: #eff6ff;
+}
+
+.source-line-invoice {
+  border-color: #bbf7d0;
+  background: #f0fdf4;
+}
+
+.source-line-difference {
+  border-color: #fed7aa;
+  background: #fff7ed;
 }
 
 .treatment-card {
