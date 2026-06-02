@@ -53,6 +53,8 @@ POST_GENERATION_OPERATOR_MESSAGE = "生成结果保存失败"
 VOUCHER_PREPROCESS_SYSTEM_PROMPT = (
     "你是代账公司的凭证预处理助手。只能根据脱敏后的金额、日期、方向、摘要关键词、发票方向、税额、"
     "对方别名和历史规则判断。不要输出企业全称、税号、银行账号或完整发票号。先完整比对全部流水和发票，"
+    "必须优先分析 candidate_match_groups；如果候选组显示同一交易对方且方向兼容，即使金额不完全一致，"
+    "也应输出带 bank_refs 和 invoice_refs 的 FULL_MATCH 或 DIFFERENCE_COMPLETION 建议，而不是单边处理。"
     "但只返回最需要人工关注或最能代表处理规则的重点建议，task_suggestions 最多 30 条。返回 JSON，格式为 "
     '{"analysis_summary":"中文概括，说明已比对范围、主要处理策略和需人工关注点",'
     '"task_suggestions":[{"source_key":"string","task_type":"FULL_MATCH|DIFFERENCE_COMPLETION|'
@@ -171,11 +173,23 @@ def run_voucher_ai_preprocessing(
         db.commit()
         raise VoucherAiPreprocessFailedError(f"AI 预处理失败：{audit['error_summary']}", audit) from exc
 
+    source_ref_index = _source_ref_index(db, package=package)
+    created_match_result = _apply_ai_match_suggestions(
+        db,
+        package=package,
+        suggestions=normalized_suggestions,
+        source_ref_index=source_ref_index,
+    )
+    _retire_reassigned_single_source_vouchers(
+        db,
+        package=package,
+        bank_transaction_ids=created_match_result["bank_transaction_ids"],
+        invoice_ids=created_match_result["invoice_ids"],
+    )
     generated = generate_voucher_drafts(db, monthly_work_package_id=package.id)
     vouchers = generated["vouchers"]
     created_voucher_ids = [voucher.id for voucher in vouchers]
     try:
-        source_ref_index = _source_ref_index(db, package=package)
         _attach_preprocess_metadata(vouchers, suggestions=normalized_suggestions, source_ref_index=source_ref_index, ai_status="SUCCESS")
 
         audit = _build_audit(
@@ -189,11 +203,13 @@ def run_voucher_ai_preprocessing(
             error_summary="",
             analysis_summary=normalized_ai["analysis_summary"],
             suggestion_count=len(normalized_suggestions),
+            created_match_records=len(created_match_result["match_ids"]),
         )
         _write_audit_log(db, package=package, audit=audit)
         db.commit()
     except Exception as exc:
         _cleanup_created_vouchers(db, voucher_ids=created_voucher_ids)
+        _cleanup_created_match_records(db, match_ids=created_match_result["match_ids"])
         audit = _build_audit(
             started_at=started_at,
             payload=payload,
@@ -264,39 +280,42 @@ def build_voucher_preprocess_payload(db: Session, *, package: MonthlyWorkPackage
     transaction_refs = {item.id: f"T{index:03d}" for index, item in enumerate(transactions, start=1)}
     invoice_refs = {item.id: f"I{index:03d}" for index, item in enumerate(invoices, start=1)}
     enterprise_name = enterprise.name if enterprise else ""
+    bank_rows = [
+        {
+            "ref": transaction_refs[item.id],
+            "date": item.transaction_date.isoformat(),
+            "direction": "RECEIPT" if _money(item.credit_amount) > 0 else "PAYMENT",
+            "amount": str(abs(_money(item.credit_amount) - _money(item.debit_amount))),
+            "counterparty_alias": _alias_for(item.counterparty_name or "", party_aliases, prefix="交易对方"),
+            "summary_keywords": _safe_summary_keywords(item.summary),
+        }
+        for item in transactions
+    ]
+    invoice_rows = [
+        {
+            "ref": invoice_refs[item.id],
+            "date": item.invoice_date.isoformat(),
+            "direction": item.invoice_direction,
+            "amount": str(_money(item.amount)),
+            "tax_amount": str(_money(item.tax_amount)),
+            "total_amount": str(_money(item.total_amount)),
+            "counterparty_alias": _alias_for(
+                _invoice_counterparty_name(item, enterprise_name=enterprise_name),
+                party_aliases,
+                prefix="交易对方",
+            ),
+        }
+        for item in invoices
+    ]
     return {
         "package": {
             "period": f"{package.period_year}-{package.period_month:02d}",
             "enterprise_alias": "企业主体",
             "industry_categories": _safe_industry_categories(enterprise.industry if enterprise else ""),
         },
-        "bank_transactions": [
-            {
-                "ref": transaction_refs[item.id],
-                "date": item.transaction_date.isoformat(),
-                "direction": "RECEIPT" if _money(item.credit_amount) > 0 else "PAYMENT",
-                "amount": str(abs(_money(item.credit_amount) - _money(item.debit_amount))),
-                "counterparty_alias": _alias_for(item.counterparty_name or "", party_aliases, prefix="交易对方"),
-                "summary_keywords": _safe_summary_keywords(item.summary),
-            }
-            for item in transactions
-        ],
-        "invoices": [
-            {
-                "ref": invoice_refs[item.id],
-                "date": item.invoice_date.isoformat(),
-                "direction": item.invoice_direction,
-                "amount": str(_money(item.amount)),
-                "tax_amount": str(_money(item.tax_amount)),
-                "total_amount": str(_money(item.total_amount)),
-                "counterparty_alias": _alias_for(
-                    _invoice_counterparty_name(item, enterprise_name=enterprise_name),
-                    party_aliases,
-                    prefix="交易对方",
-                ),
-            }
-            for item in invoices
-        ],
+        "bank_transactions": bank_rows,
+        "invoices": invoice_rows,
+        "candidate_match_groups": _candidate_match_groups(bank_rows, invoice_rows),
         "matched_records": [
             {
                 "bank_ref": transaction_refs.get(item.bank_transaction_id),
@@ -338,6 +357,7 @@ def _build_audit(
     error_summary: str,
     analysis_summary: str = "",
     suggestion_count: int = 0,
+    created_match_records: int = 0,
 ) -> dict:
     return {
         "used_kimi": used_kimi,
@@ -351,6 +371,7 @@ def _build_audit(
         "error_summary": error_summary,
         "analysis_summary": analysis_summary,
         "suggestion_count": suggestion_count,
+        "created_match_records": created_match_records,
     }
 
 
@@ -400,6 +421,41 @@ def _safe_industry_categories(text: str) -> list[str]:
         if any(keyword in redacted for keyword in keywords)
     ]
     return categories or ["未分类"]
+
+
+def _candidate_match_groups(bank_rows: list[dict], invoice_rows: list[dict]) -> list[dict]:
+    groups: list[dict] = []
+    for bank in bank_rows:
+        invoices = [
+            invoice
+            for invoice in invoice_rows
+            if invoice.get("counterparty_alias") == bank.get("counterparty_alias")
+            and _directions_are_compatible(bank.get("direction"), invoice.get("direction"))
+        ]
+        if not invoices:
+            continue
+        invoice_total = sum((_money(invoice.get("total_amount")) for invoice in invoices), Decimal("0.00"))
+        bank_amount = _money(bank.get("amount"))
+        groups.append(
+            {
+                "bank_refs": [bank["ref"]],
+                "invoice_refs": [invoice["ref"] for invoice in invoices[:20]],
+                "counterparty_alias": bank.get("counterparty_alias"),
+                "direction_pair": f"{bank.get('direction')}->{invoices[0].get('direction')}",
+                "bank_amount": str(bank_amount),
+                "invoice_total": str(invoice_total),
+                "difference_amount": str(_money(invoice_total - bank_amount)),
+                "invoice_count": len(invoices),
+                "reason_hint": "同一交易对方且收付方向与发票方向兼容",
+            }
+        )
+    return groups[:60]
+
+
+def _directions_are_compatible(bank_direction: str | None, invoice_direction: str | None) -> bool:
+    return (bank_direction == "RECEIPT" and invoice_direction == "OUTPUT") or (
+        bank_direction == "PAYMENT" and invoice_direction == "INPUT"
+    )
 
 
 def _alias_for(name: str, aliases: dict[str, str], *, prefix: str) -> str:
@@ -481,12 +537,128 @@ def _normalize_ref_list(value, *, valid_refs: set[str], ref_label: str) -> list[
     return refs
 
 
+def _apply_ai_match_suggestions(
+    db: Session,
+    *,
+    package: MonthlyWorkPackage,
+    suggestions: list[dict],
+    source_ref_index: dict[str, dict[str, UUID]],
+) -> dict:
+    existing_pairs = {
+        (match.bank_transaction_id, match.invoice_id)
+        for match in db.scalars(
+            select(MatchRecord).where(
+                MatchRecord.organization_id == package.organization_id,
+                MatchRecord.monthly_work_package_id == package.id,
+                MatchRecord.bank_transaction_id.is_not(None),
+                MatchRecord.invoice_id.is_not(None),
+                MatchRecord.confirmation_status != "REJECTED",
+            )
+        )
+    }
+    created_ids: list[UUID] = []
+    used_bank_ids: set[UUID] = set()
+    used_invoice_ids: set[UUID] = set()
+    for suggestion in suggestions:
+        bank_refs = suggestion.get("bank_refs") or []
+        invoice_refs = suggestion.get("invoice_refs") or []
+        if not bank_refs or not invoice_refs:
+            continue
+        if len(bank_refs) > 1 and len(invoice_refs) > 1:
+            continue
+        bank_ids = [source_ref_index["bank"][ref] for ref in bank_refs if ref in source_ref_index["bank"]]
+        invoice_ids = [source_ref_index["invoice"][ref] for ref in invoice_refs if ref in source_ref_index["invoice"]]
+        for bank_id in bank_ids:
+            for invoice_id in invoice_ids:
+                pair = (bank_id, invoice_id)
+                if pair in existing_pairs:
+                    used_bank_ids.add(bank_id)
+                    used_invoice_ids.add(invoice_id)
+                    continue
+                match = MatchRecord(
+                    channel_id=DEFAULT_CHANNEL_ID,
+                    organization_id=package.organization_id,
+                    monthly_work_package_id=package.id,
+                    bank_transaction_id=bank_id,
+                    invoice_id=invoice_id,
+                    match_method="AI_PREPROCESS",
+                    confidence=max(0, min(100, int(suggestion.get("confidence") or 0))),
+                    explanation=str(suggestion.get("reason") or "AI 初筛匹配"),
+                    confirmation_status="AUTO_CONFIRMED",
+                )
+                db.add(match)
+                db.flush()
+                created_ids.append(match.id)
+                used_bank_ids.add(bank_id)
+                used_invoice_ids.add(invoice_id)
+                existing_pairs.add(pair)
+    return {
+        "match_ids": created_ids,
+        "bank_transaction_ids": sorted(used_bank_ids, key=str),
+        "invoice_ids": sorted(used_invoice_ids, key=str),
+    }
+
+
+def _retire_reassigned_single_source_vouchers(
+    db: Session,
+    *,
+    package: MonthlyWorkPackage,
+    bank_transaction_ids: list[UUID],
+    invoice_ids: list[UUID],
+) -> None:
+    bank_id_set = set(bank_transaction_ids)
+    invoice_id_set = set(invoice_ids)
+    if not bank_id_set and not invoice_id_set:
+        return
+    vouchers = db.scalars(
+        select(Voucher).where(
+            Voucher.organization_id == package.organization_id,
+            Voucher.monthly_work_package_id == package.id,
+            Voucher.status == "PENDING_CONFIRMATION",
+        )
+    ).all()
+    for voucher in vouchers:
+        source_data = voucher.source_data or {}
+        source_group_type = source_data.get("source_group_type")
+        voucher_bank_id = _uuid_or_none(source_data.get("bank_transaction_id"))
+        voucher_invoice_id = _uuid_or_none(source_data.get("invoice_id"))
+        is_single_bank = source_group_type == "BANK_ONLY" and voucher_bank_id is not None
+        is_single_invoice = source_group_type == "INVOICE_ONLY" and voucher_invoice_id is not None
+        should_retire = (is_single_bank and voucher_bank_id in bank_id_set) or (
+            is_single_invoice and voucher_invoice_id in invoice_id_set
+        )
+        if not should_retire:
+            continue
+        voucher.status = "REJECTED"
+        errors = list(voucher.validation_errors or [])
+        if "SOURCE_REASSIGNED_BY_AI" not in errors:
+            errors.append("SOURCE_REASSIGNED_BY_AI")
+        voucher.validation_errors = errors
+
+
+def _uuid_or_none(value) -> UUID | None:
+    if not value:
+        return None
+    try:
+        return UUID(str(value))
+    except (TypeError, ValueError):
+        return None
+
+
 def _cleanup_created_vouchers(db: Session, *, voucher_ids: list[UUID]) -> None:
     db.rollback()
     for voucher_id in voucher_ids:
         voucher = db.get(Voucher, voucher_id)
         if voucher is not None:
             db.delete(voucher)
+    db.flush()
+
+
+def _cleanup_created_match_records(db: Session, *, match_ids: list[UUID]) -> None:
+    for match_id in match_ids:
+        match = db.get(MatchRecord, match_id)
+        if match is not None:
+            db.delete(match)
     db.flush()
 
 

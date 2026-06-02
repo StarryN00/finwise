@@ -369,6 +369,167 @@ def test_voucher_preprocess_endpoint_calls_kimi_client_and_records_audit(monkeyp
     assert audit.after_data["model"]
 
 
+def test_voucher_preprocess_creates_ai_match_records_before_vouchers(monkeypatch):
+    from app.services import voucher_ai_preprocess_service as service
+
+    client, db_session = make_context()
+    enterprise, package = make_package(db_session)
+    transaction = BankTransaction(
+        organization_id=ORG,
+        monthly_work_package_id=package.id,
+        transaction_date=date(2026, 5, 20),
+        summary="电子汇入",
+        debit_amount=Decimal("0.00"),
+        credit_amount=Decimal("300.00"),
+        counterparty_name="上海安费诺永亿通讯电子有限公司",
+    )
+    invoice1 = Invoice(
+        organization_id=ORG,
+        monthly_work_package_id=package.id,
+        invoice_direction="OUTPUT",
+        invoice_number="AI-MATCH-001",
+        invoice_date=date(2026, 5, 18),
+        amount=Decimal("100.00"),
+        tax_amount=Decimal("13.00"),
+        total_amount=Decimal("113.00"),
+        seller_name=enterprise.name,
+        buyer_name="上海安费诺永亿通讯电子有限公司",
+    )
+    invoice2 = Invoice(
+        organization_id=ORG,
+        monthly_work_package_id=package.id,
+        invoice_direction="OUTPUT",
+        invoice_number="AI-MATCH-002",
+        invoice_date=date(2026, 5, 18),
+        amount=Decimal("150.44"),
+        tax_amount=Decimal("36.56"),
+        total_amount=Decimal("187.00"),
+        seller_name=enterprise.name,
+        buyer_name="上海安费诺永亿通讯电子有限公司",
+    )
+    db_session.add_all([transaction, invoice1, invoice2])
+    db_session.commit()
+    stub = StubVoucherPreprocessClient(
+        response={
+            "analysis_summary": "已识别同一交易对方的一笔收款和两张销项发票可组合匹配。",
+            "task_suggestions": [
+                {
+                    "source_key": "T001:I001:I002",
+                    "task_type": "FULL_MATCH",
+                    "confidence": 88,
+                    "summary": "确认多张销售发票并收款",
+                    "reason": "交易对方一致且合计金额一致",
+                    "bank_refs": ["T001"],
+                    "invoice_refs": ["I001", "I002"],
+                }
+            ],
+        }
+    )
+    monkeypatch.setattr(service, "create_default_voucher_preprocess_client", lambda: stub)
+
+    response = client.post(f"/api/monthly-packages/{package.id}/vouchers/preprocess")
+
+    assert response.status_code == 201
+    matches = db_session.query(MatchRecord).filter(MatchRecord.monthly_work_package_id == package.id).all()
+    assert len(matches) == 2
+    assert {match.match_method for match in matches} == {"AI_PREPROCESS"}
+    assert {match.confirmation_status for match in matches} == {"AUTO_CONFIRMED"}
+    assert {match.confidence for match in matches} == {88}
+    assert {match.invoice_id for match in matches} == {invoice1.id, invoice2.id}
+    vouchers = db_session.query(Voucher).filter(Voucher.monthly_work_package_id == package.id).all()
+    assert len(vouchers) == 1
+    assert vouchers[0].source_data["source_group_type"] == "ONE_BANK_TRANSACTION_MULTIPLE_INVOICES"
+    assert vouchers[0].source_data["voucher_task_type"] == "FULL_MATCH"
+    audit = db_session.query(AuditLog).filter(AuditLog.action == "VOUCHER_AI_PREPROCESS").one()
+    assert audit.after_data["created_match_records"] == 2
+
+
+def test_voucher_preprocess_groups_ai_matches_with_difference_completion(monkeypatch):
+    from app.services import voucher_ai_preprocess_service as service
+
+    client, db_session = make_context()
+    enterprise, package = make_package(db_session)
+    transaction = BankTransaction(
+        organization_id=ORG,
+        monthly_work_package_id=package.id,
+        transaction_date=date(2026, 5, 20),
+        summary="电子汇入",
+        debit_amount=Decimal("0.00"),
+        credit_amount=Decimal("350.00"),
+        counterparty_name="上海安费诺永亿通讯电子有限公司",
+    )
+    invoice1 = Invoice(
+        organization_id=ORG,
+        monthly_work_package_id=package.id,
+        invoice_direction="OUTPUT",
+        invoice_number="AI-DIFF-001",
+        invoice_date=date(2026, 5, 18),
+        amount=Decimal("100.00"),
+        tax_amount=Decimal("13.00"),
+        total_amount=Decimal("113.00"),
+        seller_name=enterprise.name,
+        buyer_name="上海安费诺永亿通讯电子有限公司",
+    )
+    invoice2 = Invoice(
+        organization_id=ORG,
+        monthly_work_package_id=package.id,
+        invoice_direction="OUTPUT",
+        invoice_number="AI-DIFF-002",
+        invoice_date=date(2026, 5, 18),
+        amount=Decimal("150.44"),
+        tax_amount=Decimal("36.56"),
+        total_amount=Decimal("187.00"),
+        seller_name=enterprise.name,
+        buyer_name="上海安费诺永亿通讯电子有限公司",
+    )
+    db_session.add_all([transaction, invoice1, invoice2])
+    db_session.commit()
+    stub = StubVoucherPreprocessClient(
+        response={
+            "analysis_summary": "同一交易对方一笔收款可核销两张发票，差额暂挂预收账款。",
+            "task_suggestions": [
+                {
+                    "source_key": "T001:I001:I002",
+                    "task_type": "DIFFERENCE_COMPLETION",
+                    "confidence": 82,
+                    "summary": "确认多张销售发票并补齐收款差额",
+                    "reason": "交易对方一致，收款大于发票合计，差额建议暂挂预收账款",
+                    "bank_refs": ["T001"],
+                    "invoice_refs": ["I001", "I002"],
+                }
+            ],
+        }
+    )
+    monkeypatch.setattr(service, "create_default_voucher_preprocess_client", lambda: stub)
+    generate_response = client.post(f"/api/monthly-packages/{package.id}/vouchers/generate")
+    assert generate_response.status_code == 201
+
+    response = client.post(f"/api/monthly-packages/{package.id}/vouchers/preprocess")
+
+    assert response.status_code == 201
+    vouchers = db_session.query(Voucher).filter(Voucher.monthly_work_package_id == package.id).all()
+    pending_vouchers = [voucher for voucher in vouchers if voucher.status == "PENDING_CONFIRMATION"]
+    rejected_vouchers = [voucher for voucher in vouchers if voucher.status == "REJECTED"]
+    assert len(pending_vouchers) == 1
+    assert len(rejected_vouchers) == 3
+    assert all("SOURCE_REASSIGNED_BY_AI" in (voucher.validation_errors or []) for voucher in rejected_vouchers)
+    voucher = pending_vouchers[0]
+    assert voucher.source_data["source_group_type"] == "ONE_BANK_TRANSACTION_MULTIPLE_INVOICES"
+    assert voucher.source_data["voucher_task_type"] == "DIFFERENCE_COMPLETION"
+    assert voucher.source_data["difference_amount"] == "-50.00"
+    entry_rows = {(entry.direction, entry.account_code, str(entry.amount)) for entry in voucher.entries}
+    assert ("DEBIT", "1002", "350.00") in entry_rows
+    assert ("CREDIT", "2203", "50.00") in entry_rows
+
+    second_response = client.post(f"/api/monthly-packages/{package.id}/vouchers/preprocess")
+
+    assert second_response.status_code == 201
+    vouchers_after_second_run = db_session.query(Voucher).filter(Voucher.monthly_work_package_id == package.id).all()
+    pending_after_second_run = [voucher for voucher in vouchers_after_second_run if voucher.status == "PENDING_CONFIRMATION"]
+    assert len(pending_after_second_run) == 1
+    assert pending_after_second_run[0].source_data["source_group_type"] == "ONE_BANK_TRANSACTION_MULTIPLE_INVOICES"
+
+
 def test_voucher_preprocess_uses_kimi_k26_supported_temperature():
     from app.services import voucher_ai_preprocess_service as service
 

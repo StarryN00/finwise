@@ -1137,8 +1137,7 @@ def _generate_one_bank_multiple_invoice_vouchers(
         if len(invoice_directions) != 1:
             continue
         invoice_total = sum((_money(invoice.total_amount) for invoice in invoices_by_id.values()), Decimal("0.00"))
-        if _money(invoice_total) != _transaction_amount(transaction):
-            continue
+        has_difference = _money(invoice_total) != _transaction_amount(transaction)
 
         invoice_ids = sorted(invoices_by_id)
         match_ids = [match.id for match, _, _ in group]
@@ -1154,15 +1153,15 @@ def _generate_one_bank_multiple_invoice_vouchers(
         direction = next(iter(invoice_directions))
         invoices = [invoices_by_id[invoice_id] for invoice_id in invoice_ids]
         if direction == "OUTPUT":
-            summary = "确认多张销售发票并收款"
+            summary = "确认多张销售发票并补齐收款差额" if has_difference else "确认多张销售发票并收款"
             lines = _combined_output_invoice_lines(transaction, invoices)
             ai_confidence = min(match.confidence for match, _, _ in group)
-            ai_reason = "一笔银行收款由多张销项发票合计匹配"
+            ai_reason = "一笔银行收款对应多张销项发票，金额存在差额需人工确认" if has_difference else "一笔银行收款由多张销项发票合计匹配"
         elif direction == "INPUT":
-            summary = "确认多张费用发票并付款"
+            summary = "确认多张费用发票并补齐付款差额" if has_difference else "确认多张费用发票并付款"
             lines = _combined_input_invoice_lines(transaction, invoices)
             ai_confidence = min(match.confidence for match, _, _ in group)
-            ai_reason = "一笔银行付款由多张进项发票合计匹配"
+            ai_reason = "一笔银行付款对应多张进项发票，金额存在差额需人工确认" if has_difference else "一笔银行付款由多张进项发票合计匹配"
         else:
             continue
 
@@ -1563,25 +1562,39 @@ def _input_invoice_accrual_lines(invoice: Invoice) -> list[tuple[str, str, Decim
 def _combined_output_invoice_lines(transaction: BankTransaction, invoices: list[Invoice]) -> list[tuple[str, str, Decimal]]:
     revenue_total = sum((_money(invoice.amount) for invoice in invoices), Decimal("0.00"))
     tax_total = sum((_money(invoice.tax_amount) for invoice in invoices), Decimal("0.00"))
+    invoice_total = revenue_total + tax_total
+    bank_amount = _transaction_amount(transaction)
+    difference = _money(invoice_total - bank_amount)
     lines = [
-        ("DEBIT", "1002", _transaction_amount(transaction)),
+        ("DEBIT", "1002", bank_amount),
         ("CREDIT", "5001", revenue_total),
     ]
     if tax_total != Decimal("0.00"):
         lines.append(("CREDIT", "22210102", tax_total))
-    return lines
+    if difference > Decimal("0.00"):
+        lines.append(("DEBIT", "1122", difference))
+    if difference < Decimal("0.00"):
+        lines.append(("CREDIT", "2203", abs(difference)))
+    return [(direction, account_code, amount) for direction, account_code, amount in lines if _money(amount) != Decimal("0.00")]
 
 
 def _combined_input_invoice_lines(transaction: BankTransaction, invoices: list[Invoice]) -> list[tuple[str, str, Decimal]]:
     expense_total = sum((_money(invoice.amount) for invoice in invoices), Decimal("0.00"))
     tax_total = sum((_money(invoice.tax_amount) for invoice in invoices), Decimal("0.00"))
+    invoice_total = expense_total + tax_total
+    bank_amount = _transaction_amount(transaction)
+    difference = _money(invoice_total - bank_amount)
     lines = [
         ("DEBIT", "560203", expense_total),
     ]
     if tax_total != Decimal("0.00"):
         lines.append(("DEBIT", "22210101", tax_total))
-    lines.append(("CREDIT", "1002", _transaction_amount(transaction)))
-    return lines
+    if difference < Decimal("0.00"):
+        lines.append(("DEBIT", "1123", abs(difference)))
+    lines.append(("CREDIT", "1002", bank_amount))
+    if difference > Decimal("0.00"):
+        lines.append(("CREDIT", "2202", difference))
+    return [(direction, account_code, amount) for direction, account_code, amount in lines if _money(amount) != Decimal("0.00")]
 
 
 def _output_invoice_difference_lines(transaction: BankTransaction, invoice: Invoice) -> list[tuple[str, str, Decimal]]:
@@ -1697,11 +1710,13 @@ def _source_data_for_one_bank_multiple_invoice_group(
     transaction = group[0][1]
     matches = [match for match, _, _ in group]
     invoices = sorted((invoice for _, _, invoice in group), key=lambda item: (item.invoice_date, item.id))
+    invoice_total = sum((_money(invoice.total_amount) for invoice in invoices), Decimal("0.00"))
+    difference_amount = _money(invoice_total - _transaction_amount(transaction))
     return {
         "source_group_id": source_key,
         "source_group_type": "ONE_BANK_TRANSACTION_MULTIPLE_INVOICES",
-        "voucher_task_type": "FULL_MATCH",
-        "difference_amount": "0.00",
+        "voucher_task_type": "DIFFERENCE_COMPLETION" if difference_amount != Decimal("0.00") else "FULL_MATCH",
+        "difference_amount": _money_text(difference_amount),
         "bank_transaction_id": str(transaction.id),
         "bank_transaction_ids": [str(transaction.id)],
         "invoice_ids": [str(invoice.id) for invoice in invoices],
