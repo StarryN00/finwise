@@ -55,13 +55,17 @@ def collect_invoice_tax_totals(db: Session, *, monthly_work_package_id: UUID) ->
     )
     for invoice in invoices:
         if invoice.invoice_direction == "OUTPUT":
-            totals["output_amount"] += invoice.amount
-            totals["output_tax"] += invoice.tax_amount
+            totals["output_amount"] += _tax_total_value(invoice.amount)
+            totals["output_tax"] += _tax_total_value(invoice.tax_amount)
         elif invoice.invoice_direction == "INPUT":
-            totals["input_amount"] += invoice.amount
-            totals["input_tax"] += invoice.tax_amount
+            totals["input_amount"] += _tax_total_value(invoice.amount)
+            totals["input_tax"] += _tax_total_value(invoice.tax_amount)
 
     return {key: money(value) for key, value in totals.items()}
+
+
+def _tax_total_value(value: Decimal) -> Decimal:
+    return abs(value or Decimal("0"))
 
 
 def generate_tax_filing_draft(db: Session, *, monthly_work_package_id: UUID) -> TaxFilingDraft:

@@ -22,7 +22,18 @@
         </div>
       </div>
 
-      <BankLedgerTable :rows="filteredRows" :loading="isLoading" />
+      <BankLedgerTable :rows="pagedRows" :loading="isLoading" />
+      <div class="ledger-pagination-bar">
+        <span class="ledger-count">{{ paginationSummary }}</span>
+        <el-pagination
+          v-model:current-page="currentPage"
+          :page-size="ledgerPageSize"
+          :total="filteredRows.length"
+          background
+          layout="prev, pager, next"
+          small
+        />
+      </div>
     </div>
   </section>
 </template>
@@ -40,6 +51,8 @@ const workspace = useWorkspaceStore()
 const bankRows = ref([])
 const keyword = ref('')
 const isLoading = ref(false)
+const ledgerPageSize = 20
+const currentPage = ref(1)
 const activePackage = computed(() => workspace.activePackage)
 const processedCount = computed(() => bankRows.value.filter((row) => row.voucher_status !== 'UNPROCESSED').length)
 const filteredRows = computed(() => {
@@ -57,10 +70,30 @@ const filteredRows = computed(() => {
     ]),
   )
 })
+const pagedRows = computed(() => {
+  const start = (currentPage.value - 1) * ledgerPageSize
+  return filteredRows.value.slice(start, start + ledgerPageSize)
+})
+const paginationSummary = computed(
+  () =>
+    `当前显示 ${pagedRows.value.length} 条 / 筛选结果 ${filteredRows.value.length} 条 / 原始总数 ${bankRows.value.length} 条`,
+)
+
+watch(keyword, () => {
+  currentPage.value = 1
+})
+
+watch(
+  () => filteredRows.value.length,
+  () => {
+    clampCurrentPage()
+  },
+)
 
 watch(
   () => activePackage.value?.id,
   () => {
+    currentPage.value = 1
     refreshBankLedger()
   },
 )
@@ -84,6 +117,13 @@ async function refreshBankLedger() {
     ElMessage.error(error?.response?.data?.detail || error?.message || '资金流水加载失败')
   } finally {
     isLoading.value = false
+  }
+}
+
+function clampCurrentPage() {
+  const maxPage = Math.max(1, Math.ceil(filteredRows.value.length / ledgerPageSize))
+  if (currentPage.value > maxPage) {
+    currentPage.value = maxPage
   }
 }
 </script>
@@ -119,6 +159,21 @@ async function refreshBankLedger() {
 
 .ledger-search {
   width: 280px;
+}
+
+.ledger-pagination-bar {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+  padding: 12px 16px 16px;
+  border-top: 1px solid var(--fw-line);
+  flex-wrap: wrap;
+}
+
+.ledger-count {
+  color: var(--fw-muted);
+  font-size: 13px;
 }
 
 @media (max-width: 760px) {

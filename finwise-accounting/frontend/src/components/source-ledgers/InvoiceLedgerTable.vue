@@ -23,9 +23,11 @@
       <el-table-column label="价税合计" width="130" align="right">
         <template #default="{ row }">{{ formatAmount(row.total_amount) }}</template>
       </el-table-column>
-      <el-table-column label="匹配状态" width="118">
+      <el-table-column label="来源处理" width="118">
         <template #default="{ row }">
-          <el-tag :type="matchingStatusTag(row.matching_status)" size="small">{{ row.matching_status_label }}</el-tag>
+          <el-tag :type="sourceProcessingStatusTag(row.source_processing_status)" size="small">
+            {{ row.source_processing_status_label || sourceProcessingStatusLabel(row) }}
+          </el-tag>
         </template>
       </el-table-column>
       <el-table-column label="凭证状态" width="118">
@@ -42,7 +44,13 @@
 </template>
 
 <script setup>
-import { formatAmount, linkedVoucherLabel, matchingStatusTag, voucherStatusTag } from './ledgerFormatters'
+import {
+  formatAmount,
+  linkedVoucherLabel,
+  sourceProcessingStatusLabel,
+  sourceProcessingStatusTag,
+  voucherStatusTag,
+} from './ledgerFormatters'
 
 defineProps({
   rows: { type: Array, default: () => [] },

@@ -113,18 +113,27 @@ const workflowFlags = computed(() => {
   const hasConfirmed = hasParsedRows && isChecklistDone('人工确认')
   const hasHealthReport = isChecklistDone('健康报告数据')
   const hasTaxDraft = Boolean(activePackage.value?.taxDraftId)
-  return { hasAllSourceData, hasParsedRows, hasConfirmed, hasHealthReport, hasTaxDraft }
+  const hasFinalTaxDraft = hasConfirmed && hasTaxDraft
+  return { hasAllSourceData, hasParsedRows, hasConfirmed, hasHealthReport, hasTaxDraft, hasFinalTaxDraft }
 })
 
 const workflowSteps = computed(() => {
-  const { hasAllSourceData, hasParsedRows, hasConfirmed, hasHealthReport, hasTaxDraft } = workflowFlags.value
+  const { hasAllSourceData, hasParsedRows, hasConfirmed, hasHealthReport, hasTaxDraft, hasFinalTaxDraft } = workflowFlags.value
   const definitions = [
     { title: '导入资料', done: hasAllSourceData, hint: hasAllSourceData ? '三类资料已齐' : '等待补充资料' },
     { title: '解析结果', done: hasParsedRows, hint: hasParsedRows ? '已生成结构化数据' : '上传后自动解析' },
     { title: '匹配确认', done: hasConfirmed, hint: hasConfirmed ? '无需人工处理' : `${workspace.activePackage?.pending ?? 0} 项待确认` },
     { title: '账目明细', done: hasConfirmed, hint: hasConfirmed ? '流水发票已汇总' : '等待确认完成' },
-    { title: '预估报表', done: hasTaxDraft || hasHealthReport, hint: hasTaxDraft ? '已生成申报草稿' : '确认后生成' },
-    { title: '申报辅助', done: hasTaxDraft, hint: hasTaxDraft ? '可导出申报表' : '等待报表数据' },
+    {
+      title: '预估报表',
+      done: hasFinalTaxDraft || hasHealthReport,
+      hint: hasFinalTaxDraft ? '已生成申报草稿' : hasTaxDraft ? '草稿待确认后复核' : '确认后生成',
+    },
+    {
+      title: '申报辅助',
+      done: hasFinalTaxDraft,
+      hint: hasFinalTaxDraft ? '可导出申报表' : hasTaxDraft ? '待账目确认后导出' : '等待报表数据',
+    },
     { title: '老板简报', done: hasHealthReport, hint: hasHealthReport ? '健康报告已生成' : '等待完整数据' },
   ]
   const currentIndex = definitions.findIndex((step) => !step.done)
@@ -141,7 +150,7 @@ const nextActionHint = computed(() => {
   if (!hasConfirmed) return '还有待确认明细，请进入账目明细处理未匹配流水、发票和分类。'
   if (!hasTaxDraft) return '账目已确认，可以生成每月账目报表和申报草稿。'
   if (!hasHealthReport) return '申报草稿已生成，可以继续生成老板看的财务健康报告。'
-  return '本月核心输出已完成，可以到输出中心导出或复核结果。'
+  return '本月流程已全部完成，健康报告已生成，可在此在线查看、下载 PDF，或前往输出中心导出全部成果。'
 })
 
 const nextActions = computed(() => {
@@ -164,10 +173,36 @@ const nextActions = computed(() => {
     ]
   }
   if (!hasHealthReport) {
-    return [{ key: 'report', label: '生成财务健康报告', primary: true, handler: () => workspace.generateHealthReport(packageId) }]
+    return [
+      {
+        key: 'report',
+        label: '生成财务健康报告',
+        primary: true,
+        successText: '健康报告已生成',
+        handler: () => workspace.generateHealthReport(packageId),
+      },
+    ]
   }
-  return [{ key: 'output', label: '查看输出中心', primary: true, handler: () => router.push('/output-center') }]
+  return [
+    { key: 'view-report', label: '在线查看报告', primary: true, disabled: !activePackage.value?.reportId, handler: () => openHealthReportView() },
+    { key: 'download-report', label: '下载 PDF', disabled: !canDownloadReport.value, handler: () => downloadHealthReportPdf() },
+    { key: 'output', label: '前往输出中心', handler: () => router.push('/output-center') },
+  ]
 })
+
+const canDownloadReport = computed(
+  () => Boolean(activePackage.value?.reportId) && activePackage.value?.reportStatus === 'READY',
+)
+
+function openHealthReportView() {
+  if (!activePackage.value?.reportId) return
+  window.open(api.reports.viewHealthUrl(activePackage.value.reportId), '_blank', 'noopener')
+}
+
+function downloadHealthReportPdf() {
+  if (!canDownloadReport.value) return
+  window.open(api.reports.downloadHealthPdfUrl(activePackage.value.reportId), '_blank', 'noopener')
+}
 
 const uploadItems = computed(() => [
   {
@@ -262,7 +297,9 @@ async function runNextAction(action) {
   loadingAction.value = action.key
   try {
     await action.handler()
-    if (!['upload', 'account-details', 'output'].includes(action.key)) {
+    if (action.successText) {
+      ElMessage.success(action.successText)
+    } else if (!['upload', 'account-details', 'output', 'view-report', 'download-report'].includes(action.key)) {
       ElMessage.success('操作已完成')
     }
   } catch (error) {

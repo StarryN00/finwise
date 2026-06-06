@@ -11,4 +11,8 @@ describe('StatusTag', () => {
     expect(source).toContain("import { computed } from 'vue'")
     expect(source).toContain('const resolved = computed')
   })
+
+  it('shows generated health reports with a Chinese status label', () => {
+    expect(source).toContain("READY: ['已生成', 'success']")
+  })
 })

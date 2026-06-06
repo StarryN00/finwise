@@ -122,6 +122,8 @@ class BankLedgerRowRead(BaseModel):
     balance: Optional[Decimal]
     matching_status: str
     matching_status_label: str
+    source_processing_status: str
+    source_processing_status_label: str
     voucher_status: str
     voucher_status_label: str
     linked_invoice_count: int = 0
@@ -144,6 +146,8 @@ class InvoiceLedgerRowRead(BaseModel):
     total_amount: Decimal
     matching_status: str
     matching_status_label: str
+    source_processing_status: str
+    source_processing_status_label: str
     voucher_status: str
     voucher_status_label: str
     linked_bank_count: int = 0
@@ -226,3 +230,46 @@ class VoucherTreatmentAdjustmentRequest(BaseModel):
     debit_account_code: str
     credit_account_code: str
     note: str = ""
+
+
+class VoucherMergeSuggestionSourceRead(BaseModel):
+    voucher_id: UUID
+    bank_transaction_id: UUID
+    transaction_date: date
+    counterparty_name: str
+    summary: str
+    direction: str
+    direction_label: str
+    amount: Decimal
+    voucher_summary: str
+    debit_account_code: str
+    credit_account_code: str
+
+
+class VoucherMergeSuggestionRead(BaseModel):
+    suggestion_id: str
+    merge_granularity: str
+    counterparty_name: str
+    direction: str
+    direction_label: str
+    source_voucher_ids: list[UUID]
+    bank_transaction_ids: list[UUID]
+    total_amount: Decimal
+    recommended_summary: str
+    recommended_debit_account_code: str
+    recommended_debit_account_name: str
+    recommended_credit_account_code: str
+    recommended_credit_account_name: str
+    confidence: int
+    reason: str
+    requires_manual_confirmation: bool = True
+    sources: list[VoucherMergeSuggestionSourceRead]
+
+
+class VoucherMergeSuggestionsResponse(BaseModel):
+    suggestions: list[VoucherMergeSuggestionRead]
+
+
+class VoucherMergeApplyRequest(BaseModel):
+    source_voucher_ids: list[UUID]
+    applied_by: str = "operator"

@@ -556,9 +556,24 @@ def _apply_ai_match_suggestions(
             )
         )
     }
+    rejected_pairs = {
+        (match.bank_transaction_id, match.invoice_id)
+        for match in db.scalars(
+            select(MatchRecord).where(
+                MatchRecord.organization_id == package.organization_id,
+                MatchRecord.monthly_work_package_id == package.id,
+                MatchRecord.bank_transaction_id.is_not(None),
+                MatchRecord.invoice_id.is_not(None),
+                MatchRecord.confirmation_status == "REJECTED",
+            )
+        )
+    }
     created_ids: list[UUID] = []
     used_bank_ids: set[UUID] = set()
     used_invoice_ids: set[UUID] = set()
+    blocked_source_ids = _blocked_ai_match_source_ids(db, package=package)
+    enterprise = db.get(Enterprise, package.enterprise_id)
+    enterprise_name = enterprise.name if enterprise else ""
     for suggestion in suggestions:
         bank_refs = suggestion.get("bank_refs") or []
         invoice_refs = suggestion.get("invoice_refs") or []
@@ -568,12 +583,26 @@ def _apply_ai_match_suggestions(
             continue
         bank_ids = [source_ref_index["bank"][ref] for ref in bank_refs if ref in source_ref_index["bank"]]
         invoice_ids = [source_ref_index["invoice"][ref] for ref in invoice_refs if ref in source_ref_index["invoice"]]
+        if any(bank_id in blocked_source_ids["bank_transaction_ids"] for bank_id in bank_ids):
+            continue
+        if any(invoice_id in blocked_source_ids["invoice_ids"] for invoice_id in invoice_ids):
+            continue
         for bank_id in bank_ids:
+            transaction = db.get(BankTransaction, bank_id)
+            if transaction is None or transaction.monthly_work_package_id != package.id:
+                continue
             for invoice_id in invoice_ids:
+                invoice = db.get(Invoice, invoice_id)
+                if invoice is None or invoice.monthly_work_package_id != package.id:
+                    continue
+                if not _ai_match_pair_is_valid(transaction, invoice, enterprise_name=enterprise_name):
+                    continue
                 pair = (bank_id, invoice_id)
                 if pair in existing_pairs:
                     used_bank_ids.add(bank_id)
                     used_invoice_ids.add(invoice_id)
+                    continue
+                if pair in rejected_pairs:
                     continue
                 match = MatchRecord(
                     channel_id=DEFAULT_CHANNEL_ID,
@@ -597,6 +626,56 @@ def _apply_ai_match_suggestions(
         "bank_transaction_ids": sorted(used_bank_ids, key=str),
         "invoice_ids": sorted(used_invoice_ids, key=str),
     }
+
+
+def _blocked_ai_match_source_ids(db: Session, *, package: MonthlyWorkPackage) -> dict[str, set[UUID]]:
+    blocked_bank_ids: set[UUID] = set()
+    blocked_invoice_ids: set[UUID] = set()
+    vouchers = db.scalars(
+        select(Voucher).where(
+            Voucher.organization_id == package.organization_id,
+            Voucher.monthly_work_package_id == package.id,
+            Voucher.status != "REJECTED",
+        )
+    ).all()
+    for voucher in vouchers:
+        source_data = voucher.source_data or {}
+        bank_ids = {_uuid_or_none(value) for value in _source_values(source_data, singular="bank_transaction_id", plural="bank_transaction_ids")}
+        invoice_ids = {_uuid_or_none(value) for value in _source_values(source_data, singular="invoice_id", plural="invoice_ids")}
+        bank_ids.discard(None)
+        invoice_ids.discard(None)
+        has_pair_sources = bool(bank_ids and invoice_ids)
+        if voucher.status != "CONFIRMED" and not has_pair_sources:
+            continue
+        blocked_bank_ids.update(bank_ids)
+        blocked_invoice_ids.update(invoice_ids)
+    return {"bank_transaction_ids": blocked_bank_ids, "invoice_ids": blocked_invoice_ids}
+
+
+def _ai_match_pair_is_valid(transaction: BankTransaction, invoice: Invoice, *, enterprise_name: str) -> bool:
+    bank_direction = "RECEIPT" if _money(transaction.credit_amount) > 0 else "PAYMENT"
+    if not _directions_are_compatible(bank_direction, invoice.invoice_direction):
+        return False
+    bank_counterparty = str(transaction.counterparty_name or "").strip()
+    invoice_counterparty = str(_invoice_counterparty_name(invoice, enterprise_name=enterprise_name) or "").strip()
+    if not bank_counterparty or not invoice_counterparty:
+        return False
+    return _party_names_may_match(bank_counterparty, invoice_counterparty)
+
+
+def _party_names_may_match(left: str, right: str) -> bool:
+    left_compact = _compact_party_name(left)
+    right_compact = _compact_party_name(right)
+    if not left_compact or not right_compact:
+        return False
+    return left_compact == right_compact or left_compact in right_compact or right_compact in left_compact
+
+
+def _compact_party_name(name: str) -> str:
+    compact = re.sub(r"[\s（）()·,，.。-]", "", str(name or ""))
+    for suffix in ("有限公司", "有限责任公司", "股份有限公司", "分公司", "个体工商户", "工作室"):
+        compact = compact.replace(suffix, "")
+    return compact
 
 
 def _retire_reassigned_single_source_vouchers(

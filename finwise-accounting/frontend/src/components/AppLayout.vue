@@ -16,7 +16,9 @@ const navItems = [
   { label: '发票台账', path: '/invoice-ledger' },
   { label: '科目设置', path: '/account-subjects' },
   { label: '历史账套导入', path: '/historical-import' },
-  { label: '凭证管理', path: '/vouchers' },
+  { label: '凭证生成', path: '/vouchers' },
+  { label: '凭证管理', path: '/voucher-management' },
+  { label: '账簿', path: '/ledgers' },
   { label: '输出中心', path: '/output-center' },
   { label: '规则设置', path: '/rules' },
 ]

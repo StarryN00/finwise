@@ -14,4 +14,14 @@ describe('api client', () => {
     expect(source).toContain('generateHealth: (packageId) => apiClient.post(`/monthly-packages/${packageId}/reports/health`, undefined, { timeout: AI_REQUEST_TIMEOUT_MS })')
     expect(source).toContain('downloadHealthPdfUrl: (reportId) => `/api/reports/${reportId}/pdf`')
   })
+
+  it('wires read-only accounting ledger endpoints', () => {
+    expect(source).toContain('ledgers')
+    expect(source).toContain('summary: (packageId) => apiClient.get(`/monthly-packages/${packageId}/ledgers/summary`)')
+    expect(source).toContain('accounts: (packageId) => apiClient.get(`/monthly-packages/${packageId}/ledgers/accounts`)')
+    expect(source).toContain('journal: (packageId) => apiClient.get(`/monthly-packages/${packageId}/ledgers/journal`)')
+    expect(source).toContain('general: (packageId) => apiClient.get(`/monthly-packages/${packageId}/ledgers/general`)')
+    expect(source).toContain('detail: (packageId, accountCode) => apiClient.get(`/monthly-packages/${packageId}/ledgers/detail`, { params: { account_code: accountCode } })')
+    expect(source).toContain('trialBalance: (packageId) => apiClient.get(`/monthly-packages/${packageId}/ledgers/trial-balance`)')
+  })
 })

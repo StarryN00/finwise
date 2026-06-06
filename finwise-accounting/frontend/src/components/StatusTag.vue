@@ -13,6 +13,7 @@ const statusMap = {
   PENDING: ['待确认', 'warning'],
   PENDING_CONFIRMATION: ['待确认', 'warning'],
   CONFIRMED: ['已确认', 'success'],
+  READY: ['已生成', 'success'],
   READY_TO_EXPORT: ['可导出', 'primary'],
   DRAFT: ['草稿', 'primary'],
   EXPORTED: ['已导出', 'info'],

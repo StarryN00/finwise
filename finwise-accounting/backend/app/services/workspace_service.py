@@ -6,7 +6,19 @@ from uuid import UUID
 from sqlalchemy import select
 from sqlalchemy.orm import Session
 
-from app.models import AccountingLine, BankTransaction, Enterprise, Invoice, MatchRecord, MonthlyStatement, MonthlyWorkPackage, Report, TaxFilingDraft
+from app.models import (
+    AccountingLine,
+    BankTransaction,
+    Enterprise,
+    Invoice,
+    MatchRecord,
+    MonthlyStatement,
+    MonthlyWorkPackage,
+    Report,
+    TaxFilingDraft,
+    TechnologyProfile,
+    TechnologyTag,
+)
 
 
 BUSINESS_TYPE_LABELS = {
@@ -64,6 +76,10 @@ def _enterprise_row(db: Session, enterprise: Enterprise, package: MonthlyWorkPac
     if package is not None:
         report = db.scalar(select(Report).where(Report.monthly_work_package_id == package.id).order_by(Report.created_at.desc()))
         report_status = report.status if report is not None else "DATA_INSUFFICIENT"
+    technology_profile = db.scalar(
+        select(TechnologyProfile).where(TechnologyProfile.enterprise_id == enterprise.id).order_by(TechnologyProfile.updated_at.desc())
+    )
+    technology_summary = _technology_profile_summary(db, technology_profile)
     return {
         "id": str(enterprise.id),
         "name": enterprise.name,
@@ -78,6 +94,33 @@ def _enterprise_row(db: Session, enterprise: Enterprise, package: MonthlyWorkPac
         "dataStatus": package.matching_status if package and package.matching_status != "NOT_STARTED" else (package.data_status if package else "PENDING_IMPORT"),
         "pendingConfirmations": package.pending_confirmation_count if package else 0,
         "reportStatus": report_status,
+        "technologyProfileStatus": technology_profile.overall_status if technology_profile else "NOT_SCANNED",
+        "technologyProfileSummary": technology_profile.summary if technology_profile else "",
+        "technologyTags": technology_summary["technologyTags"],
+        "ipSummary": technology_summary["ipSummary"],
+        "lastTechnologyScanAt": technology_profile.last_scanned_at.isoformat() if technology_profile and technology_profile.last_scanned_at else "",
+    }
+
+
+def _technology_profile_summary(db: Session, profile: TechnologyProfile | None) -> dict:
+    if profile is None:
+        return {"technologyTags": [], "ipSummary": "-"}
+    tags = list(
+        db.scalars(
+            select(TechnologyTag)
+            .where(TechnologyTag.profile_id == profile.id, TechnologyTag.status == "HIT")
+            .order_by(TechnologyTag.category, TechnologyTag.name)
+        )
+    )
+    technology_tags = [tag.name for tag in tags if tag.category in {"TECH_QUALIFICATION", "QCC_TECH_CERTIFICATION"}]
+    ip_parts = [
+        f"{tag.name} {tag.value}" if tag.value else tag.name
+        for tag in tags
+        if tag.category in {"INTELLECTUAL_PROPERTY", "QCC_INTELLECTUAL_PROPERTY"}
+    ]
+    return {
+        "technologyTags": technology_tags,
+        "ipSummary": " / ".join(ip_parts) if ip_parts else "-",
     }
 
 
@@ -87,7 +130,8 @@ def _package_row(db: Session, package: MonthlyWorkPackage) -> dict:
     tax_draft = db.scalar(select(TaxFilingDraft).where(TaxFilingDraft.monthly_work_package_id == package.id).order_by(TaxFilingDraft.created_at.desc()))
     report = db.scalar(select(Report).where(Report.monthly_work_package_id == package.id).order_by(Report.created_at.desc()))
     status = package.matching_status if package.matching_status not in {"NOT_STARTED", "COMPLETED"} else package.data_status
-    if tax_draft is not None and package.pending_confirmation_count == 0:
+    matching_ready = package.matching_status in {"CONFIRMED", "COMPLETED"}
+    if tax_draft is not None and package.pending_confirmation_count == 0 and matching_ready:
         status = "READY_TO_EXPORT" if tax_draft.status == "DRAFT" else tax_draft.status
     return {
         "id": str(package.id),
@@ -325,13 +369,13 @@ def _missing_checklist(db: Session, package: MonthlyWorkPackage | None) -> list[
     bank_count = db.query(BankTransaction).filter(BankTransaction.monthly_work_package_id == package.id).count()
     output_count = db.query(Invoice).filter(Invoice.monthly_work_package_id == package.id, Invoice.invoice_direction == "OUTPUT").count()
     input_count = db.query(Invoice).filter(Invoice.monthly_work_package_id == package.id, Invoice.invoice_direction == "INPUT").count()
-    report_count = db.query(Report).filter(Report.monthly_work_package_id == package.id).count()
+    ready_report_count = db.query(Report).filter(Report.monthly_work_package_id == package.id, Report.status == "READY").count()
     return [
         {"label": "银行流水", "done": bank_count > 0},
         {"label": "销项明细", "done": output_count > 0},
         {"label": "进项明细", "done": input_count > 0},
         {"label": "人工确认", "done": package.pending_confirmation_count == 0},
-        {"label": "健康报告数据", "done": report_count > 0},
+        {"label": "健康报告数据", "done": ready_report_count > 0},
     ]
 
 

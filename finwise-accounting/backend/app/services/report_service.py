@@ -128,7 +128,9 @@ def generate_health_report(
             )
             used_ai_report = True
 
-    output_dir = output_dir or get_settings().upload_dir / "reports"
+    settings = get_settings()
+    should_use_configured_kimi_key = output_dir is None
+    output_dir = output_dir or settings.upload_dir / "reports"
     output_dir.mkdir(parents=True, exist_ok=True)
     html_path = output_dir / f"health-report-{package.id}.html"
     html_path.write_text(diagnosis["html"], encoding="utf-8")
@@ -137,6 +139,7 @@ def generate_health_report(
         generated_pdf_path = generate_finhealth_report(
             _build_finhealth_input(enterprise=enterprise_data, period=period, statement=statement_data, tax_draft=tax_data),
             output_dir=str(output_dir),
+            kimi_api_key=settings.moonshot_api_key if should_use_configured_kimi_key else None,
         )
         pdf_path = Path(generated_pdf_path)
 

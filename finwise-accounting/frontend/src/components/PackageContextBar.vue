@@ -3,27 +3,38 @@
     <div class="context-picker">
       <span class="context-label">当前操作主体</span>
       <el-select
-        v-model="selectedPackageId"
-        class="package-select"
+        v-model="selectedEnterpriseId"
+        class="context-select"
         filterable
-        placeholder="搜索企业或期间"
+        placeholder="选择企业主体"
+        :loading="workspace.isLoading"
+        @change="changeEnterprise"
+      >
+        <el-option
+          v-for="item in enterpriseOptions"
+          :key="item.enterpriseId"
+          :label="item.company"
+          :value="item.enterpriseId"
+        />
+      </el-select>
+    </div>
+    <div class="context-picker">
+      <span class="context-label">工作期间</span>
+      <el-select
+        v-model="selectedPeriodPackageId"
+        class="context-select"
+        placeholder="选择工作期间"
+        :disabled="!selectedEnterpriseId || !periodOptions.length"
         :loading="workspace.isLoading"
         @change="changePackage"
       >
         <el-option
-          v-for="item in workspace.workPackages"
+          v-for="item in periodOptions"
           :key="item.id"
-          :label="`${item.company} · ${item.period}`"
+          :label="item.period"
           :value="item.id"
-        >
-          <span class="option-title">{{ item.company }}</span>
-          <span class="option-meta">{{ item.period }}</span>
-        </el-option>
+        />
       </el-select>
-    </div>
-    <div>
-      <span class="context-label">工作期间</span>
-      <strong>{{ activePackage?.period || '-' }}</strong>
     </div>
     <div>
       <span class="context-label">{{ statusLabel }}</span>
@@ -49,18 +60,43 @@ const props = defineProps({
 })
 
 const workspace = useWorkspaceStore()
-const selectedPackageId = ref('')
+const selectedEnterpriseId = ref('')
+const selectedPeriodPackageId = ref('')
 const activePackage = computed(() => workspace.activePackage)
 const statusLabel = computed(() => props.statusLabel)
 const statusValue = computed(() => props.statusValue)
+const enterpriseOptions = computed(() => {
+  const seen = new Set()
+  const options = []
+  for (const item of workspace.workPackages) {
+    if (!item.enterpriseId || seen.has(item.enterpriseId)) continue
+    seen.add(item.enterpriseId)
+    options.push({ enterpriseId: item.enterpriseId, company: item.company })
+  }
+  return options
+})
+const periodOptions = computed(() =>
+  workspace.workPackages.filter((item) => item.enterpriseId === selectedEnterpriseId.value),
+)
 
 watch(
-  () => workspace.selectedPackageId,
+  activePackage,
   (value) => {
-    selectedPackageId.value = value
+    selectedEnterpriseId.value = value?.enterpriseId || ''
+    selectedPeriodPackageId.value = value?.id || ''
   },
   { immediate: true },
 )
+
+async function changeEnterprise(enterpriseId) {
+  if (!enterpriseId) return
+  const currentPeriod = activePackage.value?.period
+  const nextPackage =
+    workspace.workPackages.find((item) => item.enterpriseId === enterpriseId && item.period === currentPeriod) ||
+    workspace.workPackages.find((item) => item.enterpriseId === enterpriseId)
+  if (!nextPackage || nextPackage.id === workspace.selectedPackageId) return
+  await changePackage(nextPackage.id)
+}
 
 async function changePackage(packageId) {
   if (!packageId || packageId === workspace.selectedPackageId) return
@@ -75,7 +111,7 @@ async function changePackage(packageId) {
 <style scoped>
 .package-context-bar {
   display: grid;
-  grid-template-columns: minmax(320px, 1.4fr) minmax(160px, 0.8fr) minmax(200px, 1fr);
+  grid-template-columns: minmax(260px, 1.2fr) minmax(160px, 0.7fr) minmax(200px, 1fr);
   gap: 16px;
   align-items: end;
   padding: 16px;
@@ -99,19 +135,8 @@ async function changePackage(packageId) {
   line-height: 32px;
 }
 
-.package-select {
+.context-select {
   width: 100%;
-}
-
-.option-title {
-  float: left;
-}
-
-.option-meta {
-  float: right;
-  margin-left: 20px;
-  color: var(--fw-text-muted);
-  font-size: 12px;
 }
 
 @media (max-width: 900px) {

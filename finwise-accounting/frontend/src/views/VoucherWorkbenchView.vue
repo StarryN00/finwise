@@ -9,6 +9,14 @@
         <div class="voucher-actions">
           <el-button :loading="isLoading" :disabled="!activePackage" @click="refreshVouchers">刷新</el-button>
           <el-button
+            :loading="isLoadingMergeSuggestions"
+            :disabled="!activePackage"
+            @click="openMergeSuggestionDialog"
+          >
+            AI 建议合并
+            <el-tag v-if="mergeSuggestionCount" size="small" type="warning">{{ mergeSuggestionCount }}</el-tag>
+          </el-button>
+          <el-button
             type="primary"
             :loading="isGenerating"
             :disabled="!activePackage"
@@ -148,6 +156,30 @@
 
           <div v-if="activeLedgerTab === 'bank'" class="ledger-toolbar">
             <el-input v-model="bankLedgerKeyword" clearable placeholder="搜索日期、摘要、对方、金额" />
+            <el-select v-model="bankSourceStatusFilter" class="ledger-filter-select" placeholder="来源处理状态">
+              <el-option
+                v-for="option in sourceProcessingStatusFilterOptions"
+                :key="option.value"
+                :label="option.label"
+                :value="option.value"
+              />
+            </el-select>
+            <el-select v-model="bankVoucherStatusFilter" class="ledger-filter-select" placeholder="凭证状态">
+              <el-option
+                v-for="option in voucherStatusFilterOptions"
+                :key="option.value"
+                :label="option.label"
+                :value="option.value"
+              />
+            </el-select>
+            <el-select v-model="bankSortField" class="ledger-filter-select" placeholder="排序字段">
+              <el-option label="按日期排序" value="transaction_date" />
+              <el-option label="按交易对方排序" value="counterparty_name" />
+            </el-select>
+            <el-select v-model="bankSortOrder" class="ledger-filter-select compact-select" placeholder="排序方向">
+              <el-option label="升序" value="asc" />
+              <el-option label="降序" value="desc" />
+            </el-select>
           </div>
           <div v-else class="ledger-toolbar invoice-ledger-toolbar">
             <el-select v-model="invoiceDirectionFilter" class="direction-filter" placeholder="发票方向">
@@ -156,43 +188,167 @@
               <el-option label="销项发票" value="OUTPUT" />
             </el-select>
             <el-input v-model="invoiceLedgerKeyword" clearable placeholder="搜索发票号、对方、金额" />
+            <el-select v-model="invoiceSourceStatusFilter" class="ledger-filter-select" placeholder="来源处理状态">
+              <el-option
+                v-for="option in sourceProcessingStatusFilterOptions"
+                :key="option.value"
+                :label="option.label"
+                :value="option.value"
+              />
+            </el-select>
+            <el-select v-model="invoiceVoucherStatusFilter" class="ledger-filter-select" placeholder="凭证状态">
+              <el-option
+                v-for="option in voucherStatusFilterOptions"
+                :key="option.value"
+                :label="option.label"
+                :value="option.value"
+              />
+            </el-select>
           </div>
 
           <BankLedgerTable
             v-if="activeLedgerTab === 'bank'"
-            :rows="filteredBankLedgerRows"
+            :rows="pagedBankLedgerRows"
             :loading="isLoading"
             @row-select="selectBankLedgerRow"
           />
           <InvoiceLedgerTable
             v-else
-            :rows="filteredInvoiceLedgerRows"
+            :rows="pagedInvoiceLedgerRows"
             :loading="isLoading"
             @row-select="selectInvoiceLedgerRow"
           />
+          <div class="ledger-pagination-bar">
+            <span class="ledger-count-text">
+              {{ activeLedgerTab === 'bank' ? bankLedgerCountLabel : invoiceLedgerCountLabel }}
+            </span>
+            <el-pagination
+              v-if="activeLedgerTab === 'bank'"
+              v-model:current-page="bankLedgerPage"
+              v-model:page-size="ledgerPageSize"
+              :page-sizes="[20, 50, 100, 200]"
+              :total="filteredBankLedgerRows.length"
+              background
+              layout="sizes, prev, pager, next"
+              small
+            />
+            <el-pagination
+              v-else
+              v-model:current-page="invoiceLedgerPage"
+              v-model:page-size="ledgerPageSize"
+              :page-sizes="[20, 50, 100, 200]"
+              :total="filteredInvoiceLedgerRows.length"
+              background
+              layout="sizes, prev, pager, next"
+              small
+            />
+          </div>
         </div>
 
-        <aside class="voucher-detail">
+      </div>
+
+      <el-dialog
+        v-model="voucherDetailDialogVisible"
+        title="凭证详情"
+        width="min(1320px, 94vw)"
+        class="voucher-detail-dialog"
+        destroy-on-close
+      >
+        <section class="voucher-detail voucher-detail-modal">
           <template v-if="selectedVoucher">
             <div class="detail-header">
-              <div>
-                <span class="detail-eyebrow">{{ selectedVoucher.voucher_number || '未编号' }}</span>
-                <h3>{{ selectedVoucher.summary || '未填写摘要' }}</h3>
-                <p>请按顺序核对 AI 推荐、异常提示和分录金额，再执行人工确认。</p>
+              <div class="detail-header-main">
+                <div>
+                  <span class="detail-eyebrow">{{ selectedVoucher.voucher_number || '未编号' }}</span>
+                  <h3>{{ selectedVoucher.summary || '未填写摘要' }}</h3>
+                  <p>请按顺序核对 AI 推荐、异常提示和分录金额，再执行人工确认。</p>
+                  <div class="detail-header-meta">
+                    <span>AI 置信度：{{ formatConfidence(selectedVoucher.ai_confidence) }}</span>
+                    <span>凭证日期：{{ selectedVoucher.voucher_date || '-' }}</span>
+                  </div>
+                </div>
+                <el-tag :type="statusTagType(selectedVoucher)" size="small">{{ statusLabel(selectedVoucher) }}</el-tag>
               </div>
-              <el-tag :type="statusTagType(selectedVoucher)" size="small">{{ statusLabel(selectedVoucher) }}</el-tag>
+              <div class="detail-header-actions">
+                <span>第 3 步：人工确认</span>
+                <el-button
+                  v-if="canReopenVoucher"
+                  size="large"
+                  :loading="isReopening"
+                  @click="reopenVoucher"
+                >
+                  {{ reopenButtonLabel }}
+                </el-button>
+                <el-button
+                  size="large"
+                  :loading="isLoadingRematch"
+                  :disabled="rematchDisabled"
+                  @click="openRematchDialog"
+                >
+                  重新匹配
+                </el-button>
+                <el-button
+                  size="large"
+                  :loading="isRejecting"
+                  :disabled="rejectDisabled"
+                  @click="rejectVoucher"
+                >
+                  标记不正确
+                </el-button>
+                <el-button
+                  type="primary"
+                  size="large"
+                  :loading="isConfirming"
+                  :disabled="confirmDisabled"
+                  @click="confirmVoucher"
+                >
+                  确认凭证
+                </el-button>
+              </div>
             </div>
 
-            <dl class="detail-metrics">
-              <div>
-                <dt>AI 置信度</dt>
-                <dd>{{ formatConfidence(selectedVoucher.ai_confidence) }}</dd>
+            <section v-if="sourceFocusItems.length" class="source-focus-panel">
+              <div class="source-focus-title">
+                <strong>当前核对对象</strong>
+                <span>{{ sourceFocusHeadline }}</span>
               </div>
-              <div>
-                <dt>凭证日期</dt>
-                <dd>{{ selectedVoucher.voucher_date || '-' }}</dd>
+              <div class="source-focus-list">
+                <div
+                  v-for="item in sourceFocusItems"
+                  :key="item.key"
+                  class="source-focus-item"
+                  :class="item.className"
+                  :title="item.detail"
+                >
+                  <span class="source-focus-type">{{ item.typeLabel }}</span>
+                  <strong>{{ item.counterparty }}</strong>
+                  <small>{{ item.date }} · {{ item.headline }}</small>
+                  <b>{{ item.amountLabel }}</b>
+                </div>
               </div>
-            </dl>
+            </section>
+
+            <section class="entry-preview-table">
+              <div class="entry-preview-title">
+                <strong>凭证分录</strong>
+                <span>先核对方向、科目和金额，再看来源与 AI 说明</span>
+              </div>
+              <el-table :data="selectedEntries" size="small" stripe>
+                <el-table-column label="方向" width="80">
+                  <template #default="{ row }">{{ directionLabel(row.direction) }}</template>
+                </el-table-column>
+                <el-table-column prop="account_code" label="科目编码" width="110" />
+                <el-table-column prop="account_name" label="科目名称" min-width="180" show-overflow-tooltip />
+                <el-table-column label="金额" width="140" align="right">
+                  <template #default="{ row }">{{ formatAmount(row.amount) }}</template>
+                </el-table-column>
+              </el-table>
+            </section>
+
+            <div v-if="validationErrors.length" class="validation-errors">
+              <strong>异常提示</strong>
+              <p>{{ validationErrorLabels.join('；') }}</p>
+            </div>
 
             <div class="source-section">
               <div class="source-title">
@@ -390,63 +546,99 @@
               <p>{{ selectedVoucher.ai_reason || '暂无说明' }}</p>
             </div>
 
-            <div v-if="validationErrors.length" class="validation-errors">
-              <strong>异常提示</strong>
-              <p>{{ validationErrorLabels.join('；') }}</p>
-            </div>
-
-            <el-table :data="selectedEntries" size="small" stripe>
-              <el-table-column label="方向" width="80">
-                <template #default="{ row }">{{ directionLabel(row.direction) }}</template>
-              </el-table-column>
-              <el-table-column prop="account_code" label="科目编码" width="110" />
-              <el-table-column prop="account_name" label="科目名称" min-width="140" show-overflow-tooltip />
-              <el-table-column label="金额" width="120" align="right">
-                <template #default="{ row }">{{ formatAmount(row.amount) }}</template>
-              </el-table-column>
-            </el-table>
-
-            <div class="detail-actions">
-              <span>第 3 步：人工确认后生成正式凭证号</span>
-              <el-button
-                v-if="canReopenVoucher"
-                size="large"
-                :loading="isReopening"
-                @click="reopenVoucher"
-              >
-                {{ reopenButtonLabel }}
-              </el-button>
-              <el-button
-                size="large"
-                :loading="isLoadingRematch"
-                :disabled="rematchDisabled"
-                @click="openRematchDialog"
-              >
-                重新匹配
-              </el-button>
-              <el-button
-                size="large"
-                :loading="isRejecting"
-                :disabled="rejectDisabled"
-                @click="rejectVoucher"
-              >
-                标记不正确
-              </el-button>
-              <el-button
-                type="primary"
-                size="large"
-                :loading="isConfirming"
-                :disabled="confirmDisabled"
-                @click="confirmVoucher"
-              >
-                确认凭证
-              </el-button>
-            </div>
           </template>
           <el-empty v-else description="选择一张凭证查看分录与 AI 说明" />
-        </aside>
-      </div>
+        </section>
+      </el-dialog>
     </div>
+
+    <el-dialog
+      v-model="mergeSuggestionDialogVisible"
+      title="AI 建议合并凭证"
+      width="min(1120px, 92vw)"
+      class="merge-suggestion-dialog"
+      destroy-on-close
+    >
+      <section class="merge-suggestion-panel">
+        <div class="merge-suggestion-intro">
+          <div>
+            <strong>适合同一张凭证处理的单边流水</strong>
+            <p>系统只建议合并待确认、未编号、同对方且同会计处理的单边银行流水；确认后会保留每条流水来源记录。</p>
+          </div>
+          <el-tag type="primary" size="small">{{ mergeSuggestionCount }} 组建议</el-tag>
+        </div>
+
+        <el-empty v-if="!mergeSuggestions.length && !isLoadingMergeSuggestions" description="暂无可合并建议" />
+
+        <div v-else class="merge-suggestion-list">
+          <article
+            v-for="suggestion in mergeSuggestions"
+            :key="suggestion.suggestion_id"
+            class="merge-suggestion-card"
+          >
+            <header>
+              <div>
+                <span class="merge-suggestion-eyebrow">
+                  {{ mergeDirectionLabel(suggestion.direction || suggestion.bank_direction) }}
+                </span>
+                <h3>{{ suggestion.counterparty_name || '对方主体未识别' }}</h3>
+                <p>{{ suggestion.recommended_summary }}</p>
+              </div>
+              <div class="merge-suggestion-metrics">
+                <span>{{ suggestion.source_count }} 条流水</span>
+                <strong>{{ formatAmount(suggestion.total_amount) }}</strong>
+                <small>AI 置信度 {{ formatConfidence(suggestion.confidence) }}</small>
+              </div>
+            </header>
+
+            <div class="merge-suggestion-entries">
+              <span>建议分录</span>
+              <b>{{ suggestion.recommended_debit_account_code }} {{ suggestion.recommended_debit_account_name }}</b>
+              <b>{{ suggestion.recommended_credit_account_code }} {{ suggestion.recommended_credit_account_name }}</b>
+            </div>
+
+            <div class="merge-suggestion-source-table" role="table" aria-label="合并来源流水">
+              <div class="merge-suggestion-source-row merge-suggestion-source-head" role="row">
+                <span>日期</span>
+                <span>交易对方</span>
+                <span>摘要</span>
+                <span>方向</span>
+                <span>建议科目</span>
+                <span>凭证号</span>
+                <span>金额</span>
+              </div>
+              <div
+                v-for="source in suggestion.sources"
+                :key="source.voucher_id"
+                class="merge-suggestion-source-row"
+                role="row"
+              >
+                <span>{{ source.transaction_date || source.voucher_date || '-' }}</span>
+                <span :title="source.counterparty_name">{{ source.counterparty_name || suggestion.counterparty_name || '-' }}</span>
+                <span :title="source.summary">{{ source.summary || '-' }}</span>
+                <span>{{ source.direction_label || mergeDirectionLabel(source.direction) }}</span>
+                <span :title="`${source.debit_account_code || '-'} / ${source.credit_account_code || '-'}`">
+                  {{ source.debit_account_code || '-' }} / {{ source.credit_account_code || '-' }}
+                </span>
+                <span>{{ source.voucher_number || '未编号' }}</span>
+                <span>{{ formatAmount(source.amount) }}</span>
+              </div>
+            </div>
+
+            <footer>
+              <span>{{ suggestion.reason }}</span>
+              <el-button
+                type="primary"
+                :loading="isApplyingMergeSuggestion && applyingMergeSuggestionId === suggestion.suggestion_id"
+                @click="applyMergeSuggestion(suggestion)"
+              >
+                应用合并
+              </el-button>
+            </footer>
+          </article>
+        </div>
+      </section>
+    </el-dialog>
 
     <el-dialog
       v-model="rematchDialogVisible"
@@ -632,14 +824,19 @@
 
 <script setup>
 import { computed, ref, watch } from 'vue'
+import { useRoute, useRouter } from 'vue-router'
 import { ElMessage } from 'element-plus'
 import { api } from '../api/client'
 import { useWorkspaceStore } from '../stores/workspace'
 import BankLedgerTable from '../components/source-ledgers/BankLedgerTable.vue'
 import InvoiceLedgerTable from '../components/source-ledgers/InvoiceLedgerTable.vue'
-import { sourceRowMatchesKeyword } from '../components/source-ledgers/ledgerFormatters'
+import { sourceRowMatchesFilter, sourceRowMatchesKeyword } from '../components/source-ledgers/ledgerFormatters'
+
+const VOUCHER_CONTEXT_STORAGE_KEY = 'finwise:voucher-workbench:context'
 
 const workspace = useWorkspaceStore()
+const route = useRoute()
+const router = useRouter()
 const vouchers = ref([])
 const ledgerSummary = ref(emptyLedgerSummary())
 const selectedVoucherId = ref('')
@@ -649,8 +846,17 @@ const activeLedgerTab = ref('bank')
 const bankLedgerRows = ref([])
 const invoiceLedgerRows = ref([])
 const bankLedgerKeyword = ref('')
+const bankSourceStatusFilter = ref('all')
+const bankVoucherStatusFilter = ref('all')
+const bankSortField = ref('transaction_date')
+const bankSortOrder = ref('asc')
+const ledgerPageSize = ref(20)
+const bankLedgerPage = ref(1)
+const invoiceLedgerPage = ref(1)
 const invoiceLedgerKeyword = ref('')
 const invoiceDirectionFilter = ref('all')
+const invoiceSourceStatusFilter = ref('all')
+const invoiceVoucherStatusFilter = ref('all')
 const preprocessAudit = ref(null)
 const isLoading = ref(false)
 const isGenerating = ref(false)
@@ -660,8 +866,14 @@ const isReopening = ref(false)
 const isLoadingRematch = ref(false)
 const isApplyingRematch = ref(false)
 const isApplyingTreatment = ref(false)
+const isLoadingMergeSuggestions = ref(false)
+const isApplyingMergeSuggestion = ref(false)
 const isTreatmentFormOpen = ref(false)
+const voucherDetailDialogVisible = ref(false)
 const rematchDialogVisible = ref(false)
+const mergeSuggestionDialogVisible = ref(false)
+const mergeSuggestions = ref([])
+const applyingMergeSuggestionId = ref('')
 const rematchCandidates = ref({ bank_candidates: [], invoice_candidates: [] })
 const rematchMode = ref('replace-invoice')
 const selectedRematchInvoiceIds = ref([])
@@ -682,6 +894,22 @@ const rematchModeOptions = [
   { label: '保留流水重选发票', value: 'replace-invoice' },
   { label: '保留发票重选流水', value: 'replace-bank' },
   { label: '两边都重选', value: 'both' },
+]
+const sourceProcessingStatusFilterOptions = [
+  { label: '全部来源状态', value: 'all' },
+  { label: '未处理', value: 'UNPROCESSED' },
+  { label: '已配对', value: 'PAIRED' },
+  { label: '差额补齐', value: 'DIFFERENCE_FILLED' },
+  { label: '双向往来', value: 'BIDIRECTIONAL_CURRENT_ACCOUNT' },
+  { label: '单边处理', value: 'SINGLE_SIDED' },
+  { label: '需人工处理', value: 'NEEDS_REVIEW' },
+]
+const voucherStatusFilterOptions = [
+  { label: '全部凭证状态', value: 'all' },
+  { label: '未处理', value: 'UNPROCESSED' },
+  { label: '待确认', value: 'PENDING_CONFIRMATION' },
+  { label: '已确认', value: 'CONFIRMED' },
+  { label: '已驳回', value: 'REJECTED' },
 ]
 const treatmentSubjectOptions = [
   { code: '1002', name: '银行存款' },
@@ -722,6 +950,7 @@ const periodOptions = computed(() =>
 )
 const selectedVoucher = computed(() => vouchers.value.find((item) => item.id === selectedVoucherId.value) || null)
 const selectedEntries = computed(() => selectedVoucher.value?.entries || [])
+const mergeSuggestionCount = computed(() => mergeSuggestions.value.length)
 const sourceData = computed(() => normalizeSourceData(selectedVoucher.value?.source_data ?? selectedVoucher.value?.sourceData))
 const sourceBankTransaction = computed(() => sourceData.value.bank_transaction || null)
 const sourceBankTransactions = computed(() => {
@@ -754,12 +983,15 @@ const missingSourceTreatment = computed(() => {
   if (hasBank && !hasInvoice) {
     const transaction = sourceBankTransactions.value[0]
     const isReceipt = Number(transaction?.credit_amount || 0) > 0
+    const isBidirectionalCurrentAccount = sourceData.value.source_group_type === 'BIDIRECTIONAL_CURRENT_ACCOUNT'
     return {
-      title: '缺失发票，建议会计处理',
+      title: isBidirectionalCurrentAccount ? '双向往来未开票，建议会计处理' : '缺失发票，建议会计处理',
       missingLabel: '发票',
-      description: isReceipt ? '银行收款暂未匹配到销项发票，可先按预收或往来款处理。' : '银行付款暂未匹配到进项发票，可先按预付或往来款处理。',
-      treatmentType: existingTreatment.value?.treatment_type || (isReceipt ? '预收账款暂挂' : '预付账款暂挂'),
-      reason: existingTreatment.value?.note || selectedVoucher.value.ai_reason || (isReceipt ? '银行收款暂无匹配发票，先按预收账款暂挂。' : '银行付款暂无匹配发票，先按预付账款暂挂。'),
+      description: isBidirectionalCurrentAccount
+        ? '同一对方当月存在收款和付款，暂无发票匹配时优先按往来款暂挂，待人工确认业务归属。'
+        : isReceipt ? '银行收款暂未匹配到销项发票，可先按预收或往来款处理。' : '银行付款暂未匹配到进项发票，可先按预付或往来款处理。',
+      treatmentType: existingTreatment.value?.treatment_type || (isBidirectionalCurrentAccount ? '往来款暂挂' : isReceipt ? '预收账款暂挂' : '预付账款暂挂'),
+      reason: existingTreatment.value?.note || selectedVoucher.value.ai_reason || (isBidirectionalCurrentAccount ? '同一对方当月存在双向资金往来，先按往来款暂挂。' : isReceipt ? '银行收款暂无匹配发票，先按预收账款暂挂。' : '银行付款暂无匹配发票，先按预付账款暂挂。'),
     }
   }
   if (hasInvoice && !hasBank) {
@@ -833,6 +1065,81 @@ const sourceSummary = computed(() => {
     treatmentLabel: treatment?.label || (Math.abs(differenceAmount) <= 0.01 ? '无需补齐' : '待 AI 建议'),
   }
 })
+const sourceFocusHeadline = computed(() => {
+  const parts = []
+  if (sourceBankTransactions.value.length) parts.push(`${sourceBankTransactions.value.length} 笔流水`)
+  if (sourceInvoices.value.length) parts.push(`${sourceInvoices.value.length} 张发票`)
+  return parts.length ? parts.join(' + ') : '暂无来源'
+})
+const sourceFocusItems = computed(() => {
+  const items = [
+    ...sourceBankTransactions.value.map((transaction, index) => {
+      const amount = bankTransactionAmount(transaction)
+      return {
+        key: `bank-focus-${transaction.id || index}`,
+        className: 'source-focus-item-bank',
+        typeLabel: '银行流水',
+        headline: bankTransactionDirectionLabel(transaction),
+        date: transaction.transaction_date || '-',
+        counterparty: bankTransactionCounterpartyLabel(transaction),
+        amountLabel: formatAmount(amount),
+        detail: sourceFocusDetail([
+          ['类型', '银行流水'],
+          ['交易日期', transaction.transaction_date || '-'],
+          ['交易对方', bankTransactionCounterpartyLabel(transaction)],
+          ['流水摘要', transaction.summary || '-'],
+          ['收付方向', bankTransactionDirectionLabel(transaction)],
+          ['借方金额', formatAmount(transaction.debit_amount || 0)],
+          ['贷方金额', formatAmount(transaction.credit_amount || 0)],
+          ['余额', transaction.balance !== undefined && transaction.balance !== null ? formatAmount(transaction.balance) : '-'],
+        ]),
+      }
+    }),
+    ...sourceInvoices.value.map((invoice, index) => {
+      const amount = Number(invoice.total_amount || 0)
+      const direction = invoiceDirectionLabel(invoice.invoice_direction)
+      return {
+        key: `invoice-focus-${invoice.id || index}`,
+        className: 'source-focus-item-invoice',
+        typeLabel: direction,
+        headline: direction,
+        date: invoice.invoice_date || '-',
+        counterparty: invoiceCounterpartyName(invoice),
+        amountLabel: formatAmount(amount),
+        detail: sourceFocusDetail([
+          ['类型', direction],
+          ['开票日期', invoice.invoice_date || '-'],
+          ['交易对方', invoiceCounterpartyName(invoice)],
+          ['发票号码', invoice.invoice_number || '-'],
+          ['销售方', invoiceSellerName(invoice)],
+          ['购买方', invoiceBuyerName(invoice)],
+          ['价税合计', formatAmount(amount)],
+        ]),
+      }
+    }),
+  ]
+  const treatment = sourceDifferenceTreatment.value
+  if (treatment && (Math.abs(sourceDifferenceAmount.value) > 0.01 || missingSourceTreatment.value)) {
+    items.push({
+      key: 'difference-focus',
+      className: 'source-focus-item-difference',
+      typeLabel: 'AI补齐',
+      headline: treatment.direction,
+      date: selectedVoucher.value?.voucher_date || '-',
+      counterparty: treatment.label,
+      amountLabel: formatAmount(treatment.amount),
+      detail: sourceFocusDetail([
+        ['类型', 'AI补齐'],
+        ['凭证日期', selectedVoucher.value?.voucher_date || '-'],
+        ['建议项目', treatment.label],
+        ['方向', treatment.direction],
+        ['金额', formatAmount(treatment.amount)],
+        ['原因', treatment.note || '-'],
+      ]),
+    })
+  }
+  return items
+})
 const sourceDetailRows = computed(() => {
   const rows = [
     ...sourceBankTransactions.value.map((transaction, index) => ({
@@ -840,7 +1147,7 @@ const sourceDetailRows = computed(() => {
       className: 'source-line-bank',
       typeLabel: '银行流水',
       date: transaction.transaction_date || '-',
-      counterparty: transaction.counterparty_name || '-',
+      counterparty: bankTransactionCounterpartyLabel(transaction),
       description: transaction.summary || '-',
       directionLabel: bankTransactionDirectionLabel(transaction),
       amount: bankTransactionAmount(transaction),
@@ -954,23 +1261,30 @@ const rematchDisabled = computed(() => {
   return isConfirmed(selectedVoucher.value)
 })
 
-const filteredBankLedgerRows = computed(() =>
-  bankLedgerRows.value.filter((row) =>
-    sourceRowMatchesKeyword(row, bankLedgerKeyword.value, [
+const filteredBankLedgerRows = computed(() => {
+  const rows = bankLedgerRows.value.filter((row) => {
+    if (!sourceRowMatchesFilter(row, 'source_processing_status', bankSourceStatusFilter.value)) return false
+    if (!sourceRowMatchesFilter(row, 'voucher_status', bankVoucherStatusFilter.value)) return false
+    return sourceRowMatchesKeyword(row, bankLedgerKeyword.value, [
       'transaction_date',
       'summary',
       'direction_label',
       'counterparty_name',
       'transaction_amount',
-      'matching_status_label',
+      'credit_amount',
+      'debit_amount',
+      'source_processing_status_label',
       'voucher_status_label',
-    ]),
-  ),
-)
+    ])
+  })
+  return sortLedgerRows(rows, bankSortField.value, bankSortOrder.value)
+})
 
 const filteredInvoiceLedgerRows = computed(() =>
   invoiceLedgerRows.value.filter((row) => {
     if (invoiceDirectionFilter.value !== 'all' && row.invoice_direction !== invoiceDirectionFilter.value) return false
+    if (!sourceRowMatchesFilter(row, 'source_processing_status', invoiceSourceStatusFilter.value)) return false
+    if (!sourceRowMatchesFilter(row, 'voucher_status', invoiceVoucherStatusFilter.value)) return false
     return sourceRowMatchesKeyword(row, invoiceLedgerKeyword.value, [
       'invoice_direction_label',
       'invoice_number',
@@ -978,10 +1292,34 @@ const filteredInvoiceLedgerRows = computed(() =>
       'counterparty_role',
       'counterparty_name',
       'total_amount',
-      'matching_status_label',
+      'source_processing_status_label',
       'voucher_status_label',
     ])
   }),
+)
+const pagedBankLedgerRows = computed(() =>
+  paginateRows(filteredBankLedgerRows.value, bankLedgerPage.value, ledgerPageSize.value),
+)
+const pagedInvoiceLedgerRows = computed(() =>
+  paginateRows(filteredInvoiceLedgerRows.value, invoiceLedgerPage.value, ledgerPageSize.value),
+)
+const bankLedgerCountLabel = computed(() =>
+  ledgerCountLabel(pagedBankLedgerRows.value.length, filteredBankLedgerRows.value.length, bankLedgerRows.value.length),
+)
+const invoiceLedgerCountLabel = computed(() =>
+  ledgerCountLabel(
+    pagedInvoiceLedgerRows.value.length,
+    filteredInvoiceLedgerRows.value.length,
+    invoiceLedgerRows.value.length,
+  ),
+)
+
+watch(
+  () => workspace.workPackages.map((item) => item.id).join('|'),
+  () => {
+    restorePersistedContext()
+  },
+  { immediate: true },
 )
 
 watch(
@@ -990,6 +1328,7 @@ watch(
     const packageId = packageItem?.id || ''
     selectedEnterpriseId.value = packageItem?.enterpriseId || ''
     selectedPeriodPackageId.value = packageId
+    persistSelectedPackageContext(packageItem)
     if (!packageId) {
       voucherLoadRequestId += 1
       clearVouchers()
@@ -999,6 +1338,39 @@ watch(
   },
   { immediate: true },
 )
+
+watch(
+  [bankLedgerKeyword, bankSourceStatusFilter, bankVoucherStatusFilter, bankSortField, bankSortOrder],
+  () => {
+    bankLedgerPage.value = 1
+  },
+)
+
+watch([invoiceLedgerKeyword, invoiceDirectionFilter, invoiceSourceStatusFilter, invoiceVoucherStatusFilter], () => {
+  invoiceLedgerPage.value = 1
+})
+
+watch(activeLedgerTab, () => {
+  bankLedgerPage.value = 1
+  invoiceLedgerPage.value = 1
+})
+
+watch(ledgerPageSize, () => {
+  bankLedgerPage.value = 1
+  invoiceLedgerPage.value = 1
+})
+
+watch(filteredBankLedgerRows, () => {
+  bankLedgerPage.value = clampLedgerPage(bankLedgerPage.value, filteredBankLedgerRows.value.length, ledgerPageSize.value)
+})
+
+watch(filteredInvoiceLedgerRows, () => {
+  invoiceLedgerPage.value = clampLedgerPage(
+    invoiceLedgerPage.value,
+    filteredInvoiceLedgerRows.value.length,
+    ledgerPageSize.value,
+  )
+})
 
 watch(rematchMode, (mode) => {
   if (mode === 'replace-invoice') selectedRematchBankIds.value = []
@@ -1029,6 +1401,91 @@ async function changePackage(packageId) {
   }
 }
 
+function restorePersistedContext() {
+  if (!workspace.workPackages.length) return
+  const packageItem = findPersistedPackage()
+  if (!packageItem || packageItem.id === workspace.selectedPackageId) return
+  workspace.selectedPackageId = packageItem.id
+}
+
+function findPersistedPackage() {
+  const queryPackageId = queryValue(route.query.package_id || route.query.packageId)
+  const queryEnterpriseId = queryValue(route.query.enterprise_id || route.query.enterpriseId)
+  const queryPeriod = queryValue(route.query.period)
+  const queryPackage = findPackageFromContext({
+    package_id: queryPackageId,
+    enterprise_id: queryEnterpriseId,
+    period: queryPeriod,
+  })
+  if (queryPackage) return queryPackage
+
+  const storedContext = readStoredVoucherContext()
+  return findPackageFromContext(storedContext)
+}
+
+function findPackageFromContext(context = {}) {
+  if (context.package_id) {
+    const packageItem = workspace.workPackages.find((item) => item.id === context.package_id)
+    if (packageItem) return packageItem
+  }
+  if (context.enterprise_id && context.period) {
+    return workspace.workPackages.find(
+      (item) => item.enterpriseId === context.enterprise_id && item.period === context.period,
+    )
+  }
+  return null
+}
+
+function persistSelectedPackageContext(packageItem) {
+  if (!packageItem?.id) return
+  const context = {
+    package_id: packageItem.id,
+    enterprise_id: packageItem.enterpriseId || '',
+    period: packageItem.period || '',
+  }
+  writeStoredVoucherContext(context)
+  syncVoucherContextQuery(context)
+}
+
+function readStoredVoucherContext() {
+  try {
+    const value = window.localStorage.getItem(VOUCHER_CONTEXT_STORAGE_KEY)
+    return value ? JSON.parse(value) : {}
+  } catch {
+    return {}
+  }
+}
+
+function writeStoredVoucherContext(context) {
+  try {
+    window.localStorage.setItem(VOUCHER_CONTEXT_STORAGE_KEY, JSON.stringify(context))
+  } catch {
+    // localStorage may be unavailable in private or restricted browser contexts.
+  }
+}
+
+function syncVoucherContextQuery(context) {
+  const nextQuery = {
+    ...route.query,
+    package_id: context.package_id,
+    enterprise_id: context.enterprise_id,
+    period: context.period,
+  }
+  if (
+    queryValue(route.query.package_id) === context.package_id &&
+    queryValue(route.query.enterprise_id) === context.enterprise_id &&
+    queryValue(route.query.period) === context.period
+  ) {
+    return
+  }
+  router.replace({ query: nextQuery }).catch(() => {})
+}
+
+function queryValue(value) {
+  if (Array.isArray(value)) return value[0] || ''
+  return value ? String(value) : ''
+}
+
 async function refreshVouchers() {
   const didRefresh = await loadVouchers(activePackageId.value)
   if (didRefresh) {
@@ -1056,6 +1513,7 @@ async function loadVouchers(packageId = activePackageId.value) {
     ledgerSummary.value = normalizeLedgerSummary(summaryResponse.data)
     keepSelection()
     await loadSourceLedgers(packageId, requestId)
+    await loadMergeSuggestions(packageId, { silent: true })
     return true
   } catch (error) {
     if (isStaleVoucherLoad(requestId, packageId)) return false
@@ -1091,6 +1549,68 @@ async function loadSourceLedgers(packageId, requestId) {
     return false
   }
   return true
+}
+
+async function loadMergeSuggestions(packageId = activePackageId.value, options = {}) {
+  const { notifyEmpty = false, silent = false } = options
+  if (!packageId) {
+    mergeSuggestions.value = []
+    return false
+  }
+  isLoadingMergeSuggestions.value = true
+  try {
+    const response = await api.vouchers.mergeSuggestions(packageId)
+    mergeSuggestions.value = normalizeMergeSuggestions(response.data)
+    if (notifyEmpty && !mergeSuggestions.value.length) {
+      ElMessage.warning('暂无可合并的单边流水凭证')
+    }
+    return true
+  } catch (error) {
+    mergeSuggestions.value = []
+    if (!silent) {
+      ElMessage.error(error?.response?.data?.detail || error?.message || 'AI 合并建议加载失败')
+    }
+    return false
+  } finally {
+    isLoadingMergeSuggestions.value = false
+  }
+}
+
+async function openMergeSuggestionDialog() {
+  const packageId = activePackageId.value
+  if (!packageId) {
+    ElMessage.warning('请先选择企业主体和工作期间')
+    return
+  }
+  await loadMergeSuggestions(packageId, { notifyEmpty: true })
+  mergeSuggestionDialogVisible.value = true
+}
+
+async function applyMergeSuggestion(suggestion) {
+  const packageId = activePackageId.value
+  if (!packageId || !suggestion?.source_voucher_ids?.length) {
+    ElMessage.warning('请选择有效的合并建议')
+    return
+  }
+  isApplyingMergeSuggestion.value = true
+  applyingMergeSuggestionId.value = suggestion.suggestion_id
+  try {
+    const response = await api.vouchers.applyMergeSuggestion(packageId, {
+      source_voucher_ids: suggestion.source_voucher_ids,
+      applied_by: 'operator',
+    })
+    await workspace.loadWorkspace(packageId)
+    await loadVouchers(packageId)
+    selectedVoucherId.value = response.data?.id || ''
+    voucherDetailDialogVisible.value = Boolean(selectedVoucherId.value)
+    mergeSuggestionDialogVisible.value = false
+    ElMessage.success(`已合并 ${mergeSuggestionSourceCount(suggestion)} 条流水为一张待确认凭证`)
+  } catch (error) {
+    ElMessage.error(error?.response?.data?.detail || error?.message || '应用合并建议失败')
+  } finally {
+    isApplyingMergeSuggestion.value = false
+    applyingMergeSuggestionId.value = ''
+  }
 }
 
 async function preprocessVouchers() {
@@ -1367,18 +1887,60 @@ function selectInvoiceLedgerRow(row) {
 }
 
 function selectVoucherFromLedgerRow(row, sourceLabel) {
-  const linkedVoucherId = firstLinkedVoucherId(row)
+  const linkedVoucherId = preferredLinkedVoucherId(row)
   if (linkedVoucherId) {
     selectedVoucherId.value = linkedVoucherId
+    voucherDetailDialogVisible.value = true
     return
   }
   ElMessage.warning(`${sourceLabel}暂未生成凭证任务，请先点击 AI 预处理`)
 }
 
-function firstLinkedVoucherId(row) {
+function preferredLinkedVoucherId(row) {
   const links = row?.linked_vouchers || []
-  const pending = links.find((item) => item.status === 'PENDING_CONFIRMATION')
-  return pending?.id || links[0]?.id || ''
+  if (!links.length) return ''
+  const rankedLinks = links.map((link, index) => {
+    const voucher = vouchers.value.find((item) => item.id === link.id)
+    const source = normalizeSourceData(voucher?.source_data ?? voucher?.sourceData)
+    const sourceCount = sourceEntityCount(source, 'bank') + sourceEntityCount(source, 'invoice')
+    return {
+      id: link.id,
+      index,
+      sourceCount,
+      taskPriority: linkedVoucherTaskPriority(voucher?.source_data?.voucher_task_type || link.task_type),
+      statusPriority: link.status === 'PENDING_CONFIRMATION' ? 2 : link.status === 'CONFIRMED' ? 1 : 0,
+    }
+  })
+  rankedLinks.sort((left, right) => {
+    if (right.sourceCount !== left.sourceCount) return right.sourceCount - left.sourceCount
+    if (right.taskPriority !== left.taskPriority) return right.taskPriority - left.taskPriority
+    if (right.statusPriority !== left.statusPriority) return right.statusPriority - left.statusPriority
+    return left.index - right.index
+  })
+  return rankedLinks[0]?.id || ''
+}
+
+function sourceEntityCount(source, type) {
+  if (!source) return 0
+  if (type === 'bank') {
+    if (Array.isArray(source.bank_transactions)) return source.bank_transactions.length
+    if (Array.isArray(source.bank_transaction_ids)) return source.bank_transaction_ids.length
+    return source.bank_transaction || source.bank_transaction_id ? 1 : 0
+  }
+  if (Array.isArray(source.invoices)) return source.invoices.length
+  if (Array.isArray(source.invoice_ids)) return source.invoice_ids.length
+  return source.invoice || source.invoice_id ? 1 : 0
+}
+
+function linkedVoucherTaskPriority(taskType) {
+  const priorities = {
+    ONE_BANK_TRANSACTION_MULTIPLE_INVOICES: 4,
+    ONE_INVOICE_MULTIPLE_BANK_TRANSACTIONS: 4,
+    DIFFERENCE_COMPLETION: 3,
+    FULL_MATCH: 2,
+    SINGLE_SOURCE: 1,
+  }
+  return priorities[taskType] || 0
 }
 
 function selectNextPendingVoucher(previousVoucherId) {
@@ -1399,8 +1961,11 @@ function clearVouchers() {
   ledgerSummary.value = emptyLedgerSummary()
   bankLedgerRows.value = []
   invoiceLedgerRows.value = []
+  mergeSuggestions.value = []
   preprocessAudit.value = null
   selectedVoucherId.value = ''
+  voucherDetailDialogVisible.value = false
+  mergeSuggestionDialogVisible.value = false
 }
 
 function emptyLedgerSummary() {
@@ -1420,6 +1985,20 @@ function emptyLedgerSummary() {
 
 function normalizeLedgerSummary(value) {
   return { ...emptyLedgerSummary(), ...(value || {}) }
+}
+
+function normalizeMergeSuggestions(value) {
+  if (Array.isArray(value)) return value
+  if (Array.isArray(value?.suggestions)) return value.suggestions
+  return []
+}
+
+function mergeSuggestionSourceCount(suggestion) {
+  const explicitCount = Number(suggestion?.source_count)
+  if (Number.isFinite(explicitCount) && explicitCount > 0) return explicitCount
+  if (Array.isArray(suggestion?.source_voucher_ids)) return suggestion.source_voucher_ids.length
+  if (Array.isArray(suggestion?.sources)) return suggestion.sources.length
+  return 0
 }
 
 function isConfirmed(voucher) {
@@ -1494,6 +2073,12 @@ function directionLabel(direction) {
   return direction === 'credit' || direction === 'CREDIT' ? '贷方' : '借方'
 }
 
+function mergeDirectionLabel(direction) {
+  if (direction === 'INFLOW') return '收款合并'
+  if (direction === 'OUTFLOW') return '付款合并'
+  return '同类流水合并'
+}
+
 function invoiceDirectionLabel(value) {
   const labels = {
     OUTPUT: '销项发票',
@@ -1521,6 +2106,7 @@ function sourceGroupTypeLabel(value) {
     HISTORICAL_REVIEW: '历史延续',
     BANK_ONLY: '单边补齐',
     INVOICE_ONLY: '单边补齐',
+    BIDIRECTIONAL_CURRENT_ACCOUNT: '双向往来未开票',
     ONE_INVOICE_MULTIPLE_BANK_TRANSACTIONS: '一张发票对应多笔银行流水',
     ONE_BANK_TRANSACTION_MULTIPLE_INVOICES: '一笔银行流水对应多张发票',
   }
@@ -1530,7 +2116,7 @@ function sourceGroupTypeLabel(value) {
 function sourceBalanceLabel(differenceAmount) {
   const amount = Number(differenceAmount || 0)
   if (Math.abs(amount) <= 0.01) return '流水与发票金额一致'
-  return amount > 0 ? '流水金额大于发票，需补齐暂收/预付项目' : '发票金额大于流水，需补齐应收/应付项目'
+  return amount > 0 ? '发票金额大于流水，需补齐应收/应付项目' : '流水金额大于发票，需补齐暂收/预付项目'
 }
 
 function bankTransactionAmount(transaction) {
@@ -1546,6 +2132,42 @@ function bankTransactionDirectionLabel(transaction) {
   if (credit > 0 && debit <= 0) return '收款/转入'
   if (debit > 0 && credit <= 0) return '付款/转出'
   return '银行流水'
+}
+
+function bankTransactionCounterpartyLabel(transaction) {
+  const rawRow = transaction?.raw_row_data || {}
+  const explicitCounterparty = firstNonBlank([
+    transaction?.counterparty_name,
+    rawRow.counterparty_name,
+    rawRow.counterparty,
+    rawRow['对方户名'],
+    rawRow['对方名称'],
+    rawRow['对手户名'],
+    rawRow['对手方名称'],
+    rawRow['收(付)方名称'],
+    rawRow['交易对手名称'],
+    rawRow['户名'],
+  ])
+  if (explicitCounterparty) return explicitCounterparty
+
+  const bankContext = [
+    transaction?.summary,
+    rawRow.remark,
+    rawRow['备注'],
+    rawRow['交易附言'],
+    rawRow['用途'],
+    rawRow['附言'],
+  ].join(' ')
+
+  if (/收费|手续费|短信服务费|账户服务费|账户管理费|对公资金划转/.test(bankContext)) return '银行收费'
+  if (/缴税|扣税|税款|税费|电子税务局|国库/.test(bankContext)) return '税务扣款'
+
+  return '对方户名缺失'
+}
+
+function firstNonBlank(values) {
+  const found = values.find((value) => String(value ?? '').trim())
+  return found === undefined ? '' : String(found).trim()
 }
 
 function matchStatusLabel(value) {
@@ -1579,6 +2201,33 @@ function filterRematchCandidates(candidates, keyword) {
   )
 }
 
+function sortLedgerRows(rows, field, order) {
+  const direction = order === 'desc' ? -1 : 1
+  return [...rows].sort((left, right) => {
+    const leftValue = String(left?.[field] ?? '')
+    const rightValue = String(right?.[field] ?? '')
+    return leftValue.localeCompare(rightValue, 'zh-CN', { numeric: true, sensitivity: 'base' }) * direction
+  })
+}
+
+function paginateRows(rows, page, pageSize) {
+  const safePageSize = Math.max(1, Number(pageSize) || 50)
+  const safePage = clampLedgerPage(page, rows.length, safePageSize)
+  const start = (safePage - 1) * safePageSize
+  return rows.slice(start, start + safePageSize)
+}
+
+function clampLedgerPage(page, totalCount, pageSize) {
+  const safePageSize = Math.max(1, Number(pageSize) || 50)
+  const maxPage = Math.max(1, Math.ceil(Number(totalCount || 0) / safePageSize))
+  const safePage = Math.max(1, Number(page) || 1)
+  return Math.min(safePage, maxPage)
+}
+
+function ledgerCountLabel(visibleCount, filteredCount, totalCount) {
+  return `当前显示 ${visibleCount} 条 / 筛选结果 ${filteredCount} 条 / 原始总数 ${totalCount} 条`
+}
+
 function rematchCandidateDirectionLabel(candidate) {
   return candidate?.direction_label || candidate?.detail?.direction_label || candidate?.detail?.invoice_direction || '-'
 }
@@ -1586,6 +2235,10 @@ function rematchCandidateDirectionLabel(candidate) {
 function rematchCandidateCounterpartyLabel(candidate) {
   const role = candidate?.counterparty_role ? `${candidate.counterparty_role}: ` : ''
   return `${role}${candidate?.counterparty || candidate?.detail?.counterparty_name || '-'}`
+}
+
+function sourceFocusDetail(pairs) {
+  return pairs.map(([label, value]) => `${label}：${value}`).join('\n')
 }
 
 function treatmentSubjectName(code) {
@@ -1819,9 +2472,151 @@ function formatAmount(value) {
   gap: 10px;
 }
 
+.voucher-actions .el-tag {
+  margin-left: 6px;
+}
+
+.merge-suggestion-panel {
+  display: grid;
+  gap: 14px;
+  max-height: 72vh;
+  overflow-y: auto;
+  padding-right: 4px;
+}
+
+.merge-suggestion-intro {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+  padding: 12px;
+  border: 1px solid var(--fw-line);
+  border-radius: var(--fw-radius-sm);
+  background: var(--fw-surface-muted);
+}
+
+.merge-suggestion-intro strong,
+.merge-suggestion-card h3 {
+  color: var(--fw-ink);
+}
+
+.merge-suggestion-intro p,
+.merge-suggestion-card p,
+.merge-suggestion-card footer span,
+.merge-suggestion-metrics small {
+  margin: 4px 0 0;
+  color: var(--fw-ink-muted);
+  font-size: 12px;
+}
+
+.merge-suggestion-list {
+  display: grid;
+  gap: 12px;
+}
+
+.merge-suggestion-card {
+  display: grid;
+  gap: 12px;
+  padding: 14px;
+  border: 1px solid var(--fw-line);
+  border-radius: var(--fw-radius-sm);
+  background: #fff;
+}
+
+.merge-suggestion-card header,
+.merge-suggestion-card footer {
+  display: flex;
+  align-items: flex-start;
+  justify-content: space-between;
+  gap: 16px;
+}
+
+.merge-suggestion-card h3 {
+  margin: 2px 0 0;
+  font-size: 16px;
+}
+
+.merge-suggestion-eyebrow {
+  color: var(--fw-brand);
+  font-size: 12px;
+  font-weight: 700;
+}
+
+.merge-suggestion-metrics {
+  display: grid;
+  justify-items: end;
+  min-width: 140px;
+}
+
+.merge-suggestion-metrics span {
+  color: var(--fw-ink-muted);
+  font-size: 12px;
+}
+
+.merge-suggestion-metrics strong {
+  color: var(--fw-ink);
+  font-size: 18px;
+}
+
+.merge-suggestion-entries {
+  display: grid;
+  grid-template-columns: 80px repeat(2, minmax(0, 1fr));
+  gap: 10px;
+  align-items: center;
+  padding: 10px 12px;
+  border-radius: var(--fw-radius-sm);
+  background: #f8fafc;
+  color: var(--fw-ink);
+  font-size: 12px;
+}
+
+.merge-suggestion-entries b {
+  font-size: 13px;
+}
+
+.merge-suggestion-source-table {
+  display: grid;
+  overflow-x: auto;
+  border: 1px solid var(--fw-line);
+  border-radius: var(--fw-radius-sm);
+}
+
+.merge-suggestion-source-row {
+  display: grid;
+  grid-template-columns: 96px minmax(180px, 1fr) minmax(140px, 0.8fr) 88px 130px 96px 120px;
+  gap: 10px;
+  align-items: center;
+  min-width: 960px;
+  padding: 9px 10px;
+  border-bottom: 1px solid var(--fw-line-soft);
+  font-size: 12px;
+}
+
+.merge-suggestion-source-row:last-child {
+  border-bottom: 0;
+}
+
+.merge-suggestion-source-row span {
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.merge-suggestion-source-row span:last-child {
+  text-align: right;
+  font-variant-numeric: tabular-nums;
+}
+
+.merge-suggestion-source-head {
+  background: var(--fw-surface-muted);
+  color: var(--fw-ink-muted);
+  font-weight: 700;
+}
+
 .voucher-layout {
   display: grid;
-  grid-template-columns: minmax(0, 1.15fr) minmax(360px, 0.85fr);
+  grid-template-columns: minmax(0, 1fr);
   gap: 16px;
   align-items: start;
 }
@@ -1869,17 +2664,52 @@ function formatAmount(value) {
 
 .ledger-toolbar {
   display: grid;
-  grid-template-columns: minmax(0, 1fr);
+  grid-template-columns: minmax(260px, 1fr) 150px 150px 160px 104px;
   gap: 10px;
   margin-bottom: 2px;
 }
 
 .invoice-ledger-toolbar {
-  grid-template-columns: minmax(140px, 180px) minmax(0, 1fr);
+  grid-template-columns: minmax(140px, 180px) minmax(260px, 1fr) 150px 150px;
 }
 
-.direction-filter {
+.direction-filter,
+.ledger-filter-select {
   width: 100%;
+}
+
+.compact-select {
+  min-width: 96px;
+}
+
+.ledger-pagination-bar {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+  padding-top: 8px;
+}
+
+.ledger-count-text {
+  color: var(--fw-ink-muted);
+  font-size: 12px;
+  white-space: nowrap;
+}
+
+:global(.voucher-detail-dialog.el-dialog) {
+  display: flex;
+  flex-direction: column;
+  max-height: 88vh;
+  max-width: 1320px;
+  margin-top: 5vh !important;
+}
+
+:global(.voucher-detail-dialog .el-dialog__body) {
+  flex: 1 1 auto;
+  min-height: 0;
+  max-height: none;
+  overflow: auto;
+  padding: 0;
 }
 
 .voucher-detail {
@@ -1891,21 +2721,47 @@ function formatAmount(value) {
   background: #f8fbff;
 }
 
+.voucher-detail-modal {
+  min-height: 72vh;
+  border: 0;
+  border-radius: 0;
+}
+
 .detail-header {
+  position: sticky;
+  top: 0;
+  z-index: 5;
   display: flex;
   align-items: flex-start;
   justify-content: space-between;
   gap: 12px;
-  margin-bottom: 14px;
+  margin: -18px -18px 14px;
+  padding: 14px 18px;
+  border-bottom: 1px solid #bfdbfe;
+  background: #f8fbff;
+}
+
+.detail-header-main {
+  display: flex;
+  align-items: flex-start;
+  gap: 12px;
+  min-width: 0;
+}
+
+.detail-header-main > div {
+  min-width: 0;
 }
 
 .detail-header h3 {
   margin: 4px 0 0;
+  overflow: hidden;
   font-size: 18px;
+  text-overflow: ellipsis;
+  white-space: nowrap;
 }
 
 .detail-header p {
-  margin: 6px 0 0;
+  margin: 4px 0 0;
   color: var(--fw-ink-muted);
   font-size: 12px;
   line-height: 1.5;
@@ -1916,15 +2772,44 @@ function formatAmount(value) {
   font-size: 12px;
 }
 
-.detail-metrics {
-  display: grid;
-  grid-template-columns: repeat(2, minmax(0, 1fr));
-  gap: 10px;
-  margin: 0 0 14px;
+.detail-header-actions {
+  display: flex;
+  flex: 0 0 auto;
+  flex-wrap: wrap;
+  justify-content: flex-end;
+  gap: 8px;
 }
 
-.detail-metrics div,
+.detail-header-actions span {
+  align-self: center;
+  color: var(--fw-ink-muted);
+  font-size: 12px;
+  font-weight: 700;
+}
+
+.detail-header-meta {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 6px;
+  margin-top: 7px;
+}
+
+.detail-header-meta span {
+  display: inline-flex;
+  align-items: center;
+  min-height: 22px;
+  padding: 2px 8px;
+  border: 1px solid #bfdbfe;
+  border-radius: 999px;
+  background: #eff6ff;
+  color: #1d4ed8;
+  font-size: 12px;
+  font-weight: 700;
+}
+
 .ai-reason,
+.entry-preview-table,
+.source-focus-panel,
 .source-section,
 .source-card,
 .validation-errors {
@@ -1934,20 +2819,102 @@ function formatAmount(value) {
   background: var(--fw-surface);
 }
 
-.detail-metrics dt {
-  color: var(--fw-text-muted);
-  font-size: 12px;
-}
-
-.detail-metrics dd {
-  margin: 4px 0 0;
-  font-weight: 700;
-}
-
 .ai-reason,
+.entry-preview-table,
+.source-focus-panel,
 .source-section,
 .validation-errors {
   margin-bottom: 14px;
+}
+
+.source-focus-panel {
+  border-color: #bfdbfe;
+  background: #f8fbff;
+}
+
+.source-focus-title {
+  display: flex;
+  justify-content: space-between;
+  gap: 12px;
+  margin-bottom: 8px;
+}
+
+.source-focus-title span {
+  color: var(--fw-ink-muted);
+  font-size: 12px;
+}
+
+.source-focus-list {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(220px, 1fr));
+  gap: 8px;
+}
+
+.source-focus-item {
+  display: grid;
+  gap: 3px;
+  min-width: 0;
+  padding: 8px 10px;
+  border: 1px solid transparent;
+  border-radius: var(--fw-radius-sm);
+  cursor: help;
+}
+
+.source-focus-item span,
+.source-focus-item strong,
+.source-focus-item small,
+.source-focus-item b {
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.source-focus-type {
+  color: var(--fw-ink-muted);
+  font-size: 12px;
+  font-weight: 700;
+}
+
+.source-focus-item strong {
+  color: var(--fw-ink);
+}
+
+.source-focus-item small {
+  color: var(--fw-ink-muted);
+  font-size: 12px;
+}
+
+.source-focus-item b {
+  color: var(--fw-ink);
+  text-align: right;
+}
+
+.source-focus-item-bank {
+  border-color: #bfdbfe;
+  background: #eff6ff;
+}
+
+.source-focus-item-invoice {
+  border-color: #bbf7d0;
+  background: #f0fdf4;
+}
+
+.source-focus-item-difference {
+  border-color: #fed7aa;
+  background: #fff7ed;
+}
+
+.entry-preview-title {
+  display: flex;
+  justify-content: space-between;
+  gap: 12px;
+  margin-bottom: 8px;
+}
+
+.entry-preview-title span {
+  color: var(--fw-text-muted);
+  font-size: 12px;
 }
 
 .source-title {
@@ -2014,6 +2981,10 @@ function formatAmount(value) {
   display: grid;
   grid-template-columns: repeat(2, minmax(0, 1fr));
   gap: 8px;
+}
+
+.voucher-detail-modal .source-summary-grid {
+  grid-template-columns: repeat(4, minmax(0, 1fr));
 }
 
 .source-summary-grid > div {
@@ -2211,27 +3182,6 @@ function formatAmount(value) {
   border-color: var(--el-color-danger-light-5);
 }
 
-.detail-actions {
-  position: sticky;
-  bottom: 0;
-  display: flex;
-  align-items: center;
-  justify-content: flex-end;
-  gap: 12px;
-  margin: 16px -18px -18px;
-  padding: 14px 18px;
-  border-top: 1px solid #bfdbfe;
-  border-radius: 0 0 var(--fw-radius) var(--fw-radius);
-  background: #eff6ff;
-}
-
-.detail-actions span {
-  margin-right: auto;
-  color: var(--fw-ink-muted);
-  font-size: 12px;
-  font-weight: 700;
-}
-
 .rematch-intro {
   display: grid;
   gap: 4px;
@@ -2387,12 +3337,46 @@ function formatAmount(value) {
     align-items: flex-start;
     display: grid;
   }
+
+  .ledger-toolbar {
+    grid-template-columns: repeat(2, minmax(0, 1fr));
+  }
+
+  .ledger-toolbar > :first-child {
+    grid-column: 1 / -1;
+  }
+
+  .ledger-pagination-bar {
+    align-items: flex-start;
+    flex-direction: column;
+  }
+
+  .detail-header {
+    display: grid;
+  }
+
+  .detail-header-actions {
+    justify-content: flex-start;
+  }
+
+  .voucher-detail-modal .source-summary-grid {
+    grid-template-columns: repeat(2, minmax(0, 1fr));
+  }
 }
 
 @media (max-width: 760px) {
   .voucher-header,
   .voucher-actions {
     display: grid;
+  }
+
+  .ledger-toolbar,
+  .invoice-ledger-toolbar {
+    grid-template-columns: 1fr;
+  }
+
+  .ledger-toolbar > :first-child {
+    grid-column: auto;
   }
 }
 </style>

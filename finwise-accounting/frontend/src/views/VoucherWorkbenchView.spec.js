@@ -10,6 +10,7 @@ import BankLedgerTable from '../components/source-ledgers/BankLedgerTable.vue'
 import InvoiceLedgerTable from '../components/source-ledgers/InvoiceLedgerTable.vue'
 import { api } from '../api/client'
 import { useWorkspaceStore } from '../stores/workspace'
+import { ElMessage } from 'element-plus'
 
 vi.mock('element-plus', () => ({
   ElMessage: {
@@ -35,11 +36,23 @@ vi.mock('../api/client', () => ({
       rematchCandidates: vi.fn(),
       rematch: vi.fn(),
       adjustTreatment: vi.fn(),
+      mergeSuggestions: vi.fn(),
+      applyMergeSuggestion: vi.fn(),
     },
     workspace: {
       snapshot: vi.fn(),
     },
   },
+}))
+
+const routerMocks = vi.hoisted(() => ({
+  route: { query: {} },
+  replace: vi.fn(() => Promise.resolve()),
+}))
+
+vi.mock('vue-router', () => ({
+  useRoute: () => routerMocks.route,
+  useRouter: () => ({ replace: routerMocks.replace }),
 }))
 
 const __dirname = dirname(fileURLToPath(import.meta.url))
@@ -51,7 +64,21 @@ describe('VoucherWorkbenchView', () => {
   beforeEach(() => {
     setActivePinia(createPinia())
     vi.clearAllMocks()
+    routerMocks.route.query = {}
+    routerMocks.replace.mockClear()
+    const localStorageEntries = new Map()
+    Object.defineProperty(window, 'localStorage', {
+      configurable: true,
+      value: {
+        getItem: vi.fn((key) => localStorageEntries.get(key) ?? null),
+        setItem: vi.fn((key, value) => localStorageEntries.set(key, String(value))),
+        removeItem: vi.fn((key) => localStorageEntries.delete(key)),
+        clear: vi.fn(() => localStorageEntries.clear()),
+      },
+    })
     api.vouchers.list.mockResolvedValue({ data: [] })
+    api.vouchers.mergeSuggestions.mockResolvedValue({ data: { suggestions: [] } })
+    api.vouchers.applyMergeSuggestion.mockResolvedValue({ data: voucherFixture('voucher-merged', '合并单边付款') })
     api.sourceLedgers.summary.mockResolvedValue({ data: {} })
     api.sourceLedgers.bank.mockResolvedValue({ data: [] })
     api.sourceLedgers.invoices.mockResolvedValue({ data: [] })
@@ -68,11 +95,24 @@ describe('VoucherWorkbenchView', () => {
   it('wires the voucher workbench page, API client, and route', () => {
     expect(viewSource).toContain('凭证生成工作台')
     expect(viewSource).toContain('AI 预处理')
+    expect(viewSource).toContain('AI 建议合并')
+    expect(viewSource).toContain('AI 建议合并凭证')
+    expect(viewSource).toContain('mergeSuggestionDialogVisible')
+    expect(viewSource).toContain('openMergeSuggestionDialog')
+    expect(viewSource).toContain('applyMergeSuggestion(suggestion)')
+    expect(viewSource).toContain('source_voucher_ids: suggestion.source_voucher_ids')
+    expect(viewSource).toContain("applied_by: 'operator'")
     expect(viewSource).toContain('当前操作主体')
     expect(viewSource).toContain('选择企业主体')
     expect(viewSource).toContain('选择工作期间')
     expect(viewSource).toContain('selectedEnterpriseId')
     expect(viewSource).toContain('selectedPeriodPackageId')
+    expect(viewSource).toContain('VOUCHER_CONTEXT_STORAGE_KEY')
+    expect(viewSource).toContain('restorePersistedContext')
+    expect(viewSource).toContain('persistSelectedPackageContext')
+    expect(viewSource).toContain('route.query.package_id')
+    expect(viewSource).toContain('router.replace')
+    expect(viewSource).toContain('window.localStorage.setItem')
     expect(viewSource).toContain('enterpriseOptions')
     expect(viewSource).toContain('periodOptions')
     expect(viewSource).not.toContain('选择月度工作包')
@@ -92,6 +132,10 @@ describe('VoucherWorkbenchView', () => {
     expect(viewSource).toContain('完全配对')
     expect(viewSource).toContain('差额补齐')
     expect(viewSource).toContain('单边补齐')
+    expect(viewSource).toContain('双向往来')
+    expect(viewSource).toContain('双向往来未开票')
+    expect(viewSource).toContain('BIDIRECTIONAL_CURRENT_ACCOUNT')
+    expect(viewSource).toContain('往来款暂挂')
     expect(viewSource).toContain('历史延续')
     expect(viewSource).toContain('api.sourceLedgers.summary')
     expect(viewSource).toContain('请按顺序核对 AI 推荐、异常提示和分录金额')
@@ -140,7 +184,24 @@ describe('VoucherWorkbenchView', () => {
     expect(viewSource).toContain('function invoiceDirectionLabel(value)')
     expect(viewSource).toContain("OUTPUT: '销项发票'")
     expect(viewSource).toContain('function matchMethodLabel(value)')
-    expect(viewSource).toContain('grid-template-columns: minmax(0, 1.15fr) minmax(360px, 0.85fr)')
+    expect(viewSource).toContain('voucherDetailDialogVisible')
+    expect(viewSource).toContain('voucher-detail-dialog')
+    expect(viewSource).toContain('voucher-detail-modal')
+    expect(viewSource).toContain('detail-header-actions')
+    expect(viewSource).toContain('detail-header-meta')
+    expect(viewSource).toContain('entry-preview-table')
+    expect(viewSource).toContain('source-focus-panel')
+    expect(viewSource).toContain('当前核对对象')
+    expect(viewSource).toContain('sourceFocusItems')
+    expect(viewSource).toContain('sourceFocusDetail')
+    expect(viewSource).toContain('grid-template-columns: minmax(0, 1fr)')
+    expect(viewSource).toContain('top: 0')
+    expect(viewSource).toContain('max-height: 88vh')
+    expect(viewSource).not.toContain('<dl class="detail-metrics">')
+    expect(viewSource.indexOf('source-focus-panel')).toBeLessThan(viewSource.indexOf('entry-preview-table'))
+    expect(viewSource.indexOf('entry-preview-table')).toBeLessThan(viewSource.indexOf('第 1 步：原始数据'))
+    expect(viewSource.indexOf('validation-errors')).toBeLessThan(viewSource.indexOf('第 1 步：原始数据'))
+    expect(viewSource.indexOf('entry-preview-table')).toBeLessThan(viewSource.indexOf('validation-errors'))
     expect(viewSource).toContain('size="large"')
     expect(viewSource).toContain('position: sticky')
     expect(viewSource).toContain('第 2 步：AI 推荐说明')
@@ -219,6 +280,8 @@ describe('VoucherWorkbenchView', () => {
     expect(viewSource).toContain('await workspace.loadWorkspace(packageId)')
     expect(viewSource).toContain('async function preprocessVouchers()')
     expect(viewSource).toContain('api.vouchers.preprocess')
+    expect(viewSource).toContain('api.vouchers.mergeSuggestions')
+    expect(viewSource).toContain('api.vouchers.applyMergeSuggestion')
     expect(viewSource).toContain('loadSourceLedgers(packageId, requestId)')
     expect(viewSource).toContain('Promise.allSettled')
     expect(viewSource).toContain('部分原始台账加载失败，已保留当前凭证列表')
@@ -248,6 +311,8 @@ describe('VoucherWorkbenchView', () => {
     expect(clientSource).toContain('/vouchers/${voucherId}/rematch-candidates')
     expect(clientSource).toContain('/vouchers/${voucherId}/rematch')
     expect(clientSource).toContain('/vouchers/${voucherId}/treatment-adjustment')
+    expect(clientSource).toContain('/monthly-packages/${packageId}/vouchers/merge-suggestions')
+    expect(clientSource).toContain('/monthly-packages/${packageId}/vouchers/merge-suggestions/apply')
     expect(routerSource).toContain('/vouchers')
     expect(routerSource).toContain('../views/VoucherWorkbenchView.vue')
   })
@@ -257,14 +322,140 @@ describe('VoucherWorkbenchView', () => {
     expect(viewSource).toContain('按发票台账整理')
     expect(viewSource).toContain('<BankLedgerTable')
     expect(viewSource).toContain('<InvoiceLedgerTable')
+    expect(viewSource).toContain('bankSourceStatusFilter')
+    expect(viewSource).toContain('bankVoucherStatusFilter')
+    expect(viewSource).toContain('invoiceSourceStatusFilter')
+    expect(viewSource).toContain('invoiceVoucherStatusFilter')
+    expect(viewSource).toContain('bankSortField')
+    expect(viewSource).toContain('bankSortOrder')
+    expect(viewSource).toContain('来源处理状态')
+    expect(viewSource).toContain('全部来源状态')
+    expect(viewSource).toContain('差额补齐')
+    expect(viewSource).toContain('单边处理')
+    expect(viewSource).toContain('凭证状态')
+    expect(viewSource).toContain('按日期排序')
+    expect(viewSource).toContain('按交易对方排序')
+    expect(viewSource).toContain('升序')
+    expect(viewSource).toContain('降序')
     expect(viewSource).toContain('@row-select="selectBankLedgerRow"')
     expect(viewSource).toContain('@row-select="selectInvoiceLedgerRow"')
     expect(viewSource).toContain('api.sourceLedgers.bank(packageId)')
     expect(viewSource).toContain('api.sourceLedgers.invoices(packageId)')
     expect(viewSource).toContain('sourceRowMatchesKeyword')
-    expect(viewSource).toContain('function firstLinkedVoucherId(row)')
+    expect(viewSource).toContain('sourceRowMatchesFilter')
+    expect(viewSource).toContain('sortLedgerRows')
+    expect(viewSource).toContain('pagedBankLedgerRows')
+    expect(viewSource).toContain('pagedInvoiceLedgerRows')
+    expect(viewSource).toContain('ledgerPageSize')
+    expect(viewSource).toContain('const ledgerPageSize = ref(20)')
+    expect(viewSource).toContain('<el-pagination')
+    expect(viewSource).toContain('当前显示')
+    expect(viewSource).toContain('筛选结果')
+    expect(viewSource).toContain('原始总数')
+    expect(viewSource).toContain('function preferredLinkedVoucherId(row)')
+    expect(viewSource).toContain('function sourceEntityCount(source, type)')
+    expect(viewSource).toContain('function linkedVoucherTaskPriority(taskType)')
     expect(viewSource).toContain('请先点击 AI 预处理')
+    expect(viewSource).not.toContain('全部匹配状态')
     expect(viewSource).not.toContain('待处理凭证列表')
+  })
+
+  it('filters and sorts bank ledger rows by source status, voucher status, company, and date/order controls', async () => {
+    api.sourceLedgers.bank.mockResolvedValue({
+      data: [
+        bankLedgerFixture({
+          id: 'bank-2',
+          transaction_date: '2026-04-02',
+          counterparty_name: '乙公司',
+          source_processing_status: 'SINGLE_SIDED',
+          source_processing_status_label: '单边处理',
+          voucher_status: 'PENDING_CONFIRMATION',
+        }),
+        bankLedgerFixture({
+          id: 'bank-1',
+          transaction_date: '2026-04-01',
+          counterparty_name: '甲公司',
+          source_processing_status: 'PAIRED',
+          source_processing_status_label: '已配对',
+          voucher_status: 'CONFIRMED',
+        }),
+        bankLedgerFixture({
+          id: 'bank-3',
+          transaction_date: '2026-04-03',
+          counterparty_name: '丙公司',
+          source_processing_status: 'SINGLE_SIDED',
+          source_processing_status_label: '单边处理',
+          voucher_status: 'PENDING_CONFIRMATION',
+        }),
+      ],
+    })
+    const wrapper = mountWorkbench()
+    await flushPromises()
+
+    wrapper.vm.bankSourceStatusFilter = 'SINGLE_SIDED'
+    wrapper.vm.bankVoucherStatusFilter = 'PENDING_CONFIRMATION'
+    wrapper.vm.bankSortField = 'transaction_date'
+    wrapper.vm.bankSortOrder = 'asc'
+    await wrapper.vm.$nextTick()
+    expect(wrapper.vm.filteredBankLedgerRows.map((row) => row.id)).toStrictEqual(['bank-2', 'bank-3'])
+
+    wrapper.vm.bankSortOrder = 'desc'
+    await wrapper.vm.$nextTick()
+    expect(wrapper.vm.filteredBankLedgerRows.map((row) => row.id)).toStrictEqual(['bank-3', 'bank-2'])
+
+    wrapper.vm.bankSortField = 'counterparty_name'
+    wrapper.vm.bankSortOrder = 'asc'
+    wrapper.vm.bankLedgerKeyword = '乙公司'
+    await wrapper.vm.$nextTick()
+    expect(wrapper.vm.filteredBankLedgerRows.map((row) => row.id)).toStrictEqual(['bank-2'])
+  })
+
+  it('paginates source ledgers and shows filtered result counts', async () => {
+    api.sourceLedgers.bank.mockResolvedValue({
+      data: Array.from({ length: 60 }, (_, index) =>
+        bankLedgerFixture({
+          id: `bank-${index + 1}`,
+          transaction_date: `2026-04-${String((index % 28) + 1).padStart(2, '0')}`,
+          counterparty_name: index === 55 ? '目标客户' : `客户${index + 1}`,
+        }),
+      ),
+    })
+    const wrapper = mountWorkbench()
+    await flushPromises()
+
+    expect(wrapper.vm.pagedBankLedgerRows).toHaveLength(20)
+    expect(wrapper.text()).toContain('当前显示 20 条 / 筛选结果 60 条 / 原始总数 60 条')
+
+    wrapper.vm.bankLedgerPage = 2
+    wrapper.vm.bankLedgerKeyword = '目标客户'
+    await wrapper.vm.$nextTick()
+
+    expect(wrapper.vm.bankLedgerPage).toBe(1)
+    expect(wrapper.vm.pagedBankLedgerRows.map((row) => row.id)).toStrictEqual(['bank-56'])
+    expect(wrapper.text()).toContain('当前显示 1 条 / 筛选结果 1 条 / 原始总数 60 条')
+  })
+
+  it('restores the selected enterprise and period after a browser refresh', async () => {
+    window.localStorage.setItem(
+      'finwise:voucher-workbench:context',
+      JSON.stringify({ package_id: 'package-2', enterprise_id: 'enterprise-1', period: '2026-05' }),
+    )
+
+    const wrapper = mountWorkbench()
+    await flushPromises()
+
+    const workspace = useWorkspaceStore()
+    expect(workspace.selectedPackageId).toBe('package-2')
+    expect(wrapper.vm.selectedEnterpriseId).toBe('enterprise-1')
+    expect(wrapper.vm.selectedPeriodPackageId).toBe('package-2')
+    expect(api.vouchers.list).toHaveBeenCalledWith('package-2')
+    expect(routerMocks.replace).toHaveBeenCalledWith({
+      query: {
+        package_id: 'package-2',
+        enterprise_id: 'enterprise-1',
+        period: '2026-05',
+      },
+    })
   })
 
   it('clicks AI preprocessing through the voucher preprocess API', async () => {
@@ -284,6 +475,40 @@ describe('VoucherWorkbenchView', () => {
     expect(api.vouchers.preprocess).toHaveBeenCalledWith('package-1')
     expect(api.workspace.snapshot).toHaveBeenCalledWith('package-1')
     expect(wrapper.text()).toContain('Kimi AI 预处理已完成')
+  })
+
+  it('loads and applies AI merge suggestions with explicit source voucher ids', async () => {
+    const suggestion = mergeSuggestionFixture()
+    delete suggestion.source_count
+    api.vouchers.mergeSuggestions.mockResolvedValue({ data: { suggestions: [suggestion] } })
+    api.vouchers.applyMergeSuggestion.mockResolvedValue({
+      data: voucherFixture('voucher-merged', '合并同对方单边付款'),
+    })
+    const wrapper = mountWorkbench()
+    await flushPromises()
+
+    await mergeSuggestionButton(wrapper).trigger('click')
+    await flushPromises()
+
+    expect(api.vouchers.mergeSuggestions).toHaveBeenCalledWith('package-1')
+    expect(wrapper.text()).toContain('昆山合并供应商有限公司')
+    expect(wrapper.text()).toContain('2026-04-07')
+    expect(wrapper.text()).toContain('付款/转出')
+    expect(wrapper.text()).toContain('1123 / 1002')
+    expect(wrapper.text()).toContain('应用合并')
+
+    await applyMergeSuggestionButton(wrapper).trigger('click')
+    await flushPromises()
+
+    expect(api.vouchers.applyMergeSuggestion).toHaveBeenCalledWith('package-1', {
+      source_voucher_ids: ['voucher-a', 'voucher-b', 'voucher-c'],
+      applied_by: 'operator',
+    })
+    expect(api.workspace.snapshot).toHaveBeenCalledWith('package-1')
+    expect(api.vouchers.list).toHaveBeenCalledWith('package-1')
+    expect(ElMessage.success).toHaveBeenCalledWith('已合并 3 条流水为一张待确认凭证')
+    expect(wrapper.vm.selectedVoucherId).toBe('voucher-merged')
+    expect(wrapper.vm.voucherDetailDialogVisible).toBe(true)
   })
 
   it('keeps the current preprocess loading state when a stale request finishes', async () => {
@@ -330,6 +555,9 @@ describe('VoucherWorkbenchView', () => {
     await flushPromises()
 
     expect(wrapper.text()).toContain('来源汇总')
+    expect(wrapper.text()).toContain('当前核对对象')
+    expect(wrapper.text()).toContain('1 笔流水 + 2 张发票')
+    expect(wrapper.text()).toContain('上海安费诺永亿通讯电子有限公司')
     expect(wrapper.text()).toContain('银行流水合计')
     expect(wrapper.text()).toContain('1 笔 / 200.00')
     expect(wrapper.text()).toContain('发票合计')
@@ -340,6 +568,46 @@ describe('VoucherWorkbenchView', () => {
     expect(wrapper.findAll('.source-line-bank')).toHaveLength(1)
     expect(wrapper.findAll('.source-line-invoice')).toHaveLength(2)
     expect(wrapper.findAll('.source-line-difference')).toHaveLength(1)
+    expect(wrapper.findAll('.source-focus-item-bank')).toHaveLength(1)
+    expect(wrapper.findAll('.source-focus-item-invoice')).toHaveLength(2)
+    expect(wrapper.findAll('.source-focus-item-difference')).toHaveLength(1)
+  })
+
+  it('labels positive difference amount as invoice amount greater than bank amount', async () => {
+    api.vouchers.list.mockResolvedValue({ data: [positiveDifferenceVoucherFixture()] })
+
+    const wrapper = mountWorkbench()
+    await flushPromises()
+
+    expect(wrapper.text()).toContain('发票金额大于流水，需补齐应收/应付项目')
+    expect(wrapper.text()).not.toContain('流水金额大于发票，需补齐暂收/预付项目')
+  })
+
+  it('labels bank fee source focus instead of pretending the summary is a counterparty', async () => {
+    api.vouchers.list.mockResolvedValue({ data: [voucherFixture('voucher-bank-only', '记录银行付款待补发票')] })
+
+    const wrapper = mountWorkbench()
+    await flushPromises()
+
+    const bankFocus = wrapper.find('.source-focus-item-bank')
+    expect(bankFocus.exists()).toBe(true)
+    expect(bankFocus.find('strong').text()).toBe('银行收费')
+    expect(bankFocus.attributes('title')).toContain('交易对方：银行收费')
+    expect(bankFocus.attributes('title')).toContain('流水摘要：收费')
+  })
+
+  it('keeps ordinary bank transfers with missing counterparty visibly unresolved', async () => {
+    const voucher = voucherFixture('voucher-missing-counterparty', '记录银行付款待补发票')
+    voucher.source_data.bank_transaction.summary = '电子转账'
+    voucher.source_data.bank_transaction.raw_row_data = { 对方户名: '', 备注: '' }
+    api.vouchers.list.mockResolvedValue({ data: [voucher] })
+
+    const wrapper = mountWorkbench()
+    await flushPromises()
+
+    const bankFocus = wrapper.find('.source-focus-item-bank')
+    expect(bankFocus.find('strong').text()).toBe('对方户名缺失')
+    expect(bankFocus.attributes('title')).toContain('交易对方：对方户名缺失')
   })
 
   it('selects a linked voucher from embedded bank and invoice ledger rows', async () => {
@@ -362,15 +630,75 @@ describe('VoucherWorkbenchView', () => {
       linked_vouchers: [{ id: 'voucher-bank', status: 'PENDING_CONFIRMATION' }],
     })
     await flushPromises()
+    expect(wrapper.vm.voucherDetailDialogVisible).toBe(true)
     expect(wrapper.text()).toContain('银行流水凭证')
 
     await wrapper.find('.voucher-filter button:last-child').trigger('click')
     await flushPromises()
+    wrapper.vm.voucherDetailDialogVisible = false
     await wrapper.findComponent(InvoiceLedgerTable).vm.$emit('row-select', {
       linked_vouchers: [{ id: 'voucher-invoice', status: 'PENDING_CONFIRMATION' }],
     })
     await flushPromises()
+    expect(wrapper.vm.voucherDetailDialogVisible).toBe(true)
     expect(wrapper.text()).toContain('发票台账凭证')
+  })
+
+  it('opens the aggregate linked voucher when a ledger row has multiple voucher links', async () => {
+    const singleVoucher = {
+      ...voucherFixture('voucher-single', '确认销售收入并收款'),
+      source_data: {
+        bank_transaction: {
+          id: 'bank-1',
+          transaction_date: '2026-04-20',
+          summary: '电子汇入',
+          counterparty_name: '上海安费诺永亿通讯电子有限公司',
+          credit_amount: '200.00',
+          debit_amount: '0.00',
+        },
+        invoice: {
+          id: 'invoice-single',
+          invoice_direction: 'OUTPUT',
+          invoice_date: '2026-04-20',
+          invoice_number: 'INV-SINGLE',
+          buyer_name: '上海安费诺永亿通讯电子有限公司',
+          seller_name: '昆山黛珂特电子科技有限公司',
+          total_amount: '80.00',
+        },
+      },
+    }
+    api.vouchers.list.mockResolvedValue({
+      data: [singleVoucher, multiSourceVoucherFixture()],
+    })
+    api.sourceLedgers.bank.mockResolvedValue({
+      data: [
+        bankLedgerFixture({
+          id: 'bank-1',
+          linked_invoice_count: 2,
+          linked_vouchers: [
+            { id: 'voucher-single', status: 'CONFIRMED', task_type: 'UNKNOWN' },
+            { id: 'voucher-multi', status: 'PENDING_CONFIRMATION', task_type: 'DIFFERENCE_COMPLETION' },
+          ],
+        }),
+      ],
+    })
+
+    const wrapper = mountWorkbench()
+    await flushPromises()
+
+    await wrapper.findComponent(BankLedgerTable).vm.$emit('row-select', {
+      linked_invoice_count: 2,
+      linked_vouchers: [
+        { id: 'voucher-single', status: 'CONFIRMED', task_type: 'UNKNOWN' },
+        { id: 'voucher-multi', status: 'PENDING_CONFIRMATION', task_type: 'DIFFERENCE_COMPLETION' },
+      ],
+    })
+    await flushPromises()
+
+    expect(wrapper.vm.voucherDetailDialogVisible).toBe(true)
+    expect(wrapper.text()).toContain('确认多张销售发票并补齐收款差额')
+    expect(wrapper.text()).toContain('1 笔流水 + 2 张发票')
+    expect(wrapper.findAll('.source-line-invoice')).toHaveLength(2)
   })
 })
 
@@ -397,10 +725,18 @@ function elementStubs() {
       template: '<button type="button" :disabled="disabled" :data-loading="String(Boolean(loading))" @click="$emit(`click`)"><slot /></button>',
     },
     ElCheckbox: { template: '<input type="checkbox" />' },
-    ElDialog: { template: '<section><slot /><slot name="footer" /></section>' },
+    ElDialog: {
+      props: ['modelValue', 'title'],
+      template: '<section class="dialog-stub" :data-open="String(Boolean(modelValue))"><h2 v-if="title">{{ title }}</h2><slot /><slot name="footer" /></section>',
+    },
     ElEmpty: { props: ['description'], template: '<p>{{ description }}</p>' },
     ElInput: { template: '<input />' },
     ElOption: true,
+    ElPagination: {
+      props: ['currentPage', 'pageSize', 'total'],
+      emits: ['update:currentPage', 'update:pageSize'],
+      template: '<nav><button type="button" @click="$emit(`update:currentPage`, currentPage + 1)">下一页</button><slot /></nav>',
+    },
     ElPopover: { template: '<span><slot name="reference" /><slot /></span>' },
     ElSegmented: {
       props: ['modelValue', 'options'],
@@ -436,8 +772,40 @@ function voucherFixture(id = 'voucher-1', summary = '收到客户货款') {
       { direction: 'CREDIT', account_code: '1122', account_name: '应收账款', amount: '1130.00' },
     ],
     source_data: {
-      bank_transaction: { id: 'bank-1', transaction_date: '2026-04-08', summary: '收款', credit_amount: '1130.00' },
+      bank_transaction: {
+        id: 'bank-1',
+        transaction_date: '2026-04-08',
+        summary: '收费',
+        debit_amount: '32.00',
+        credit_amount: '0.00',
+        raw_row_data: {
+          对方户名: '',
+          备注: '收费项目:对公人民币转账、汇款（含退汇）-对公资金划转跨行同城',
+        },
+      },
     },
+  }
+}
+
+function bankLedgerFixture(overrides = {}) {
+  return {
+    id: 'bank-row',
+    transaction_date: '2026-04-08',
+    summary: '电子汇入',
+    direction_label: '收款/转入',
+    counterparty_name: '客户A',
+    credit_amount: '1130.00',
+    debit_amount: '0',
+    balance: '1130.00',
+    matching_status: 'MATCHED',
+    matching_status_label: '已匹配',
+    source_processing_status: 'PAIRED',
+    source_processing_status_label: '已配对',
+    voucher_status: 'PENDING_CONFIRMATION',
+    voucher_status_label: '待确认',
+    linked_invoice_count: 1,
+    linked_vouchers: [],
+    ...overrides,
   }
 }
 
@@ -491,6 +859,37 @@ function multiSourceVoucherFixture() {
   }
 }
 
+function positiveDifferenceVoucherFixture() {
+  const voucher = multiSourceVoucherFixture()
+  return {
+    ...voucher,
+    entries: [
+      { direction: 'DEBIT', account_code: '1002', account_name: '银行存款', amount: '150.00' },
+      { direction: 'DEBIT', account_code: '1122', account_name: '应收账款', amount: '50.00' },
+      { direction: 'CREDIT', account_code: '5001', account_name: '主营业务收入', amount: '176.99' },
+      { direction: 'CREDIT', account_code: '22210102', account_name: '销项税额', amount: '23.01' },
+    ],
+    source_data: {
+      ...voucher.source_data,
+      bank_transaction: {
+        ...voucher.source_data.bank_transaction,
+        credit_amount: '150.00',
+      },
+      invoices: [
+        {
+          ...voucher.source_data.invoices[0],
+          total_amount: '100.00',
+        },
+        {
+          ...voucher.source_data.invoices[1],
+          total_amount: '100.00',
+        },
+      ],
+      difference_amount: '50.00',
+    },
+  }
+}
+
 function preprocessAudit() {
   return {
     model: 'kimi-k2',
@@ -500,8 +899,73 @@ function preprocessAudit() {
   }
 }
 
+function mergeSuggestionFixture() {
+  return {
+    suggestion_id: 'merge-suggestion-test',
+    counterparty_name: '昆山合并供应商有限公司',
+    direction: 'OUTFLOW',
+    direction_label: '付款合并',
+    source_count: 3,
+    total_amount: '600.00',
+    confidence: 88,
+    recommended_summary: '合并记录同对方付款待补发票',
+    recommended_debit_account_code: '1123',
+    recommended_debit_account_name: '预付账款',
+    recommended_credit_account_code: '1002',
+    recommended_credit_account_name: '银行存款',
+    source_voucher_ids: ['voucher-a', 'voucher-b', 'voucher-c'],
+    reason: '同对方、同付款方向、同会计处理，适合合并为一张凭证。',
+    sources: [
+      {
+        voucher_id: 'voucher-a',
+        transaction_date: '2026-04-07',
+        counterparty_name: '昆山合并供应商有限公司',
+        direction: 'OUTFLOW',
+        direction_label: '付款/转出',
+        debit_account_code: '1123',
+        credit_account_code: '1002',
+        voucher_number: '未编号',
+        summary: '电子转账',
+        amount: '100.00',
+      },
+      {
+        voucher_id: 'voucher-b',
+        transaction_date: '2026-04-08',
+        counterparty_name: '昆山合并供应商有限公司',
+        direction: 'OUTFLOW',
+        direction_label: '付款/转出',
+        debit_account_code: '1123',
+        credit_account_code: '1002',
+        voucher_number: '未编号',
+        summary: '电子转账',
+        amount: '200.00',
+      },
+      {
+        voucher_id: 'voucher-c',
+        transaction_date: '2026-04-09',
+        counterparty_name: '昆山合并供应商有限公司',
+        direction: 'OUTFLOW',
+        direction_label: '付款/转出',
+        debit_account_code: '1123',
+        credit_account_code: '1002',
+        voucher_number: '未编号',
+        summary: '电子转账',
+        amount: '300.00',
+      },
+    ],
+  }
+}
+
 function aiButton(wrapper) {
   return wrapper.findAll('button').find((button) => button.text() === 'AI 预处理')
+}
+
+function mergeSuggestionButton(wrapper) {
+  return wrapper.findAll('button').find((button) => button.text().includes('AI 建议合并'))
+}
+
+function applyMergeSuggestionButton(wrapper) {
+  return wrapper.findAll('button').find((button) => button.text().includes('应用合并'))
 }
 
 function deferred() {

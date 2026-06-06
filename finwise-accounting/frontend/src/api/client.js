@@ -50,9 +50,11 @@ export const api = {
     confirmUnmatched: (packageId, payload) => apiClient.post(`/monthly-packages/${packageId}/confirm-unmatched`, payload),
   },
   vouchers: {
-    list: (packageId) => apiClient.get(`/monthly-packages/${packageId}/vouchers`),
+    list: (packageId, params = {}) => apiClient.get(`/monthly-packages/${packageId}/vouchers`, { params }),
     generate: (packageId) => apiClient.post(`/monthly-packages/${packageId}/vouchers/generate`),
     preprocess: (packageId) => apiClient.post(`/monthly-packages/${packageId}/vouchers/preprocess`, undefined, { timeout: AI_REQUEST_TIMEOUT_MS }),
+    mergeSuggestions: (packageId) => apiClient.get(`/monthly-packages/${packageId}/vouchers/merge-suggestions`),
+    applyMergeSuggestion: (packageId, payload) => apiClient.post(`/monthly-packages/${packageId}/vouchers/merge-suggestions/apply`, payload),
     confirm: (voucherId, payload) => apiClient.post(`/vouchers/${voucherId}/confirm`, payload),
     reject: (voucherId, payload) => apiClient.post(`/vouchers/${voucherId}/reject`, payload),
     reopen: (voucherId, payload) => apiClient.post(`/vouchers/${voucherId}/reopen`, payload),
@@ -64,6 +66,14 @@ export const api = {
     bank: (packageId) => apiClient.get(`/monthly-packages/${packageId}/bank-ledger`),
     invoices: (packageId) => apiClient.get(`/monthly-packages/${packageId}/invoice-ledger`),
     summary: (packageId) => apiClient.get(`/monthly-packages/${packageId}/voucher-ledger-summary`),
+  },
+  ledgers: {
+    summary: (packageId) => apiClient.get(`/monthly-packages/${packageId}/ledgers/summary`),
+    accounts: (packageId) => apiClient.get(`/monthly-packages/${packageId}/ledgers/accounts`),
+    journal: (packageId) => apiClient.get(`/monthly-packages/${packageId}/ledgers/journal`),
+    general: (packageId) => apiClient.get(`/monthly-packages/${packageId}/ledgers/general`),
+    detail: (packageId, accountCode) => apiClient.get(`/monthly-packages/${packageId}/ledgers/detail`, { params: { account_code: accountCode } }),
+    trialBalance: (packageId) => apiClient.get(`/monthly-packages/${packageId}/ledgers/trial-balance`),
   },
   statements: {
     generate: (packageId) => apiClient.post(`/monthly-packages/${packageId}/statements/generate`),

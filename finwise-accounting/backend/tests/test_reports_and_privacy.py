@@ -1,6 +1,9 @@
+import json
+from concurrent.futures import ThreadPoolExecutor
 from datetime import date
 from decimal import Decimal
 from pathlib import Path
+from types import SimpleNamespace
 from uuid import UUID
 
 from fastapi.testclient import TestClient
@@ -12,6 +15,7 @@ from app.models import Enterprise, InitialFinancialSnapshot, MonthlyStatement, M
 from app.reports.health_diagnosis import build_health_diagnosis
 from app.reports.monthly_brief import render_monthly_brief_html
 from app.services.report_service import build_health_report_ai_payload, desensitize_ai_payload, generate_health_report
+from finreport.main import generate_finhealth_report
 
 
 ORG = UUID("00000000-0000-0000-0000-000000000001")
@@ -443,6 +447,54 @@ def test_generate_health_report_creates_template_based_pdf(db_session, tmp_path)
     assert "总结展望" in text
 
 
+def test_generate_health_report_passes_configured_kimi_key_to_formal_pdf(db_session, tmp_path, monkeypatch):
+    _enterprise, package = make_package(db_session)
+    db_session.add(
+        MonthlyStatement(
+            organization_id=ORG,
+            monthly_work_package_id=package.id,
+            estimated_balance_sheet={
+                "total_assets": "908486.12",
+                "total_liabilities": "952699.44",
+                "cash": "614277.56",
+            },
+            estimated_income_statement={
+                "revenue": "251415.93",
+                "cost": "226274.34",
+                "operating_profit": "14754.33",
+            },
+        )
+    )
+    db_session.add(
+        TaxFilingDraft(
+            organization_id=ORG,
+            monthly_work_package_id=package.id,
+            data={"vat_payable": "0.00"},
+            status="DRAFT",
+        )
+    )
+    db_session.commit()
+    seen = {}
+
+    def fake_generate_finhealth_report(financial_data, output_dir, kimi_api_key=None):
+        seen["kimi_api_key"] = kimi_api_key
+        pdf_path = Path(output_dir) / "formal-report.pdf"
+        pdf_path.write_bytes(b"%PDF-1.4\n%%EOF\n")
+        return str(pdf_path)
+
+    monkeypatch.setattr("app.services.report_service._generate_ai_health_report", lambda **_: None)
+    monkeypatch.setattr("app.services.report_service.generate_finhealth_report", fake_generate_finhealth_report)
+    monkeypatch.setattr(
+        "app.services.report_service.get_settings",
+        lambda: SimpleNamespace(upload_dir=tmp_path, moonshot_api_key="configured-kimi-key"),
+    )
+
+    report = generate_health_report(db_session, monthly_work_package_id=package.id)
+
+    assert report.status == "READY"
+    assert seen["kimi_api_key"] == "configured-kimi-key"
+
+
 def test_health_report_ai_payload_follows_sample_report_sections():
     payload = build_health_report_ai_payload(
         enterprise={"name": "苏州样例科技有限公司", "industry": "制造业", "unified_social_credit_code": "91320500REPORT000001"},
@@ -540,3 +592,15 @@ def test_report_pdf_endpoint_serves_generated_health_report(db_session, tmp_path
     assert response.status_code == 200
     assert response.headers["content-type"] == "application/pdf"
     assert enterprise.name.encode("utf-8") not in response.content
+
+
+def test_finhealth_pdf_pipeline_runs_in_worker_thread(tmp_path, monkeypatch):
+    monkeypatch.delenv("MOONSHOT_API_KEY", raising=False)
+    sample_path = Path("finreport/tests/sample_input.json")
+    data = json.loads(sample_path.read_text(encoding="utf-8"))
+
+    with ThreadPoolExecutor(max_workers=1) as executor:
+        pdf_path = Path(executor.submit(generate_finhealth_report, data, str(tmp_path)).result(timeout=60))
+
+    assert pdf_path.exists()
+    assert len(PdfReader(str(pdf_path)).pages) == 20

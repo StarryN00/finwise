@@ -57,6 +57,16 @@ const routes = [
     component: () => import('../views/VoucherWorkbenchView.vue'),
   },
   {
+    path: '/voucher-management',
+    name: 'voucher-management',
+    component: () => import('../views/VoucherManagementView.vue'),
+  },
+  {
+    path: '/ledgers',
+    name: 'ledgers',
+    component: () => import('../views/LedgerView.vue'),
+  },
+  {
     path: '/output-center',
     name: 'output-center',
     component: () => import('../views/OutputCenterView.vue'),

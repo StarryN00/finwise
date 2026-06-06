@@ -39,4 +39,11 @@ describe('MonthlyWorkspaceView', () => {
     expect(source).toContain('generateVatDraft')
     expect(source).toContain('generateHealthReport')
   })
+
+  it('does not mark report and filing steps complete before account details are confirmed', () => {
+    expect(source).toContain('const hasFinalTaxDraft = hasConfirmed && hasTaxDraft')
+    expect(source).toContain('done: hasFinalTaxDraft')
+    expect(source).toContain('草稿待确认后复核')
+    expect(source).toContain('待账目确认后导出')
+  })
 })

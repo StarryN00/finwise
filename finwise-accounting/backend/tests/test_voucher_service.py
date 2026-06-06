@@ -2,6 +2,8 @@ from datetime import date
 from decimal import Decimal
 from uuid import UUID
 
+from sqlalchemy import select
+
 from app.models import (
     AccountSubject,
     BankTransaction,
@@ -14,11 +16,18 @@ from app.models import (
     VoucherRule,
 )
 from app.services.voucher_service import (
+    apply_voucher_merge_suggestion,
+    confirm_voucher,
     ensure_enterprise_subjects,
     generate_voucher_drafts,
+    list_bank_ledger,
+    list_invoice_ledger,
     list_package_vouchers,
+    list_voucher_merge_suggestions,
+    reject_voucher,
     update_single_source_voucher_treatment,
     validate_voucher,
+    VoucherValidationError,
 )
 
 
@@ -56,6 +65,17 @@ def voucher_entries_by_line(voucher):
         (entry.line_no, entry.direction, entry.account_code, entry.amount)
         for entry in voucher.entries
     ]
+
+
+def voucher_source_ids(voucher):
+    source_data = voucher.source_data or {}
+    bank_ids = set(source_data.get("bank_transaction_ids") or [])
+    invoice_ids = set(source_data.get("invoice_ids") or [])
+    if source_data.get("bank_transaction_id"):
+        bank_ids.add(source_data["bank_transaction_id"])
+    if source_data.get("invoice_id"):
+        invoice_ids.add(source_data["invoice_id"])
+    return bank_ids, invoice_ids
 
 
 def add_confirmed_match(
@@ -282,6 +302,36 @@ def test_generate_voucher_drafts_for_difference_completion_match(db_session):
     ]
 
 
+def test_generate_voucher_drafts_for_output_invoice_over_collection_difference(db_session):
+    package = make_package(db_session)
+    add_confirmed_match(
+        db_session,
+        package,
+        invoice_direction="OUTPUT",
+        invoice_number="OUT-DIFF-OVER-001",
+        invoice_amount=Decimal("1000.00"),
+        tax_amount=Decimal("130.00"),
+        total_amount=Decimal("1130.00"),
+        debit_amount=Decimal("0.00"),
+        credit_amount=Decimal("1200.00"),
+        summary="收到客户超额货款",
+    )
+
+    result = generate_voucher_drafts(db_session, monthly_work_package_id=package.id)
+
+    assert result["created_vouchers"] == 1
+    voucher = result["vouchers"][0]
+    assert voucher.source_data["source_group_type"] == "DIFFERENCE_COMPLETION"
+    assert voucher.source_data["difference_amount"] == "-70.00"
+    assert voucher.validation_errors == []
+    assert voucher_entries_by_line(voucher) == [
+        (1, "DEBIT", "1002", Decimal("1200.00")),
+        (2, "CREDIT", "5001", Decimal("1000.00")),
+        (3, "CREDIT", "22210102", Decimal("130.00")),
+        (4, "CREDIT", "2203", Decimal("70.00")),
+    ]
+
+
 def test_generate_voucher_drafts_omits_zero_tax_line_for_output_invoice(db_session):
     package = make_package(db_session)
     add_confirmed_match(
@@ -335,6 +385,36 @@ def test_generate_voucher_drafts_for_matched_input_invoice_payment(db_session):
         (1, "DEBIT", "560203", Decimal("200.00")),
         (2, "DEBIT", "22210101", Decimal("12.00")),
         (3, "CREDIT", "1002", Decimal("212.00")),
+    ]
+
+
+def test_generate_voucher_drafts_for_input_invoice_over_payment_difference(db_session):
+    package = make_package(db_session)
+    add_confirmed_match(
+        db_session,
+        package,
+        invoice_direction="INPUT",
+        invoice_number="IN-DIFF-OVER-001",
+        invoice_amount=Decimal("200.00"),
+        tax_amount=Decimal("12.00"),
+        total_amount=Decimal("212.00"),
+        debit_amount=Decimal("250.00"),
+        credit_amount=Decimal("0.00"),
+        summary="支付供应商超额货款",
+    )
+
+    result = generate_voucher_drafts(db_session, monthly_work_package_id=package.id)
+
+    assert result["created_vouchers"] == 1
+    voucher = result["vouchers"][0]
+    assert voucher.source_data["source_group_type"] == "DIFFERENCE_COMPLETION"
+    assert voucher.source_data["difference_amount"] == "-38.00"
+    assert voucher.validation_errors == []
+    assert voucher_entries_by_line(voucher) == [
+        (1, "DEBIT", "560203", Decimal("200.00")),
+        (2, "DEBIT", "22210101", Decimal("12.00")),
+        (3, "DEBIT", "1123", Decimal("38.00")),
+        (4, "CREDIT", "1002", Decimal("250.00")),
     ]
 
 
@@ -481,6 +561,333 @@ def test_generate_voucher_drafts_covers_unmatched_invoices_and_bank_transactions
 
     second_result = generate_voucher_drafts(db_session, monthly_work_package_id=package.id)
     assert second_result["created_vouchers"] == 0
+
+
+def test_generate_voucher_drafts_does_not_reuse_sources_across_active_vouchers(db_session):
+    package = make_package(db_session)
+    add_confirmed_match(
+        db_session,
+        package,
+        invoice_direction="OUTPUT",
+        invoice_number="OUT-UNIQUE-001",
+        invoice_amount=Decimal("1000.00"),
+        tax_amount=Decimal("130.00"),
+        total_amount=Decimal("1130.00"),
+        debit_amount=Decimal("0.00"),
+        credit_amount=Decimal("1130.00"),
+        summary="收到唯一性测试客户货款",
+    )
+    db_session.add(
+        Invoice(
+            organization_id=ORG,
+            monthly_work_package_id=package.id,
+            invoice_direction="INPUT",
+            invoice_number="IN-UNIQUE-ONLY-001",
+            invoice_date=date(2026, 5, 16),
+            amount=Decimal("300.00"),
+            tax_amount=Decimal("18.00"),
+            total_amount=Decimal("318.00"),
+        )
+    )
+    db_session.add(
+        BankTransaction(
+            organization_id=ORG,
+            monthly_work_package_id=package.id,
+            transaction_date=date(2026, 5, 17),
+            summary="支付唯一性测试押金",
+            debit_amount=Decimal("500.00"),
+            credit_amount=Decimal("0.00"),
+        )
+    )
+    db_session.commit()
+
+    result = generate_voucher_drafts(db_session, monthly_work_package_id=package.id)
+
+    assert result["created_vouchers"] == 3
+    used_bank_ids = set()
+    used_invoice_ids = set()
+    for voucher in result["vouchers"]:
+        bank_ids, invoice_ids = voucher_source_ids(voucher)
+        assert used_bank_ids.isdisjoint(bank_ids)
+        assert used_invoice_ids.isdisjoint(invoice_ids)
+        used_bank_ids.update(bank_ids)
+        used_invoice_ids.update(invoice_ids)
+
+
+def test_generate_voucher_drafts_skips_match_when_source_is_already_confirmed_single_voucher(db_session):
+    package = make_package(db_session)
+    transaction = BankTransaction(
+        organization_id=ORG,
+        monthly_work_package_id=package.id,
+        transaction_date=date(2026, 5, 12),
+        summary="已确认单边收款",
+        debit_amount=Decimal("0.00"),
+        credit_amount=Decimal("1130.00"),
+        counterparty_name="测试客户",
+    )
+    invoice = Invoice(
+        organization_id=ORG,
+        monthly_work_package_id=package.id,
+        invoice_direction="OUTPUT",
+        invoice_number="OUT-CONFIRMED-SINGLE-001",
+        invoice_date=date(2026, 5, 10),
+        amount=Decimal("1000.00"),
+        tax_amount=Decimal("130.00"),
+        total_amount=Decimal("1130.00"),
+        buyer_name="测试客户",
+    )
+    db_session.add_all([transaction, invoice])
+    db_session.flush()
+    confirmed_single = make_manual_voucher(
+        db_session,
+        package,
+        voucher_date=transaction.transaction_date,
+        lines=[
+            ("DEBIT", "1002", Decimal("1130.00")),
+            ("CREDIT", "2203", Decimal("1130.00")),
+        ],
+    )
+    confirmed_single.source_key = f"bank:{transaction.id}"
+    confirmed_single.source_data = {
+        "source_group_type": "BANK_ONLY",
+        "voucher_task_type": "SINGLE_SOURCE",
+        "bank_transaction_id": str(transaction.id),
+    }
+    confirmed_single.status = "CONFIRMED"
+    confirmed_single.voucher_number = "记-9001"
+    db_session.add(
+        MatchRecord(
+            organization_id=ORG,
+            monthly_work_package_id=package.id,
+            bank_transaction_id=transaction.id,
+            invoice_id=invoice.id,
+            match_method="AI_PREPROCESS",
+            confidence=90,
+            explanation="后续 AI 发现匹配",
+            confirmation_status="AUTO_CONFIRMED",
+        )
+    )
+    db_session.commit()
+
+    result = generate_voucher_drafts(db_session, monthly_work_package_id=package.id)
+
+    assert result["created_vouchers"] == 0
+    active_vouchers = db_session.scalars(
+        select(Voucher).where(
+            Voucher.monthly_work_package_id == package.id,
+            Voucher.status != "REJECTED",
+        )
+    ).all()
+    assert len(active_vouchers) == 1
+    assert active_vouchers[0].id == confirmed_single.id
+
+
+def test_generate_voucher_drafts_retires_pending_single_sources_before_creating_match_voucher(db_session):
+    package = make_package(db_session)
+    transaction = BankTransaction(
+        organization_id=ORG,
+        monthly_work_package_id=package.id,
+        transaction_date=date(2026, 5, 12),
+        summary="待确认单边收款",
+        debit_amount=Decimal("0.00"),
+        credit_amount=Decimal("1130.00"),
+        counterparty_name="测试客户",
+    )
+    invoice = Invoice(
+        organization_id=ORG,
+        monthly_work_package_id=package.id,
+        invoice_direction="OUTPUT",
+        invoice_number="OUT-PENDING-SINGLE-001",
+        invoice_date=date(2026, 5, 10),
+        amount=Decimal("1000.00"),
+        tax_amount=Decimal("130.00"),
+        total_amount=Decimal("1130.00"),
+        buyer_name="测试客户",
+    )
+    db_session.add_all([transaction, invoice])
+    db_session.flush()
+    pending_single = make_manual_voucher(
+        db_session,
+        package,
+        voucher_date=transaction.transaction_date,
+        lines=[
+            ("DEBIT", "1002", Decimal("1130.00")),
+            ("CREDIT", "2203", Decimal("1130.00")),
+        ],
+    )
+    pending_single.source_key = f"bank:{transaction.id}"
+    pending_single.source_data = {
+        "source_group_type": "BANK_ONLY",
+        "voucher_task_type": "SINGLE_SOURCE",
+        "bank_transaction_id": str(transaction.id),
+    }
+    db_session.add(
+        MatchRecord(
+            organization_id=ORG,
+            monthly_work_package_id=package.id,
+            bank_transaction_id=transaction.id,
+            invoice_id=invoice.id,
+            match_method="AI_PREPROCESS",
+            confidence=90,
+            explanation="后续 AI 发现匹配",
+            confirmation_status="AUTO_CONFIRMED",
+        )
+    )
+    db_session.commit()
+
+    result = generate_voucher_drafts(db_session, monthly_work_package_id=package.id)
+    db_session.refresh(pending_single)
+
+    assert result["created_vouchers"] == 1
+    assert pending_single.status == "REJECTED"
+    assert "SOURCE_REASSIGNED" in pending_single.validation_errors
+    assert result["vouchers"][0].source_data["source_group_type"] == "FULL_MATCH"
+    assert voucher_entries_by_line(result["vouchers"][0]) == [
+        (1, "DEBIT", "1002", Decimal("1130.00")),
+        (2, "CREDIT", "5001", Decimal("1000.00")),
+        (3, "CREDIT", "22210102", Decimal("130.00")),
+    ]
+
+
+def test_generate_voucher_drafts_skips_composite_match_when_bank_source_is_already_confirmed(db_session):
+    package = make_package(db_session)
+    transaction = BankTransaction(
+        organization_id=ORG,
+        monthly_work_package_id=package.id,
+        transaction_date=date(2026, 5, 12),
+        summary="已确认单边收款",
+        debit_amount=Decimal("0.00"),
+        credit_amount=Decimal("1130.00"),
+        counterparty_name="测试客户",
+    )
+    first_invoice = Invoice(
+        organization_id=ORG,
+        monthly_work_package_id=package.id,
+        invoice_direction="OUTPUT",
+        invoice_number="OUT-COMPOSITE-CONFIRMED-001",
+        invoice_date=date(2026, 5, 10),
+        amount=Decimal("500.00"),
+        tax_amount=Decimal("65.00"),
+        total_amount=Decimal("565.00"),
+        buyer_name="测试客户",
+    )
+    second_invoice = Invoice(
+        organization_id=ORG,
+        monthly_work_package_id=package.id,
+        invoice_direction="OUTPUT",
+        invoice_number="OUT-COMPOSITE-CONFIRMED-002",
+        invoice_date=date(2026, 5, 11),
+        amount=Decimal("500.00"),
+        tax_amount=Decimal("65.00"),
+        total_amount=Decimal("565.00"),
+        buyer_name="测试客户",
+    )
+    db_session.add_all([transaction, first_invoice, second_invoice])
+    db_session.flush()
+    confirmed_single = make_manual_voucher(
+        db_session,
+        package,
+        voucher_date=transaction.transaction_date,
+        lines=[
+            ("DEBIT", "1002", Decimal("1130.00")),
+            ("CREDIT", "2203", Decimal("1130.00")),
+        ],
+    )
+    confirmed_single.source_key = f"bank:{transaction.id}"
+    confirmed_single.source_data = {
+        "source_group_type": "BANK_ONLY",
+        "voucher_task_type": "SINGLE_SOURCE",
+        "bank_transaction_id": str(transaction.id),
+    }
+    confirmed_single.status = "CONFIRMED"
+    confirmed_single.voucher_number = "记-9002"
+    for invoice in (first_invoice, second_invoice):
+        db_session.add(
+            MatchRecord(
+                organization_id=ORG,
+                monthly_work_package_id=package.id,
+                bank_transaction_id=transaction.id,
+                invoice_id=invoice.id,
+                match_method="AI_PREPROCESS",
+                confidence=90,
+                explanation="后续 AI 发现组合匹配",
+                confirmation_status="AUTO_CONFIRMED",
+            )
+        )
+    db_session.commit()
+
+    result = generate_voucher_drafts(db_session, monthly_work_package_id=package.id)
+
+    assert result["created_vouchers"] == 0
+    active_vouchers = db_session.scalars(
+        select(Voucher).where(
+            Voucher.monthly_work_package_id == package.id,
+            Voucher.status != "REJECTED",
+        )
+    ).all()
+    assert len(active_vouchers) == 1
+    assert active_vouchers[0].id == confirmed_single.id
+
+
+def test_confirm_voucher_rejects_source_already_confirmed_by_another_voucher(db_session):
+    package = make_package(db_session)
+    transaction = BankTransaction(
+        organization_id=ORG,
+        monthly_work_package_id=package.id,
+        transaction_date=date(2026, 5, 12),
+        summary="重复确认测试收款",
+        debit_amount=Decimal("0.00"),
+        credit_amount=Decimal("1130.00"),
+        counterparty_name="测试客户",
+    )
+    db_session.add(transaction)
+    db_session.flush()
+    first_voucher = make_manual_voucher(
+        db_session,
+        package,
+        voucher_date=transaction.transaction_date,
+        lines=[
+            ("DEBIT", "1002", Decimal("1130.00")),
+            ("CREDIT", "2203", Decimal("1130.00")),
+        ],
+    )
+    first_voucher.source_key = f"bank:{transaction.id}:first"
+    first_voucher.source_data = {
+        "source_group_type": "BANK_ONLY",
+        "voucher_task_type": "SINGLE_SOURCE",
+        "bank_transaction_id": str(transaction.id),
+    }
+    second_voucher = make_manual_voucher(
+        db_session,
+        package,
+        voucher_date=transaction.transaction_date,
+        lines=[
+            ("DEBIT", "1002", Decimal("1130.00")),
+            ("CREDIT", "2203", Decimal("1130.00")),
+        ],
+    )
+    second_voucher.source_key = f"bank:{transaction.id}:second"
+    second_voucher.source_data = {
+        "source_group_type": "BANK_ONLY",
+        "voucher_task_type": "SINGLE_SOURCE",
+        "bank_transaction_id": str(transaction.id),
+    }
+    db_session.commit()
+
+    confirm_voucher(db_session, voucher_id=first_voucher.id, confirmed_by="tester")
+
+    try:
+        confirm_voucher(db_session, voucher_id=second_voucher.id, confirmed_by="tester")
+    except VoucherValidationError as exc:
+        assert "SOURCE_ALREADY_CONFIRMED" in str(exc)
+    else:
+        raise AssertionError("Expected duplicate source confirmation to be rejected.")
+
+    db_session.refresh(second_voucher)
+    assert second_voucher.status == "PENDING_CONFIRMATION"
+    assert second_voucher.voucher_number is None
+    assert second_voucher.confirmed_by is None
+    assert second_voucher.confirmed_at is None
 
 
 def test_generate_voucher_drafts_refreshes_existing_pending_single_bank_voucher_defaults(db_session):
@@ -936,3 +1343,248 @@ def test_adjusting_single_source_treatment_records_voucher_rule(db_session):
     assert rule.summary_template == "记录银行收款待补发票"
     assert rule.debit_account_code == "1002"
     assert rule.credit_account_code == "2203"
+
+
+def test_rejecting_matched_voucher_retires_source_match(db_session):
+    package = make_package(db_session)
+    add_confirmed_match(
+        db_session,
+        package,
+        invoice_direction="INPUT",
+        invoice_number="IN-REJECT-001",
+        invoice_amount=Decimal("100.00"),
+        tax_amount=Decimal("13.00"),
+        total_amount=Decimal("113.00"),
+        debit_amount=Decimal("113.00"),
+        credit_amount=Decimal("0.00"),
+        summary="支付供应商货款",
+    )
+    match = db_session.scalars(select(MatchRecord).where(MatchRecord.monthly_work_package_id == package.id)).one()
+    result = generate_voucher_drafts(db_session, monthly_work_package_id=package.id)
+    voucher = result["vouchers"][0]
+
+    reject_voucher(db_session, voucher_id=voucher.id, reason="测试驳回错误匹配")
+    db_session.refresh(match)
+
+    assert match.confirmation_status == "REJECTED"
+    bank_row = list_bank_ledger(db_session, monthly_work_package_id=package.id)[0]
+    invoice_row = list_invoice_ledger(db_session, monthly_work_package_id=package.id)[0]
+    assert bank_row["source_processing_status"] == "UNPROCESSED"
+    assert bank_row["voucher_status"] == "UNPROCESSED"
+    assert bank_row["linked_invoice_count"] == 0
+    assert invoice_row["source_processing_status"] == "UNPROCESSED"
+    assert invoice_row["voucher_status"] == "UNPROCESSED"
+    assert invoice_row["linked_bank_count"] == 0
+
+
+def test_generate_voucher_drafts_repairs_operator_rejected_match_history(db_session):
+    package = make_package(db_session)
+    add_confirmed_match(
+        db_session,
+        package,
+        invoice_direction="INPUT",
+        invoice_number="IN-LEGACY-REJECT-001",
+        invoice_amount=Decimal("100.00"),
+        tax_amount=Decimal("13.00"),
+        total_amount=Decimal("113.00"),
+        debit_amount=Decimal("113.00"),
+        credit_amount=Decimal("0.00"),
+        summary="支付供应商货款",
+    )
+    match = db_session.scalars(select(MatchRecord).where(MatchRecord.monthly_work_package_id == package.id)).one()
+    result = generate_voucher_drafts(db_session, monthly_work_package_id=package.id)
+    rejected_voucher = result["vouchers"][0]
+    rejected_voucher.status = "REJECTED"
+    rejected_voucher.validation_errors = ["OPERATOR_REJECTED"]
+    db_session.commit()
+
+    repaired = generate_voucher_drafts(db_session, monthly_work_package_id=package.id)
+    db_session.refresh(match)
+
+    assert match.confirmation_status == "REJECTED"
+    assert repaired["created_vouchers"] == 2
+    summaries = {voucher.summary for voucher in repaired["vouchers"]}
+    assert summaries == {"确认费用未付款", "记录银行付款待补发票"}
+    bank_row = list_bank_ledger(db_session, monthly_work_package_id=package.id)[0]
+    invoice_row = list_invoice_ledger(db_session, monthly_work_package_id=package.id)[0]
+    assert bank_row["source_processing_status"] == "SINGLE_SIDED"
+    assert bank_row["voucher_status"] == "PENDING_CONFIRMATION"
+    assert bank_row["linked_invoice_count"] == 0
+    assert invoice_row["source_processing_status"] == "SINGLE_SIDED"
+    assert invoice_row["voucher_status"] == "PENDING_CONFIRMATION"
+    assert invoice_row["linked_bank_count"] == 0
+
+
+def test_list_voucher_merge_suggestions_groups_pending_single_bank_vouchers(db_session):
+    package = make_package(db_session)
+    for index, amount in enumerate((Decimal("100.00"), Decimal("200.00"), Decimal("300.00")), start=1):
+        db_session.add(
+            BankTransaction(
+                organization_id=ORG,
+                monthly_work_package_id=package.id,
+                transaction_date=date(2026, 5, index),
+                summary="电子转账",
+                debit_amount=amount,
+                credit_amount=Decimal("0.00"),
+                counterparty_name="苏州同一往来有限公司",
+            )
+        )
+    db_session.commit()
+    generate_voucher_drafts(db_session, monthly_work_package_id=package.id)
+
+    response = list_voucher_merge_suggestions(db_session, monthly_work_package_id=package.id)
+
+    assert len(response["suggestions"]) == 1
+    suggestion = response["suggestions"][0]
+    assert suggestion["counterparty_name"] == "苏州同一往来有限公司"
+    assert suggestion["direction"] == "OUTFLOW"
+    assert suggestion["total_amount"] == Decimal("600.00")
+    assert suggestion["recommended_debit_account_code"] == "1123"
+    assert suggestion["recommended_credit_account_code"] == "1002"
+    assert len(suggestion["source_voucher_ids"]) == 3
+    assert [source["amount"] for source in suggestion["sources"]] == [
+        Decimal("100.00"),
+        Decimal("200.00"),
+        Decimal("300.00"),
+    ]
+
+
+def test_list_voucher_merge_suggestions_excludes_source_already_confirmed_elsewhere(db_session):
+    package = make_package(db_session)
+    for index, amount in enumerate((Decimal("100.00"), Decimal("200.00")), start=1):
+        db_session.add(
+            BankTransaction(
+                organization_id=ORG,
+                monthly_work_package_id=package.id,
+                transaction_date=date(2026, 5, index),
+                summary="电子转账",
+                debit_amount=amount,
+                credit_amount=Decimal("0.00"),
+                counterparty_name="苏州同一往来有限公司",
+            )
+        )
+    db_session.commit()
+    generate_voucher_drafts(db_session, monthly_work_package_id=package.id)
+    pending_voucher = db_session.scalars(
+        select(Voucher).where(Voucher.monthly_work_package_id == package.id).order_by(Voucher.voucher_date)
+    ).first()
+    bank_transaction_id = pending_voucher.source_data["bank_transaction_id"]
+    confirmed_duplicate = Voucher(
+        organization_id=ORG,
+        monthly_work_package_id=package.id,
+        voucher_date=pending_voucher.voucher_date,
+        voucher_number="记-9004",
+        summary="已确认单边付款",
+        source_key=f"bank:{bank_transaction_id}:confirmed",
+        source_data={
+            "source_group_type": "BANK_ONLY",
+            "voucher_task_type": "SINGLE_SOURCE",
+            "bank_transaction_id": bank_transaction_id,
+        },
+        ai_confidence=45,
+        ai_reason="用户已确认该笔付款按单边处理",
+        status="CONFIRMED",
+        confirmed_by="operator",
+    )
+    confirmed_duplicate.entries = [
+        VoucherEntry(
+            organization_id=ORG,
+            line_no=1,
+            direction="DEBIT",
+            account_code="1123",
+            account_name="预付账款",
+            amount=Decimal("100.00"),
+            source_type="BANK_TRANSACTION",
+            source_id=bank_transaction_id,
+        ),
+        VoucherEntry(
+            organization_id=ORG,
+            line_no=2,
+            direction="CREDIT",
+            account_code="1002",
+            account_name="银行存款",
+            amount=Decimal("100.00"),
+            source_type="BANK_TRANSACTION",
+            source_id=bank_transaction_id,
+        ),
+    ]
+    db_session.add(confirmed_duplicate)
+    db_session.commit()
+
+    response = list_voucher_merge_suggestions(db_session, monthly_work_package_id=package.id)
+
+    assert response["suggestions"] == []
+
+
+def test_apply_voucher_merge_suggestion_creates_merged_voucher_and_retires_sources(db_session):
+    package = make_package(db_session)
+    for index, amount in enumerate((Decimal("100.00"), Decimal("200.00"), Decimal("300.00")), start=1):
+        db_session.add(
+            BankTransaction(
+                organization_id=ORG,
+                monthly_work_package_id=package.id,
+                transaction_date=date(2026, 5, index),
+                summary="电子转账",
+                debit_amount=amount,
+                credit_amount=Decimal("0.00"),
+                counterparty_name="苏州同一往来有限公司",
+            )
+        )
+    db_session.commit()
+    generate_voucher_drafts(db_session, monthly_work_package_id=package.id)
+    suggestion = list_voucher_merge_suggestions(db_session, monthly_work_package_id=package.id)["suggestions"][0]
+
+    merged = apply_voucher_merge_suggestion(
+        db_session,
+        monthly_work_package_id=package.id,
+        source_voucher_ids=suggestion["source_voucher_ids"],
+        applied_by="tester",
+    )
+
+    assert merged.status == "PENDING_CONFIRMATION"
+    assert merged.summary == "合并记录苏州同一往来有限公司银行付款待确认"
+    assert merged.source_data["source_group_type"] == "AI_SUGGESTED_BANK_MERGE"
+    assert len(merged.source_data["bank_transaction_ids"]) == 3
+    assert voucher_entries_by_line(merged) == [
+        (1, "DEBIT", "1123", Decimal("600.00")),
+        (2, "CREDIT", "1002", Decimal("600.00")),
+    ]
+    source_vouchers = db_session.scalars(
+        select(Voucher).where(Voucher.id.in_(suggestion["source_voucher_ids"])).order_by(Voucher.voucher_date)
+    ).all()
+    assert {voucher.status for voucher in source_vouchers} == {"REJECTED"}
+    assert all("MERGED_BY_OPERATOR" in voucher.validation_errors for voucher in source_vouchers)
+    assert all(voucher.source_data["merged_into_voucher_id"] == str(merged.id) for voucher in source_vouchers)
+
+
+def test_apply_voucher_merge_suggestion_rejects_confirmed_source_voucher(db_session):
+    package = make_package(db_session)
+    for index, amount in enumerate((Decimal("100.00"), Decimal("200.00")), start=1):
+        db_session.add(
+            BankTransaction(
+                organization_id=ORG,
+                monthly_work_package_id=package.id,
+                transaction_date=date(2026, 5, index),
+                summary="电子转账",
+                debit_amount=amount,
+                credit_amount=Decimal("0.00"),
+                counterparty_name="苏州同一往来有限公司",
+            )
+        )
+    db_session.commit()
+    generate_voucher_drafts(db_session, monthly_work_package_id=package.id)
+    suggestion = list_voucher_merge_suggestions(db_session, monthly_work_package_id=package.id)["suggestions"][0]
+    first_voucher = db_session.get(Voucher, suggestion["source_voucher_ids"][0])
+    first_voucher.status = "CONFIRMED"
+    db_session.commit()
+
+    try:
+        apply_voucher_merge_suggestion(
+            db_session,
+            monthly_work_package_id=package.id,
+            source_voucher_ids=suggestion["source_voucher_ids"],
+        )
+    except Exception as exc:
+        assert "eligible" in str(exc) or "pending" in str(exc)
+    else:
+        raise AssertionError("Expected confirmed source voucher to be rejected from merge.")

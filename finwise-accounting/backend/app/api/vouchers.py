@@ -2,7 +2,7 @@ from __future__ import annotations
 
 from uuid import UUID
 
-from fastapi import APIRouter, Depends, HTTPException, status
+from fastapi import APIRouter, Depends, HTTPException, Query, status
 from sqlalchemy.orm import Session
 
 from app.api.deps import get_db
@@ -13,6 +13,8 @@ from app.schemas.voucher import (
     VoucherConfirmRequest,
     VoucherGenerateResponse,
     VoucherLedgerSummaryRead,
+    VoucherMergeApplyRequest,
+    VoucherMergeSuggestionsResponse,
     VoucherPreprocessResponse,
     VoucherRead,
     VoucherRejectRequest,
@@ -24,6 +26,7 @@ from app.schemas.voucher import (
 from app.services.voucher_service import (
     VoucherDomainError,
     VoucherValidationError,
+    apply_voucher_merge_suggestion,
     confirm_voucher,
     ensure_enterprise_subjects,
     generate_voucher_drafts,
@@ -33,6 +36,7 @@ from app.services.voucher_service import (
     list_voucher_rematch_candidates,
     list_enterprise_subjects,
     list_package_vouchers,
+    list_voucher_merge_suggestions,
     rematch_voucher,
     reject_voucher,
     reopen_voucher,
@@ -95,9 +99,19 @@ def preprocess_vouchers_endpoint(package_id: UUID, db: Session = Depends(get_db)
 
 
 @router.get("/api/monthly-packages/{package_id}/vouchers", response_model=list[VoucherRead])
-def list_vouchers_endpoint(package_id: UUID, db: Session = Depends(get_db)):
+def list_vouchers_endpoint(
+    package_id: UUID,
+    voucher_status: str | None = Query(default=None, alias="status"),
+    keyword: str | None = None,
+    db: Session = Depends(get_db),
+):
     try:
-        return list_package_vouchers(db, monthly_work_package_id=package_id)
+        return list_package_vouchers(
+            db,
+            monthly_work_package_id=package_id,
+            status=voucher_status,
+            keyword=keyword,
+        )
     except VoucherDomainError as exc:
         raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail=str(exc)) from exc
 
@@ -122,6 +136,36 @@ def list_invoice_ledger_endpoint(package_id: UUID, db: Session = Depends(get_db)
 def voucher_ledger_summary_endpoint(package_id: UUID, db: Session = Depends(get_db)):
     try:
         return get_voucher_ledger_summary(db, monthly_work_package_id=package_id)
+    except VoucherDomainError as exc:
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail=str(exc)) from exc
+
+
+@router.get(
+    "/api/monthly-packages/{package_id}/vouchers/merge-suggestions",
+    response_model=VoucherMergeSuggestionsResponse,
+)
+def voucher_merge_suggestions_endpoint(package_id: UUID, db: Session = Depends(get_db)):
+    try:
+        return list_voucher_merge_suggestions(db, monthly_work_package_id=package_id)
+    except VoucherDomainError as exc:
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail=str(exc)) from exc
+
+
+@router.post("/api/monthly-packages/{package_id}/vouchers/merge-suggestions/apply", response_model=VoucherRead)
+def apply_voucher_merge_suggestion_endpoint(
+    package_id: UUID,
+    payload: VoucherMergeApplyRequest,
+    db: Session = Depends(get_db),
+):
+    try:
+        return apply_voucher_merge_suggestion(
+            db,
+            monthly_work_package_id=package_id,
+            source_voucher_ids=payload.source_voucher_ids,
+            applied_by=payload.applied_by,
+        )
+    except VoucherValidationError as exc:
+        raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail=str(exc)) from exc
     except VoucherDomainError as exc:
         raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail=str(exc)) from exc
 

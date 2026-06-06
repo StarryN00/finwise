@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import hashlib
+import json
 from calendar import monthrange
 from datetime import date, datetime
 from decimal import Decimal
@@ -102,6 +103,8 @@ def generate_voucher_drafts(db: Session, *, monthly_work_package_id: UUID) -> di
     subjects = ensure_enterprise_subjects(db, enterprise_id=enterprise.id)
     account_names = {subject.code: subject.name for subject in subjects}
     _refresh_existing_pending_single_bank_vouchers(db, package=package, account_names=account_names)
+    _retire_matches_for_operator_rejected_vouchers(db, package=package)
+    db.flush()
 
     created: list[Voucher] = []
     existing_source_keys = set(
@@ -160,22 +163,373 @@ def generate_voucher_drafts(db: Session, *, monthly_work_package_id: UUID) -> di
     return {"created_vouchers": len(created), "vouchers": created}
 
 
-def list_package_vouchers(db: Session, *, monthly_work_package_id: UUID) -> list[Voucher]:
+def list_package_vouchers(
+    db: Session,
+    *,
+    monthly_work_package_id: UUID,
+    status: str | None = None,
+    keyword: str | None = None,
+) -> list[Voucher]:
     organization_id = get_current_organization_id()
     package = db.get(MonthlyWorkPackage, monthly_work_package_id)
     if package is None or package.organization_id != organization_id:
         raise VoucherDomainError("Monthly work package not found in current organization.")
 
+    conditions = [
+        Voucher.organization_id == organization_id,
+        Voucher.monthly_work_package_id == monthly_work_package_id,
+    ]
+    if status:
+        conditions.append(Voucher.status == status)
+
+    vouchers = db.scalars(
+        select(Voucher)
+        .options(selectinload(Voucher.entries))
+        .where(*conditions)
+        .order_by(Voucher.voucher_date, Voucher.voucher_number, Voucher.created_at, Voucher.id)
+    ).all()
+    search_text = (keyword or "").strip()
+    if search_text:
+        vouchers = [voucher for voucher in vouchers if _voucher_matches_keyword(voucher, search_text)]
+    return [_enrich_voucher_source_data(db, voucher) for voucher in vouchers]
+
+
+def list_voucher_merge_suggestions(db: Session, *, monthly_work_package_id: UUID) -> dict:
+    package = _get_package_for_operation(db, monthly_work_package_id=monthly_work_package_id)
+    return {"suggestions": _build_voucher_merge_suggestions(db, package=package)}
+
+
+def apply_voucher_merge_suggestion(
+    db: Session,
+    *,
+    monthly_work_package_id: UUID,
+    source_voucher_ids: list[UUID],
+    applied_by: str = "operator",
+) -> Voucher:
+    package = _get_package_for_operation(db, monthly_work_package_id=monthly_work_package_id)
+    normalized_source_ids = _source_uuid_list(source_voucher_ids)
+    if len(normalized_source_ids) < 2:
+        raise VoucherValidationError("At least two source vouchers are required for merge.")
+
+    suggestions = _build_voucher_merge_suggestions(db, package=package)
+    source_id_set = {str(source_id) for source_id in normalized_source_ids}
+    suggestion = next(
+        (
+            item
+            for item in suggestions
+            if {str(source_id) for source_id in item["source_voucher_ids"]} == source_id_set
+        ),
+        None,
+    )
+    if suggestion is None:
+        raise VoucherValidationError("Selected vouchers are no longer eligible for AI merge suggestion.")
+
     vouchers = db.scalars(
         select(Voucher)
         .options(selectinload(Voucher.entries))
         .where(
-            Voucher.organization_id == organization_id,
-            Voucher.monthly_work_package_id == monthly_work_package_id,
+            Voucher.organization_id == package.organization_id,
+            Voucher.monthly_work_package_id == package.id,
+            Voucher.id.in_(normalized_source_ids),
+        )
+        .order_by(Voucher.voucher_date, Voucher.created_at)
+    ).all()
+    if len(vouchers) != len(normalized_source_ids):
+        raise VoucherValidationError("Some source vouchers are not found in current package.")
+    for voucher in vouchers:
+        if voucher.status != "PENDING_CONFIRMATION" or voucher.voucher_number:
+            raise VoucherValidationError("Only pending and unnumbered vouchers can be merged.")
+
+    subjects = ensure_enterprise_subjects(db, enterprise_id=package.enterprise_id)
+    account_names = {subject.code: subject.name for subject in subjects}
+    source_key = _voucher_merge_source_key(normalized_source_ids)
+    existing = db.scalar(
+        select(Voucher).where(
+            Voucher.organization_id == package.organization_id,
+            Voucher.monthly_work_package_id == package.id,
+            Voucher.source_key == source_key,
+            Voucher.status != "REJECTED",
+        )
+    )
+    if existing is not None:
+        raise VoucherValidationError("A merged voucher for these source vouchers already exists.")
+
+    line_totals: dict[tuple[str, str], Decimal] = {}
+    for voucher in vouchers:
+        for entry in voucher.entries:
+            key = (entry.direction, entry.account_code)
+            line_totals[key] = _money(line_totals.get(key, Decimal("0.00")) + _money(entry.amount))
+    lines = [
+        (direction, account_code, amount)
+        for (direction, account_code), amount in sorted(
+            line_totals.items(),
+            key=lambda item: (0 if item[0][0] == "DEBIT" else 1, item[0][1]),
+        )
+        if amount != Decimal("0.00")
+    ]
+
+    bank_transaction_ids = _source_uuid_list(suggestion["bank_transaction_ids"])
+    transactions = [
+        _get_package_source(db, BankTransaction, transaction_id, package.organization_id, package.id)
+        for transaction_id in bank_transaction_ids
+    ]
+    transactions = [transaction for transaction in transactions if transaction is not None]
+    voucher_date = max(
+        (transaction.transaction_date for transaction in transactions),
+        default=max(voucher.voucher_date for voucher in vouchers),
+    )
+    merged_source_data = {
+        "source_group_id": source_key,
+        "source_group_type": "AI_SUGGESTED_BANK_MERGE",
+        "voucher_task_type": "AI_SUGGESTED_MERGE",
+        "merge_granularity": suggestion["merge_granularity"],
+        "difference_amount": "0.00",
+        "source_voucher_ids": [str(voucher.id) for voucher in vouchers],
+        "bank_transaction_ids": [str(transaction.id) for transaction in transactions],
+        "bank_transactions": [_bank_transaction_source_data(transaction) for transaction in transactions],
+        "accounting_treatment": {
+            "treatment_type": "AI建议合并",
+            "summary": suggestion["recommended_summary"],
+            "debit_account_code": suggestion["recommended_debit_account_code"],
+            "debit_account_name": suggestion["recommended_debit_account_name"],
+            "credit_account_code": suggestion["recommended_credit_account_code"],
+            "credit_account_name": suggestion["recommended_credit_account_name"],
+            "counterparty_name": suggestion["counterparty_name"],
+            "note": suggestion["reason"],
+        },
+        "ai_merge_suggestion": {
+            "suggestion_id": suggestion["suggestion_id"],
+            "counterparty_name": suggestion["counterparty_name"],
+            "direction": suggestion["direction"],
+            "total_amount": _money_text(suggestion["total_amount"]),
+            "confidence": suggestion["confidence"],
+            "reason": suggestion["reason"],
+            "requires_manual_confirmation": True,
+        },
+    }
+
+    merged_voucher = _build_voucher(
+        package=package,
+        voucher_date=voucher_date,
+        summary=suggestion["recommended_summary"],
+        source_type="BANK_TRANSACTION_GROUP",
+        source_id=source_key,
+        source_key=source_key,
+        source_data=merged_source_data,
+        ai_confidence=suggestion["confidence"],
+        ai_reason=suggestion["reason"],
+        account_names=account_names,
+        lines=lines,
+    )
+    db.add(merged_voucher)
+    db.flush()
+
+    before_data = []
+    merged_at = datetime.utcnow().isoformat()
+    for voucher in vouchers:
+        before_data.append(
+            {
+                "id": str(voucher.id),
+                "status": voucher.status,
+                "voucher_number": voucher.voucher_number,
+                "source_key": voucher.source_key,
+                "validation_errors": voucher.validation_errors or [],
+            }
+        )
+        source_data = dict(voucher.source_data or {})
+        source_data["merged_into_voucher_id"] = str(merged_voucher.id)
+        source_data["merged_by"] = applied_by
+        source_data["merged_at"] = merged_at
+        voucher.source_data = source_data
+        voucher.status = "REJECTED"
+        errors = list(voucher.validation_errors or [])
+        _append_once(errors, "MERGED_BY_OPERATOR")
+        voucher.validation_errors = errors
+
+    merged_voucher.validation_errors = validate_voucher(db, merged_voucher)
+    db.add(
+        AuditLog(
+            channel_id=DEFAULT_CHANNEL_ID,
+            organization_id=package.organization_id,
+            monthly_work_package_id=package.id,
+            actor=applied_by,
+            action="APPLY_VOUCHER_MERGE_SUGGESTION",
+            before_data={"source_vouchers": before_data},
+            after_data={
+                "merged_voucher_id": str(merged_voucher.id),
+                "source_key": source_key,
+                "suggestion_id": suggestion["suggestion_id"],
+                "source_voucher_ids": [str(voucher.id) for voucher in vouchers],
+            },
+        )
+    )
+
+    try:
+        db.commit()
+    except IntegrityError as exc:
+        db.rollback()
+        raise VoucherDomainError("Merged voucher could not be created.") from exc
+
+    merged = db.scalar(select(Voucher).options(selectinload(Voucher.entries)).where(Voucher.id == merged_voucher.id))
+    return _enrich_voucher_source_data(db, merged)
+
+
+def _voucher_matches_keyword(voucher: Voucher, keyword: str) -> bool:
+    values = [
+        voucher.voucher_number or "",
+        voucher.summary or "",
+        voucher.status or "",
+        voucher.ai_reason or "",
+        voucher.voucher_date.isoformat() if voucher.voucher_date else "",
+    ]
+    for entry in voucher.entries:
+        values.extend(
+            [
+                entry.account_code or "",
+                entry.account_name or "",
+                str(entry.amount or ""),
+            ]
+        )
+    if voucher.source_data:
+        values.append(json.dumps(voucher.source_data, ensure_ascii=False, default=str))
+    return keyword in "\n".join(values)
+
+
+def _build_voucher_merge_suggestions(db: Session, *, package: MonthlyWorkPackage) -> list[dict]:
+    vouchers = db.scalars(
+        select(Voucher)
+        .options(selectinload(Voucher.entries))
+        .where(
+            Voucher.organization_id == package.organization_id,
+            Voucher.monthly_work_package_id == package.id,
+            Voucher.status == "PENDING_CONFIRMATION",
+            Voucher.voucher_number.is_(None),
         )
         .order_by(Voucher.voucher_date, Voucher.created_at, Voucher.id)
     ).all()
-    return [_enrich_voucher_source_data(db, voucher) for voucher in vouchers]
+    groups: dict[tuple[str, str, tuple[tuple[str, str], ...]], list[tuple[Voucher, BankTransaction]]] = {}
+    for voucher in vouchers:
+        source_data = voucher.source_data or {}
+        if _source_uuid(source_data.get("invoice_id")) is not None or _source_uuid_list(source_data.get("invoice_ids")):
+            continue
+        bank_transaction_id = _source_uuid(source_data.get("bank_transaction_id"))
+        if bank_transaction_id is None or _source_uuid_list(source_data.get("bank_transaction_ids")):
+            continue
+        used_source_ids = _used_non_rejected_voucher_source_ids(
+            db,
+            package_id=package.id,
+            exclude_voucher_id=voucher.id,
+        )
+        if bank_transaction_id in used_source_ids["bank_transaction_ids"]:
+            continue
+        transaction = _get_package_source(db, BankTransaction, bank_transaction_id, package.organization_id, package.id)
+        if transaction is None or _is_merge_excluded_bank_transaction(transaction):
+            continue
+        counterparty_name = _normalized_counterparty_name(transaction.counterparty_name)
+        if not counterparty_name:
+            continue
+        direction = _bank_transaction_direction(transaction)
+        if direction not in {"INFLOW", "OUTFLOW"}:
+            continue
+        signature = _voucher_non_bank_entry_signature(voucher)
+        if not signature:
+            continue
+        groups.setdefault((counterparty_name, direction, signature), []).append((voucher, transaction))
+
+    suggestions: list[dict] = []
+    for (counterparty_name, direction, signature), members in groups.items():
+        if len(members) < 2:
+            continue
+        ordered_members = sorted(members, key=lambda item: (item[1].transaction_date, item[1].id))
+        source_voucher_ids = [voucher.id for voucher, _ in ordered_members]
+        bank_transaction_ids = [transaction.id for _, transaction in ordered_members]
+        total_amount = sum((_transaction_amount(transaction) for _, transaction in ordered_members), Decimal("0.00"))
+        debit_code = _first_entry_code(ordered_members[0][0], "DEBIT")
+        credit_code = _first_entry_code(ordered_members[0][0], "CREDIT")
+        account_names = _voucher_entry_account_names(ordered_members[0][0])
+        direction_label = _bank_direction_label_from_direction(direction)
+        recommended_summary = f"合并记录{counterparty_name}{'银行收款' if direction == 'INFLOW' else '银行付款'}待确认"
+        reason = (
+            f"同一对方存在{len(ordered_members)}笔{direction_label}单边银行流水，"
+            "处理科目一致，适合先合并为一张待确认凭证。"
+        )
+        sources = [
+            {
+                "voucher_id": voucher.id,
+                "bank_transaction_id": transaction.id,
+                "transaction_date": transaction.transaction_date,
+                "counterparty_name": counterparty_name,
+                "summary": transaction.summary or "",
+                "direction": direction,
+                "direction_label": direction_label,
+                "amount": _transaction_amount(transaction),
+                "voucher_summary": voucher.summary,
+                "debit_account_code": _first_entry_code(voucher, "DEBIT"),
+                "credit_account_code": _first_entry_code(voucher, "CREDIT"),
+            }
+            for voucher, transaction in ordered_members
+        ]
+        suggestions.append(
+            {
+                "suggestion_id": _voucher_merge_suggestion_id(source_voucher_ids),
+                "merge_granularity": "MONTHLY",
+                "counterparty_name": counterparty_name,
+                "direction": direction,
+                "direction_label": direction_label,
+                "source_voucher_ids": source_voucher_ids,
+                "bank_transaction_ids": bank_transaction_ids,
+                "total_amount": _money(total_amount),
+                "recommended_summary": recommended_summary,
+                "recommended_debit_account_code": debit_code,
+                "recommended_debit_account_name": account_names.get(debit_code, ""),
+                "recommended_credit_account_code": credit_code,
+                "recommended_credit_account_name": account_names.get(credit_code, ""),
+                "confidence": 84 if len(ordered_members) < 5 else 88,
+                "reason": reason,
+                "requires_manual_confirmation": True,
+                "sources": sources,
+            }
+        )
+    return sorted(suggestions, key=lambda item: (-len(item["sources"]), item["counterparty_name"], item["direction"]))
+
+
+def _voucher_non_bank_entry_signature(voucher: Voucher) -> tuple[tuple[str, str], ...]:
+    signature = [
+        (entry.direction, entry.account_code)
+        for entry in voucher.entries
+        if entry.account_code != "1002" and _money(entry.amount) != Decimal("0.00")
+    ]
+    return tuple(sorted(signature))
+
+
+def _first_entry_code(voucher: Voucher, direction: str) -> str:
+    entry = next((item for item in voucher.entries if item.direction == direction), None)
+    return entry.account_code if entry is not None else ""
+
+
+def _voucher_entry_account_names(voucher: Voucher) -> dict[str, str]:
+    return {entry.account_code: entry.account_name for entry in voucher.entries}
+
+
+def _bank_direction_label_from_direction(direction: str) -> str:
+    labels = {"INFLOW": "收款", "OUTFLOW": "付款"}
+    return labels.get(direction, direction)
+
+
+def _is_merge_excluded_bank_transaction(transaction: BankTransaction) -> bool:
+    summary = transaction.summary or ""
+    excluded_keywords = ("手续费", "税", "社保", "公积金", "工资", "薪酬", "利息", "平台扣费")
+    return any(keyword in summary for keyword in excluded_keywords)
+
+
+def _voucher_merge_suggestion_id(source_voucher_ids: list[UUID]) -> str:
+    digest = hashlib.sha1("|".join(str(source_id) for source_id in sorted(source_voucher_ids)).encode("utf-8")).hexdigest()[:16]
+    return f"merge-suggestion:{digest}"
+
+
+def _voucher_merge_source_key(source_voucher_ids: list[UUID]) -> str:
+    digest = hashlib.sha1("|".join(str(source_id) for source_id in sorted(source_voucher_ids)).encode("utf-8")).hexdigest()[:24]
+    return f"merge:{digest}"
 
 
 def list_bank_ledger(db: Session, *, monthly_work_package_id: UUID) -> list[dict]:
@@ -197,6 +551,7 @@ def list_bank_ledger(db: Session, *, monthly_work_package_id: UUID) -> list[dict
         linked_matches = match_index["bank"].get(transaction.id, [])
         voucher_status = _ledger_voucher_status(linked_vouchers)
         matching_status = "MATCHED" if linked_matches else "UNMATCHED"
+        source_processing_status = _ledger_source_processing_status(linked_vouchers, linked_matches)
         rows.append(
             {
                 "id": transaction.id,
@@ -212,6 +567,8 @@ def list_bank_ledger(db: Session, *, monthly_work_package_id: UUID) -> list[dict
                 "balance": _money(transaction.balance) if transaction.balance is not None else None,
                 "matching_status": matching_status,
                 "matching_status_label": _matching_status_label(matching_status),
+                "source_processing_status": source_processing_status,
+                "source_processing_status_label": _source_processing_status_label(source_processing_status),
                 "voucher_status": voucher_status,
                 "voucher_status_label": _ledger_voucher_status_label(voucher_status),
                 "linked_invoice_count": len({match.invoice_id for match in linked_matches if match.invoice_id}),
@@ -242,6 +599,7 @@ def list_invoice_ledger(db: Session, *, monthly_work_package_id: UUID) -> list[d
         linked_matches = match_index["invoice"].get(invoice.id, [])
         voucher_status = _ledger_voucher_status(linked_vouchers)
         matching_status = "MATCHED" if linked_matches else "UNMATCHED"
+        source_processing_status = _ledger_source_processing_status(linked_vouchers, linked_matches)
         rows.append(
             {
                 "id": invoice.id,
@@ -257,6 +615,8 @@ def list_invoice_ledger(db: Session, *, monthly_work_package_id: UUID) -> list[d
                 "total_amount": _money(invoice.total_amount),
                 "matching_status": matching_status,
                 "matching_status_label": _matching_status_label(matching_status),
+                "source_processing_status": source_processing_status,
+                "source_processing_status_label": _source_processing_status_label(source_processing_status),
                 "voucher_status": voucher_status,
                 "voucher_status_label": _ledger_voucher_status_label(voucher_status),
                 "linked_bank_count": len({match.bank_transaction_id for match in linked_matches if match.bank_transaction_id}),
@@ -320,6 +680,8 @@ def confirm_voucher(db: Session, *, voucher_id: UUID, confirmed_by: str = "opera
         raise VoucherDomainError("Voucher not found in current organization.")
 
     validation_errors = validate_voucher(db, voucher)
+    source_conflict_errors = _confirmed_source_conflict_errors(db, voucher)
+    validation_errors.extend(error for error in source_conflict_errors if error not in validation_errors)
     if validation_errors:
         voucher.validation_errors = validation_errors
         raise VoucherValidationError(", ".join(validation_errors))
@@ -393,6 +755,7 @@ def reject_voucher(db: Session, *, voucher_id: UUID, rejected_by: str = "operato
     if reason:
         source_data["rejection_reason"] = reason
     voucher.source_data = source_data
+    _retire_match_records_for_voucher(db, voucher)
     db.add(
         AuditLog(
             channel_id=DEFAULT_CHANNEL_ID,
@@ -419,6 +782,33 @@ def reject_voucher(db: Session, *, voucher_id: UUID, rejected_by: str = "operato
         .where(Voucher.id == voucher.id)
     )
     return _enrich_voucher_source_data(db, rejected_voucher)
+
+
+def _retire_matches_for_operator_rejected_vouchers(db: Session, *, package: MonthlyWorkPackage) -> None:
+    rejected_vouchers = db.scalars(
+        select(Voucher).where(
+            Voucher.organization_id == package.organization_id,
+            Voucher.monthly_work_package_id == package.id,
+            Voucher.status == "REJECTED",
+        )
+    ).all()
+    for voucher in rejected_vouchers:
+        if "OPERATOR_REJECTED" not in (voucher.validation_errors or []):
+            continue
+        _retire_match_records_for_voucher(db, voucher)
+
+
+def _retire_match_records_for_voucher(db: Session, voucher: Voucher) -> None:
+    source_data = voucher.source_data or {}
+    match_ids = _source_uuid_list(source_data.get("match_record_ids")) or _source_uuid_list(source_data.get("match_record_id"))
+    for match_id in match_ids:
+        match = db.get(MatchRecord, match_id)
+        if match is None:
+            continue
+        if match.organization_id != voucher.organization_id or match.monthly_work_package_id != voucher.monthly_work_package_id:
+            continue
+        if match.confirmation_status != "REJECTED":
+            match.confirmation_status = "REJECTED"
 
 
 def reopen_voucher(db: Session, *, voucher_id: UUID, reopened_by: str = "operator", reason: str = "") -> Voucher:
@@ -973,6 +1363,13 @@ def _generate_confirmed_match_vouchers(
         source_key = f"match:{match.id}"
         if source_key in existing_source_keys:
             continue
+        if not _prepare_sources_for_matched_voucher(
+            db,
+            package=package,
+            bank_transaction_ids=[transaction.id],
+            invoice_ids=[invoice.id],
+        ):
+            continue
 
         has_difference = _transaction_amount(transaction) != _money(invoice.total_amount)
         if invoice.invoice_direction == "OUTPUT" and has_difference:
@@ -1074,9 +1471,16 @@ def _generate_one_invoice_multiple_bank_vouchers(
             bank_transaction_ids=transaction_ids,
             invoice_ids=[invoice_id],
         )
-        consumed_match_ids.update(match_ids)
         if source_key in existing_source_keys:
             continue
+        if not _prepare_sources_for_matched_voucher(
+            db,
+            package=package,
+            bank_transaction_ids=transaction_ids,
+            invoice_ids=[invoice_id],
+        ):
+            continue
+        consumed_match_ids.update(match_ids)
 
         if invoice.invoice_direction == "INPUT":
             summary = "确认费用并分次付款"
@@ -1146,9 +1550,16 @@ def _generate_one_bank_multiple_invoice_vouchers(
             bank_transaction_ids=[transaction_id],
             invoice_ids=invoice_ids,
         )
-        consumed_match_ids.update(match_ids)
         if source_key in existing_source_keys:
             continue
+        if not _prepare_sources_for_matched_voucher(
+            db,
+            package=package,
+            bank_transaction_ids=[transaction_id],
+            invoice_ids=invoice_ids,
+        ):
+            continue
+        consumed_match_ids.update(match_ids)
 
         direction = next(iter(invoice_directions))
         invoices = [invoices_by_id[invoice_id] for invoice_id in invoice_ids]
@@ -1195,6 +1606,7 @@ def _generate_bank_fee_vouchers(
 ) -> list[Voucher]:
     created: list[Voucher] = []
     matched_transaction_ids = _valid_matched_transaction_ids(db, package=package)
+    active_source_ids = _all_non_rejected_voucher_source_ids(db, package_id=package.id)
     transactions = db.scalars(
         select(BankTransaction)
         .where(
@@ -1210,6 +1622,8 @@ def _generate_bank_fee_vouchers(
             continue
         source_key = f"bank:{transaction.id}"
         if source_key in existing_source_keys:
+            continue
+        if transaction.id in active_source_ids["bank_transaction_ids"]:
             continue
 
         voucher = _build_voucher(
@@ -1245,6 +1659,7 @@ def _generate_unmatched_invoice_vouchers(
 ) -> list[Voucher]:
     created: list[Voucher] = []
     matched_invoice_ids = _valid_matched_invoice_ids(db, package=package)
+    active_source_ids = _all_non_rejected_voucher_source_ids(db, package_id=package.id)
     invoices = db.scalars(
         select(Invoice)
         .where(
@@ -1258,40 +1673,50 @@ def _generate_unmatched_invoice_vouchers(
         if invoice.id in matched_invoice_ids:
             continue
         source_key = f"invoice:{invoice.id}"
-        if source_key in existing_source_keys:
-            continue
 
         if invoice.invoice_direction == "OUTPUT":
-            voucher = _build_voucher(
-                package=package,
-                voucher_date=invoice.invoice_date,
-                summary="确认销售收入未收款",
-                source_type="INVOICE",
-                source_id=str(invoice.id),
-                source_key=source_key,
-                source_data=_source_data_for_invoice(invoice),
-                ai_confidence=68,
-                ai_reason="销项发票暂无匹配银行流水，需人工确认是否已收款或挂应收账款",
-                account_names=account_names,
-                lines=_output_invoice_accrual_lines(invoice),
-            )
+            summary = "确认销售收入未收款"
+            ai_confidence = 68
+            ai_reason = "销项发票暂无匹配银行流水，需人工确认是否已收款或挂应收账款"
+            lines = _output_invoice_accrual_lines(invoice)
         elif invoice.invoice_direction == "INPUT":
-            voucher = _build_voucher(
-                package=package,
-                voucher_date=invoice.invoice_date,
-                summary="确认费用未付款",
-                source_type="INVOICE",
-                source_id=str(invoice.id),
-                source_key=source_key,
-                source_data=_source_data_for_invoice(invoice),
-                ai_confidence=62,
-                ai_reason="进项发票暂无匹配银行流水，需人工确认是否已付款或挂应付账款",
-                account_names=account_names,
-                lines=_input_invoice_accrual_lines(invoice),
-            )
+            summary = "确认费用未付款"
+            ai_confidence = 62
+            ai_reason = "进项发票暂无匹配银行流水，需人工确认是否已付款或挂应付账款"
+            lines = _input_invoice_accrual_lines(invoice)
         else:
             continue
 
+        if source_key in existing_source_keys:
+            restored = _restore_reassigned_single_invoice_voucher(
+                db,
+                package=package,
+                invoice=invoice,
+                summary=summary,
+                ai_confidence=ai_confidence,
+                ai_reason=ai_reason,
+                account_names=account_names,
+                lines=lines,
+            )
+            if restored is not None:
+                created.append(restored)
+            continue
+        if invoice.id in active_source_ids["invoice_ids"]:
+            continue
+
+        voucher = _build_voucher(
+            package=package,
+            voucher_date=invoice.invoice_date,
+            summary=summary,
+            source_type="INVOICE",
+            source_id=str(invoice.id),
+            source_key=source_key,
+            source_data=_source_data_for_invoice(invoice),
+            ai_confidence=ai_confidence,
+            ai_reason=ai_reason,
+            account_names=account_names,
+            lines=lines,
+        )
         db.add(voucher)
         db.flush()
         existing_source_keys.add(source_key)
@@ -1309,6 +1734,7 @@ def _generate_unmatched_bank_transaction_vouchers(
 ) -> list[Voucher]:
     created: list[Voucher] = []
     matched_transaction_ids = _valid_matched_transaction_ids(db, package=package)
+    active_source_ids = _all_non_rejected_voucher_source_ids(db, package_id=package.id)
     transactions = db.scalars(
         select(BankTransaction)
         .where(
@@ -1317,18 +1743,46 @@ def _generate_unmatched_bank_transaction_vouchers(
         )
         .order_by(BankTransaction.transaction_date, BankTransaction.id)
     ).all()
+    bidirectional_counterparties = _bidirectional_current_account_counterparties(
+        transactions,
+        matched_transaction_ids=matched_transaction_ids,
+    )
 
     for transaction in transactions:
         if transaction.id in matched_transaction_ids:
             continue
         source_key = f"bank:{transaction.id}"
-        if source_key in existing_source_keys:
-            continue
 
         amount = _transaction_amount(transaction)
         if amount == Decimal("0.00"):
             continue
-        summary, lines, ai_reason = _single_bank_voucher_recommendation(transaction, amount=amount)
+        summary, lines, ai_reason, source_group_type, accounting_treatment = _single_bank_voucher_recommendation(
+            transaction,
+            amount=amount,
+            bidirectional_counterparties=bidirectional_counterparties,
+        )
+        source_data = _source_data_for_bank_transaction(
+            transaction,
+            source_group_type=source_group_type,
+            accounting_treatment=accounting_treatment,
+        )
+
+        if source_key in existing_source_keys:
+            restored = _restore_reassigned_single_bank_voucher(
+                db,
+                package=package,
+                transaction=transaction,
+                summary=summary,
+                ai_reason=ai_reason,
+                source_data=source_data,
+                account_names=account_names,
+                lines=lines,
+            )
+            if restored is not None:
+                created.append(restored)
+            continue
+        if transaction.id in active_source_ids["bank_transaction_ids"]:
+            continue
 
         voucher = _build_voucher(
             package=package,
@@ -1337,7 +1791,7 @@ def _generate_unmatched_bank_transaction_vouchers(
             source_type="BANK_TRANSACTION",
             source_id=str(transaction.id),
             source_key=source_key,
-            source_data=_source_data_for_bank_transaction(transaction),
+            source_data=source_data,
             ai_confidence=45,
             ai_reason=ai_reason,
             account_names=account_names,
@@ -1349,6 +1803,164 @@ def _generate_unmatched_bank_transaction_vouchers(
         created.append(voucher)
 
     return created
+
+
+def _restore_reassigned_single_invoice_voucher(
+    db: Session,
+    *,
+    package: MonthlyWorkPackage,
+    invoice: Invoice,
+    summary: str,
+    ai_confidence: int,
+    ai_reason: str,
+    account_names: dict[str, str],
+    lines: list[tuple[str, str, Decimal]],
+) -> Voucher | None:
+    source_key = f"invoice:{invoice.id}"
+    voucher = _reassigned_single_source_voucher(db, package=package, source_key=source_key)
+    if voucher is None:
+        return None
+    source_data = voucher.source_data or {}
+    if _source_uuid(source_data.get("invoice_id")) != invoice.id:
+        return None
+    _reset_single_source_voucher(
+        voucher,
+        package=package,
+        voucher_date=invoice.invoice_date,
+        summary=summary,
+        source_type="INVOICE",
+        source_id=str(invoice.id),
+        source_data=_source_data_for_invoice(invoice),
+        ai_confidence=ai_confidence,
+        ai_reason=ai_reason,
+        account_names=account_names,
+        lines=lines,
+    )
+    return voucher
+
+
+def _restore_reassigned_single_bank_voucher(
+    db: Session,
+    *,
+    package: MonthlyWorkPackage,
+    transaction: BankTransaction,
+    summary: str,
+    ai_reason: str,
+    source_data: dict,
+    account_names: dict[str, str],
+    lines: list[tuple[str, str, Decimal]],
+) -> Voucher | None:
+    source_key = f"bank:{transaction.id}"
+    voucher = _reassigned_single_source_voucher(db, package=package, source_key=source_key)
+    if voucher is None:
+        return None
+    existing_source_data = voucher.source_data or {}
+    if _source_uuid(existing_source_data.get("bank_transaction_id")) != transaction.id:
+        return None
+    _reset_single_source_voucher(
+        voucher,
+        package=package,
+        voucher_date=transaction.transaction_date,
+        summary=summary,
+        source_type="BANK_TRANSACTION",
+        source_id=str(transaction.id),
+        source_data=source_data,
+        ai_confidence=45,
+        ai_reason=ai_reason,
+        account_names=account_names,
+        lines=lines,
+    )
+    return voucher
+
+
+def _reassigned_single_source_voucher(
+    db: Session,
+    *,
+    package: MonthlyWorkPackage,
+    source_key: str,
+) -> Voucher | None:
+    voucher = db.scalar(
+        select(Voucher)
+        .options(selectinload(Voucher.entries))
+        .where(
+            Voucher.organization_id == package.organization_id,
+            Voucher.monthly_work_package_id == package.id,
+            Voucher.source_key == source_key,
+            Voucher.status == "REJECTED",
+        )
+    )
+    if voucher is None:
+        return None
+    if "SOURCE_REASSIGNED_BY_AI" not in (voucher.validation_errors or []):
+        return None
+    return voucher
+
+
+def _reset_single_source_voucher(
+    voucher: Voucher,
+    *,
+    package: MonthlyWorkPackage,
+    voucher_date: date,
+    summary: str,
+    source_type: str,
+    source_id: str,
+    source_data: dict,
+    ai_confidence: int,
+    ai_reason: str,
+    account_names: dict[str, str],
+    lines: list[tuple[str, str, Decimal]],
+) -> None:
+    voucher.voucher_date = voucher_date
+    voucher.voucher_number = None
+    voucher.summary = summary
+    voucher.source_data = source_data
+    voucher.ai_confidence = ai_confidence
+    voucher.ai_reason = ai_reason
+    voucher.status = "PENDING_CONFIRMATION"
+    voucher.validation_errors = []
+    voucher.confirmed_by = None
+    voucher.confirmed_at = None
+    voucher.entries = [
+        VoucherEntry(
+            channel_id=DEFAULT_CHANNEL_ID,
+            organization_id=package.organization_id,
+            line_no=index,
+            direction=direction,
+            account_code=account_code,
+            account_name=account_names.get(account_code, ""),
+            amount=_money(line_amount),
+            source_type=source_type,
+            source_id=source_id,
+        )
+        for index, (direction, account_code, line_amount) in enumerate(lines, start=1)
+    ]
+
+
+def _prepare_sources_for_matched_voucher(
+    db: Session,
+    *,
+    package: MonthlyWorkPackage,
+    bank_transaction_ids: list[UUID],
+    invoice_ids: list[UUID],
+) -> bool:
+    sentinel_voucher_id = UUID("00000000-0000-0000-0000-000000000000")
+    used_source_ids = _used_non_rejected_voucher_source_ids(
+        db,
+        package_id=package.id,
+        exclude_voucher_id=sentinel_voucher_id,
+    )
+    if any(source_id in used_source_ids["bank_transaction_ids"] for source_id in bank_transaction_ids):
+        return False
+    if any(source_id in used_source_ids["invoice_ids"] for source_id in invoice_ids):
+        return False
+    _retire_single_source_vouchers(
+        db,
+        package_id=package.id,
+        exclude_voucher_id=sentinel_voucher_id,
+        bank_transaction_ids=bank_transaction_ids,
+        invoice_ids=invoice_ids,
+    )
+    return True
 
 
 def _refresh_existing_pending_single_bank_vouchers(
@@ -1367,6 +1979,19 @@ def _refresh_existing_pending_single_bank_vouchers(
             Voucher.source_key.like("bank:%"),
         )
     ).all()
+    matched_transaction_ids = _valid_matched_transaction_ids(db, package=package)
+    package_transactions = db.scalars(
+        select(BankTransaction)
+        .where(
+            BankTransaction.organization_id == package.organization_id,
+            BankTransaction.monthly_work_package_id == package.id,
+        )
+        .order_by(BankTransaction.transaction_date, BankTransaction.id)
+    ).all()
+    bidirectional_counterparties = _bidirectional_current_account_counterparties(
+        package_transactions,
+        matched_transaction_ids=matched_transaction_ids,
+    )
     for voucher in vouchers:
         source_data = dict(voucher.source_data or {})
         if _source_uuid(source_data.get("invoice_id")) is not None:
@@ -1381,10 +2006,18 @@ def _refresh_existing_pending_single_bank_vouchers(
         amount = _transaction_amount(transaction)
         if amount == Decimal("0.00"):
             continue
-        summary, lines, ai_reason = _single_bank_voucher_recommendation(transaction, amount=amount)
+        summary, lines, ai_reason, source_group_type, accounting_treatment = _single_bank_voucher_recommendation(
+            transaction,
+            amount=amount,
+            bidirectional_counterparties=bidirectional_counterparties,
+        )
         voucher.summary = summary
         voucher.ai_reason = ai_reason
-        voucher.source_data = _source_data_for_bank_transaction(transaction)
+        voucher.source_data = _source_data_for_bank_transaction(
+            transaction,
+            source_group_type=source_group_type,
+            accounting_treatment=accounting_treatment,
+        )
         voucher.entries = [
             VoucherEntry(
                 channel_id=DEFAULT_CHANNEL_ID,
@@ -1406,8 +2039,32 @@ def _single_bank_voucher_recommendation(
     transaction: BankTransaction,
     *,
     amount: Decimal,
-) -> tuple[str, list[tuple[str, str, Decimal]], str]:
-    if transaction.debit_amount and _money(transaction.debit_amount) != Decimal("0.00"):
+    bidirectional_counterparties: set[str],
+) -> tuple[str, list[tuple[str, str, Decimal]], str, str, dict | None]:
+    counterparty_name = _normalized_counterparty_name(transaction.counterparty_name)
+    is_bidirectional = counterparty_name in bidirectional_counterparties
+    if _is_payment_transaction(transaction):
+        if is_bidirectional:
+            reason = "同一对方当月存在收款和付款且暂无发票匹配，优先按其他应收款往来暂挂，需人工确认业务归属或重新匹配发票"
+            return (
+                "记录双向往来付款待确认",
+                [
+                    ("DEBIT", "1221", amount),
+                    ("CREDIT", "1002", amount),
+                ],
+                reason,
+                "BIDIRECTIONAL_CURRENT_ACCOUNT",
+                _bank_accounting_treatment(
+                    treatment_type="往来款暂挂",
+                    summary="记录双向往来付款待确认",
+                    debit_account_code="1221",
+                    debit_account_name="其他应收款",
+                    credit_account_code="1002",
+                    credit_account_name="银行存款",
+                    counterparty_name=counterparty_name,
+                    note=reason,
+                ),
+            )
         return (
             "记录银行付款待补发票",
             [
@@ -1415,6 +2072,29 @@ def _single_bank_voucher_recommendation(
                 ("CREDIT", "1002", amount),
             ],
             "银行付款暂无匹配发票，先按预付账款暂挂，需人工确认业务归属或重新匹配发票",
+            "BANK_ONLY",
+            None,
+        )
+    if is_bidirectional:
+        reason = "同一对方当月存在收款和付款且暂无发票匹配，优先按其他应付款往来暂挂，需人工确认业务归属或重新匹配发票"
+        return (
+            "记录双向往来收款待确认",
+            [
+                ("DEBIT", "1002", amount),
+                ("CREDIT", "2241", amount),
+            ],
+            reason,
+            "BIDIRECTIONAL_CURRENT_ACCOUNT",
+            _bank_accounting_treatment(
+                treatment_type="往来款暂挂",
+                summary="记录双向往来收款待确认",
+                debit_account_code="1002",
+                debit_account_name="银行存款",
+                credit_account_code="2241",
+                credit_account_name="其他应付款",
+                counterparty_name=counterparty_name,
+                note=reason,
+            ),
         )
     return (
         "记录银行收款待补发票",
@@ -1423,7 +2103,71 @@ def _single_bank_voucher_recommendation(
             ("CREDIT", "2203", amount),
         ],
         "银行收款暂无匹配发票，先按预收账款暂挂，需人工确认业务归属或重新匹配发票",
+        "BANK_ONLY",
+        None,
     )
+
+
+def _bidirectional_current_account_counterparties(
+    transactions: list[BankTransaction],
+    *,
+    matched_transaction_ids: set[UUID],
+) -> set[str]:
+    directions_by_counterparty: dict[str, set[str]] = {}
+    for transaction in transactions:
+        if transaction.id in matched_transaction_ids or _transaction_amount(transaction) == Decimal("0.00"):
+            continue
+        counterparty_name = _normalized_counterparty_name(transaction.counterparty_name)
+        if not counterparty_name:
+            continue
+        directions = directions_by_counterparty.setdefault(counterparty_name, set())
+        if _is_payment_transaction(transaction):
+            directions.add("PAYMENT")
+        elif _is_receipt_transaction(transaction):
+            directions.add("RECEIPT")
+    return {
+        counterparty_name
+        for counterparty_name, directions in directions_by_counterparty.items()
+        if {"PAYMENT", "RECEIPT"}.issubset(directions)
+    }
+
+
+def _is_payment_transaction(transaction: BankTransaction) -> bool:
+    return bool(transaction.debit_amount and _money(transaction.debit_amount) != Decimal("0.00"))
+
+
+def _is_receipt_transaction(transaction: BankTransaction) -> bool:
+    return bool(transaction.credit_amount and _money(transaction.credit_amount) != Decimal("0.00"))
+
+
+def _normalized_counterparty_name(value: str | None) -> str:
+    name = (value or "").strip()
+    if name in {"", "-", "无", "无对方户名"}:
+        return ""
+    return name
+
+
+def _bank_accounting_treatment(
+    *,
+    treatment_type: str,
+    summary: str,
+    debit_account_code: str,
+    debit_account_name: str,
+    credit_account_code: str,
+    credit_account_name: str,
+    counterparty_name: str,
+    note: str,
+) -> dict:
+    return {
+        "treatment_type": treatment_type,
+        "summary": summary,
+        "debit_account_code": debit_account_code,
+        "debit_account_name": debit_account_name,
+        "credit_account_code": credit_account_code,
+        "credit_account_name": credit_account_name,
+        "counterparty_name": counterparty_name,
+        "note": note,
+    }
 
 
 def _valid_matched_transaction_ids(db: Session, *, package: MonthlyWorkPackage) -> set[UUID]:
@@ -1727,14 +2471,22 @@ def _source_data_for_one_bank_multiple_invoice_group(
     }
 
 
-def _source_data_for_bank_transaction(transaction: BankTransaction) -> dict:
-    return {
-        "source_group_type": "BANK_ONLY",
+def _source_data_for_bank_transaction(
+    transaction: BankTransaction,
+    *,
+    source_group_type: str = "BANK_ONLY",
+    accounting_treatment: dict | None = None,
+) -> dict:
+    source_data = {
+        "source_group_type": source_group_type,
         "voucher_task_type": "SINGLE_SOURCE",
         "difference_amount": "0.00",
         "bank_transaction_id": str(transaction.id),
         "bank_transaction": _bank_transaction_source_data(transaction),
     }
+    if accounting_treatment is not None:
+        source_data["accounting_treatment"] = accounting_treatment
+    return source_data
 
 
 def _source_data_for_invoice(invoice: Invoice) -> dict:
@@ -1768,6 +2520,35 @@ def _get_package_for_operation(db: Session, *, monthly_work_package_id: UUID) ->
     if package is None or package.organization_id != organization_id:
         raise VoucherDomainError("Monthly work package not found in current organization.")
     return package
+
+
+def _confirmed_source_conflict_errors(db: Session, voucher: Voucher) -> list[str]:
+    source_ids = _voucher_source_ids(voucher)
+    if not source_ids["bank_transaction_ids"] and not source_ids["invoice_ids"]:
+        return []
+    confirmed_vouchers = db.scalars(
+        select(Voucher).where(
+            Voucher.organization_id == voucher.organization_id,
+            Voucher.monthly_work_package_id == voucher.monthly_work_package_id,
+            Voucher.id != voucher.id,
+            Voucher.status == "CONFIRMED",
+        )
+    ).all()
+    for confirmed_voucher in confirmed_vouchers:
+        confirmed_source_ids = _voucher_source_ids(confirmed_voucher)
+        if source_ids["bank_transaction_ids"] & confirmed_source_ids["bank_transaction_ids"]:
+            return ["SOURCE_ALREADY_CONFIRMED"]
+        if source_ids["invoice_ids"] & confirmed_source_ids["invoice_ids"]:
+            return ["SOURCE_ALREADY_CONFIRMED"]
+    return []
+
+
+def _voucher_source_ids(voucher: Voucher) -> dict[str, set[UUID]]:
+    source_data = voucher.source_data or {}
+    return {
+        "bank_transaction_ids": set(_source_uuid_list(source_data.get("bank_transaction_ids")) or _source_uuid_list(source_data.get("bank_transaction_id"))),
+        "invoice_ids": set(_source_uuid_list(source_data.get("invoice_ids")) or _source_uuid_list(source_data.get("invoice_id"))),
+    }
 
 
 def _voucher_source_link_index(db: Session, *, package: MonthlyWorkPackage) -> dict[str, dict[UUID, list[Voucher]]]:
@@ -1828,6 +2609,47 @@ def _ledger_voucher_status_label(status_value: str) -> str:
         "PENDING_CONFIRMATION": "待确认",
         "CONFIRMED": "已确认",
         "REJECTED": "已驳回",
+    }
+    return labels.get(status_value or "", status_value or "未处理")
+
+
+def _ledger_source_processing_status(vouchers: list[Voucher], matches: list[MatchRecord]) -> str:
+    voucher_statuses = [_voucher_source_processing_status(voucher) for voucher in vouchers]
+    for status in ("NEEDS_REVIEW", "DIFFERENCE_FILLED", "BIDIRECTIONAL_CURRENT_ACCOUNT", "SINGLE_SIDED", "PAIRED"):
+        if status in voucher_statuses:
+            return status
+    if matches:
+        return "PAIRED"
+    return "UNPROCESSED"
+
+
+def _voucher_source_processing_status(voucher: Voucher) -> str:
+    if voucher.status == "REJECTED" or (voucher.validation_errors or []):
+        return "NEEDS_REVIEW"
+    source_data = voucher.source_data or {}
+    bank_ids = _source_uuid_list(source_data.get("bank_transaction_ids")) or _source_uuid_list(
+        source_data.get("bank_transaction_id")
+    )
+    invoice_ids = _source_uuid_list(source_data.get("invoice_ids")) or _source_uuid_list(source_data.get("invoice_id"))
+    if bank_ids and invoice_ids:
+        if abs(_money(source_data.get("difference_amount") or Decimal("0.00"))) > Decimal("0.01"):
+            return "DIFFERENCE_FILLED"
+        return "PAIRED"
+    if source_data.get("source_group_type") == "BIDIRECTIONAL_CURRENT_ACCOUNT":
+        return "BIDIRECTIONAL_CURRENT_ACCOUNT"
+    if bank_ids or invoice_ids:
+        return "SINGLE_SIDED"
+    return "UNPROCESSED"
+
+
+def _source_processing_status_label(status_value: str) -> str:
+    labels = {
+        "UNPROCESSED": "未处理",
+        "PAIRED": "已配对",
+        "DIFFERENCE_FILLED": "差额补齐",
+        "BIDIRECTIONAL_CURRENT_ACCOUNT": "双向往来",
+        "SINGLE_SIDED": "单边处理",
+        "NEEDS_REVIEW": "需人工处理",
     }
     return labels.get(status_value or "", status_value or "未处理")
 
@@ -1970,6 +2792,27 @@ def _used_non_rejected_voucher_source_ids(db: Session, *, package_id: UUID, excl
         for invoice_id in invoice_ids:
             used_invoice_ids[invoice_id] = _preferred_used_status(used_invoice_ids.get(invoice_id), voucher.status)
     return {"bank_transaction_ids": used_bank_ids, "invoice_ids": used_invoice_ids}
+
+
+def _all_non_rejected_voucher_source_ids(db: Session, *, package_id: UUID) -> dict[str, set[UUID]]:
+    bank_ids: set[UUID] = set()
+    invoice_ids: set[UUID] = set()
+    vouchers = db.scalars(
+        select(Voucher).where(
+            Voucher.monthly_work_package_id == package_id,
+            Voucher.status != "REJECTED",
+        )
+    ).all()
+    for voucher in vouchers:
+        source_data = voucher.source_data or {}
+        bank_ids.update(
+            _source_uuid_list(source_data.get("bank_transaction_ids"))
+            or _source_uuid_list(source_data.get("bank_transaction_id"))
+        )
+        invoice_ids.update(
+            _source_uuid_list(source_data.get("invoice_ids")) or _source_uuid_list(source_data.get("invoice_id"))
+        )
+    return {"bank_transaction_ids": bank_ids, "invoice_ids": invoice_ids}
 
 
 def _preferred_used_status(current: str | None, next_status: str) -> str:

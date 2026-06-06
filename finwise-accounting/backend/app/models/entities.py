@@ -5,8 +5,8 @@ from decimal import Decimal
 from typing import Optional
 from uuid import UUID, uuid4
 
-from sqlalchemy import CheckConstraint, Date, DateTime, ForeignKey, Integer, JSON, Numeric, String, Text, UniqueConstraint
-from sqlalchemy.orm import Mapped, mapped_column
+from sqlalchemy import Boolean, CheckConstraint, Date, DateTime, ForeignKey, Integer, JSON, Numeric, String, Text, UniqueConstraint
+from sqlalchemy.orm import Mapped, mapped_column, relationship
 from sqlalchemy.types import Uuid
 
 from app.core.database import Base
@@ -38,6 +38,102 @@ class Enterprise(Base):
     province: Mapped[str] = mapped_column(String(40), default="江苏省")
     city: Mapped[str] = mapped_column(String(40), default="苏州市")
     status: Mapped[str] = mapped_column(String(20), default="ACTIVE")
+    created_at: Mapped[datetime] = mapped_column(DateTime, default=datetime.utcnow)
+    updated_at: Mapped[datetime] = mapped_column(DateTime, default=datetime.utcnow, onupdate=datetime.utcnow)
+
+
+class TechnologyProfile(Base):
+    __tablename__ = "technology_profiles"
+    __table_args__ = (UniqueConstraint("organization_id", "enterprise_id"),)
+
+    id: Mapped[UUID] = mapped_column(Uuid(as_uuid=True), default=uuid4, primary_key=True)
+    channel_id: Mapped[UUID] = mapped_column(Uuid(as_uuid=True), default=DEFAULT_CHANNEL_ID, index=True)
+    organization_id: Mapped[UUID] = mapped_column(Uuid(as_uuid=True), ForeignKey("organizations.id"), index=True)
+    enterprise_id: Mapped[UUID] = mapped_column(Uuid(as_uuid=True), ForeignKey("enterprises.id"), index=True)
+    overall_status: Mapped[str] = mapped_column(String(32), default="NOT_SCANNED")
+    primary_provider: Mapped[Optional[str]] = mapped_column(String(32), nullable=True)
+    last_scanned_at: Mapped[Optional[datetime]] = mapped_column(DateTime, nullable=True)
+    last_confirmed_at: Mapped[Optional[datetime]] = mapped_column(DateTime, nullable=True)
+    next_rescan_at: Mapped[Optional[datetime]] = mapped_column(DateTime, nullable=True)
+    summary: Mapped[str] = mapped_column(Text, default="")
+    raw_snapshot: Mapped[dict] = mapped_column(JSON, default=dict)
+    created_at: Mapped[datetime] = mapped_column(DateTime, default=datetime.utcnow)
+    updated_at: Mapped[datetime] = mapped_column(DateTime, default=datetime.utcnow, onupdate=datetime.utcnow)
+
+
+class TechnologyTag(Base):
+    __tablename__ = "technology_tags"
+    __table_args__ = (
+        UniqueConstraint(
+            "organization_id",
+            "enterprise_id",
+            "category",
+            "name",
+            "source_provider",
+            name="uq_technology_tags_enterprise_category_name_provider",
+        ),
+        CheckConstraint("confidence >= 0 AND confidence <= 100", name="ck_technology_tags_confidence"),
+    )
+
+    id: Mapped[UUID] = mapped_column(Uuid(as_uuid=True), default=uuid4, primary_key=True)
+    channel_id: Mapped[UUID] = mapped_column(Uuid(as_uuid=True), default=DEFAULT_CHANNEL_ID, index=True)
+    organization_id: Mapped[UUID] = mapped_column(Uuid(as_uuid=True), ForeignKey("organizations.id"), index=True)
+    enterprise_id: Mapped[UUID] = mapped_column(Uuid(as_uuid=True), ForeignKey("enterprises.id"), index=True)
+    profile_id: Mapped[UUID] = mapped_column(Uuid(as_uuid=True), ForeignKey("technology_profiles.id"), index=True)
+    category: Mapped[str] = mapped_column(String(40))
+    name: Mapped[str] = mapped_column(String(120))
+    status: Mapped[str] = mapped_column(String(32), default="UNKNOWN")
+    value: Mapped[Optional[str]] = mapped_column(String(120), nullable=True)
+    confidence: Mapped[int] = mapped_column(Integer, default=0)
+    source_provider: Mapped[str] = mapped_column(String(32))
+    source_url: Mapped[Optional[str]] = mapped_column(Text, nullable=True)
+    evidence_text: Mapped[str] = mapped_column(Text, default="")
+    evidence_file_path: Mapped[Optional[str]] = mapped_column(Text, nullable=True)
+    confirmed_by: Mapped[Optional[str]] = mapped_column(String(80), nullable=True)
+    confirmed_at: Mapped[Optional[datetime]] = mapped_column(DateTime, nullable=True)
+    created_at: Mapped[datetime] = mapped_column(DateTime, default=datetime.utcnow)
+    updated_at: Mapped[datetime] = mapped_column(DateTime, default=datetime.utcnow, onupdate=datetime.utcnow)
+
+
+class TechnologyScanJob(Base):
+    __tablename__ = "technology_scan_jobs"
+
+    id: Mapped[UUID] = mapped_column(Uuid(as_uuid=True), default=uuid4, primary_key=True)
+    channel_id: Mapped[UUID] = mapped_column(Uuid(as_uuid=True), default=DEFAULT_CHANNEL_ID, index=True)
+    organization_id: Mapped[UUID] = mapped_column(Uuid(as_uuid=True), ForeignKey("organizations.id"), index=True)
+    provider: Mapped[str] = mapped_column(String(32))
+    scope_type: Mapped[str] = mapped_column(String(32), default="UNSCANNED")
+    status: Mapped[str] = mapped_column(String(32), default="PENDING")
+    target_enterprise_count: Mapped[int] = mapped_column(Integer, default=0)
+    completed_enterprise_count: Mapped[int] = mapped_column(Integer, default=0)
+    failed_enterprise_count: Mapped[int] = mapped_column(Integer, default=0)
+    review_required_count: Mapped[int] = mapped_column(Integer, default=0)
+    started_at: Mapped[Optional[datetime]] = mapped_column(DateTime, nullable=True)
+    completed_at: Mapped[Optional[datetime]] = mapped_column(DateTime, nullable=True)
+    created_by: Mapped[str] = mapped_column(String(80), default="operator")
+    error_summary: Mapped[str] = mapped_column(Text, default="")
+    created_at: Mapped[datetime] = mapped_column(DateTime, default=datetime.utcnow)
+    updated_at: Mapped[datetime] = mapped_column(DateTime, default=datetime.utcnow, onupdate=datetime.utcnow)
+
+
+class TechnologyScanJobItem(Base):
+    __tablename__ = "technology_scan_job_items"
+    __table_args__ = (UniqueConstraint("job_id", "enterprise_id"),)
+
+    id: Mapped[UUID] = mapped_column(Uuid(as_uuid=True), default=uuid4, primary_key=True)
+    channel_id: Mapped[UUID] = mapped_column(Uuid(as_uuid=True), default=DEFAULT_CHANNEL_ID, index=True)
+    organization_id: Mapped[UUID] = mapped_column(Uuid(as_uuid=True), ForeignKey("organizations.id"), index=True)
+    job_id: Mapped[UUID] = mapped_column(Uuid(as_uuid=True), ForeignKey("technology_scan_jobs.id"), index=True)
+    enterprise_id: Mapped[UUID] = mapped_column(Uuid(as_uuid=True), ForeignKey("enterprises.id"), index=True)
+    enterprise_name: Mapped[str] = mapped_column(String(160))
+    unified_social_credit_code: Mapped[str] = mapped_column(String(32), default="")
+    status: Mapped[str] = mapped_column(String(32), default="PENDING")
+    failure_reason: Mapped[str] = mapped_column(String(60), default="")
+    source_url: Mapped[Optional[str]] = mapped_column(Text, nullable=True)
+    started_at: Mapped[Optional[datetime]] = mapped_column(DateTime, nullable=True)
+    completed_at: Mapped[Optional[datetime]] = mapped_column(DateTime, nullable=True)
+    raw_snapshot: Mapped[dict] = mapped_column(JSON, default=dict)
+    error_summary: Mapped[str] = mapped_column(Text, default="")
     created_at: Mapped[datetime] = mapped_column(DateTime, default=datetime.utcnow)
     updated_at: Mapped[datetime] = mapped_column(DateTime, default=datetime.utcnow, onupdate=datetime.utcnow)
 
@@ -82,6 +178,29 @@ class MonthlyWorkPackage(Base):
     created_at: Mapped[datetime] = mapped_column(DateTime, default=datetime.utcnow)
 
 
+class AccountSubject(Base):
+    __tablename__ = "account_subjects"
+    __table_args__ = (
+        UniqueConstraint("organization_id", "enterprise_id", "code", name="uq_account_subjects_enterprise_code"),
+    )
+
+    id: Mapped[UUID] = mapped_column(Uuid(as_uuid=True), default=uuid4, primary_key=True)
+    channel_id: Mapped[UUID] = mapped_column(Uuid(as_uuid=True), default=DEFAULT_CHANNEL_ID, index=True)
+    organization_id: Mapped[UUID] = mapped_column(Uuid(as_uuid=True), ForeignKey("organizations.id"), index=True)
+    enterprise_id: Mapped[UUID] = mapped_column(Uuid(as_uuid=True), ForeignKey("enterprises.id"), index=True)
+    code: Mapped[str] = mapped_column(String(32), index=True)
+    name: Mapped[str] = mapped_column(String(120))
+    category: Mapped[str] = mapped_column(String(32))
+    normal_balance: Mapped[str] = mapped_column(String(12))
+    parent_code: Mapped[Optional[str]] = mapped_column(String(32), nullable=True)
+    is_leaf: Mapped[bool] = mapped_column(Boolean, default=True)
+    is_enabled: Mapped[bool] = mapped_column(Boolean, default=True)
+    allow_voucher: Mapped[bool] = mapped_column(Boolean, default=True)
+    is_common: Mapped[bool] = mapped_column(Boolean, default=False)
+    created_at: Mapped[datetime] = mapped_column(DateTime, default=datetime.utcnow)
+    updated_at: Mapped[datetime] = mapped_column(DateTime, default=datetime.utcnow, onupdate=datetime.utcnow)
+
+
 class ImportBatch(Base):
     __tablename__ = "import_batches"
 
@@ -98,6 +217,71 @@ class ImportBatch(Base):
     field_mapping: Mapped[dict] = mapped_column(JSON, default=dict)
     error_rows: Mapped[list] = mapped_column(JSON, default=list)
     import_summary: Mapped[dict] = mapped_column(JSON, default=dict)
+    created_at: Mapped[datetime] = mapped_column(DateTime, default=datetime.utcnow)
+
+
+class HistoricalImportBatch(Base):
+    __tablename__ = "historical_import_batches"
+
+    id: Mapped[UUID] = mapped_column(Uuid(as_uuid=True), default=uuid4, primary_key=True)
+    channel_id: Mapped[UUID] = mapped_column(Uuid(as_uuid=True), default=DEFAULT_CHANNEL_ID, index=True)
+    organization_id: Mapped[UUID] = mapped_column(Uuid(as_uuid=True), ForeignKey("organizations.id"), index=True)
+    enterprise_id: Mapped[UUID] = mapped_column(Uuid(as_uuid=True), ForeignKey("enterprises.id"), index=True)
+    fiscal_year: Mapped[int] = mapped_column(Integer, index=True)
+    source_standard: Mapped[str] = mapped_column(String(40), default="GB/T24589-2010")
+    ledger_filename: Mapped[str] = mapped_column(String(240))
+    balance_filename: Mapped[str] = mapped_column(String(240))
+    status: Mapped[str] = mapped_column(String(24), default="IMPORTED")
+    created_ledger_rows: Mapped[int] = mapped_column(Integer, default=0)
+    created_balance_rows: Mapped[int] = mapped_column(Integer, default=0)
+    replaced_ledger_rows: Mapped[int] = mapped_column(Integer, default=0)
+    replaced_balance_rows: Mapped[int] = mapped_column(Integer, default=0)
+    source_metadata: Mapped[dict] = mapped_column(JSON, default=dict)
+    file_hashes: Mapped[dict] = mapped_column(JSON, default=dict)
+    validation_summary: Mapped[dict] = mapped_column(JSON, default=dict)
+    created_at: Mapped[datetime] = mapped_column(DateTime, default=datetime.utcnow)
+
+
+class HistoricalLedgerEntry(Base):
+    __tablename__ = "historical_ledger_entries"
+
+    id: Mapped[UUID] = mapped_column(Uuid(as_uuid=True), default=uuid4, primary_key=True)
+    channel_id: Mapped[UUID] = mapped_column(Uuid(as_uuid=True), default=DEFAULT_CHANNEL_ID, index=True)
+    organization_id: Mapped[UUID] = mapped_column(Uuid(as_uuid=True), ForeignKey("organizations.id"), index=True)
+    enterprise_id: Mapped[UUID] = mapped_column(Uuid(as_uuid=True), ForeignKey("enterprises.id"), index=True)
+    import_batch_id: Mapped[UUID] = mapped_column(Uuid(as_uuid=True), ForeignKey("historical_import_batches.id"), index=True)
+    fiscal_year: Mapped[int] = mapped_column(Integer, index=True)
+    voucher_date: Mapped[date] = mapped_column(Date)
+    voucher_no: Mapped[str] = mapped_column(String(80))
+    summary: Mapped[str] = mapped_column(Text)
+    account_full_name: Mapped[str] = mapped_column(String(240))
+    account_code: Mapped[str] = mapped_column(String(32), index=True)
+    account_name: Mapped[str] = mapped_column(String(120))
+    debit_amount: Mapped[Decimal] = mapped_column(Numeric(14, 2), default=0)
+    credit_amount: Mapped[Decimal] = mapped_column(Numeric(14, 2), default=0)
+    auxiliary: Mapped[dict] = mapped_column(JSON, default=dict)
+    raw_row_data: Mapped[dict] = mapped_column(JSON, default=dict)
+    created_at: Mapped[datetime] = mapped_column(DateTime, default=datetime.utcnow)
+
+
+class HistoricalBalanceRow(Base):
+    __tablename__ = "historical_balance_rows"
+
+    id: Mapped[UUID] = mapped_column(Uuid(as_uuid=True), default=uuid4, primary_key=True)
+    channel_id: Mapped[UUID] = mapped_column(Uuid(as_uuid=True), default=DEFAULT_CHANNEL_ID, index=True)
+    organization_id: Mapped[UUID] = mapped_column(Uuid(as_uuid=True), ForeignKey("organizations.id"), index=True)
+    enterprise_id: Mapped[UUID] = mapped_column(Uuid(as_uuid=True), ForeignKey("enterprises.id"), index=True)
+    import_batch_id: Mapped[UUID] = mapped_column(Uuid(as_uuid=True), ForeignKey("historical_import_batches.id"), index=True)
+    fiscal_year: Mapped[int] = mapped_column(Integer, index=True)
+    account_code: Mapped[str] = mapped_column(String(32), index=True)
+    account_name: Mapped[str] = mapped_column(String(120))
+    opening_debit: Mapped[Decimal] = mapped_column(Numeric(14, 2), default=0)
+    opening_credit: Mapped[Decimal] = mapped_column(Numeric(14, 2), default=0)
+    period_debit: Mapped[Decimal] = mapped_column(Numeric(14, 2), default=0)
+    period_credit: Mapped[Decimal] = mapped_column(Numeric(14, 2), default=0)
+    closing_debit: Mapped[Decimal] = mapped_column(Numeric(14, 2), default=0)
+    closing_credit: Mapped[Decimal] = mapped_column(Numeric(14, 2), default=0)
+    raw_row_data: Mapped[dict] = mapped_column(JSON, default=dict)
     created_at: Mapped[datetime] = mapped_column(DateTime, default=datetime.utcnow)
 
 
@@ -212,6 +396,83 @@ class AccountingLine(Base):
     include_category: Mapped[str] = mapped_column(String(32))
     confirmation_status: Mapped[str] = mapped_column(String(24), default="PENDING")
     created_at: Mapped[datetime] = mapped_column(DateTime, default=datetime.utcnow)
+
+
+class VoucherRule(Base):
+    __tablename__ = "voucher_rules"
+    __table_args__ = (
+        UniqueConstraint("organization_id", "enterprise_id", "rule_name", name="uq_voucher_rules_enterprise_name"),
+    )
+
+    id: Mapped[UUID] = mapped_column(Uuid(as_uuid=True), default=uuid4, primary_key=True)
+    channel_id: Mapped[UUID] = mapped_column(Uuid(as_uuid=True), default=DEFAULT_CHANNEL_ID, index=True)
+    organization_id: Mapped[UUID] = mapped_column(Uuid(as_uuid=True), ForeignKey("organizations.id"), index=True)
+    enterprise_id: Mapped[UUID] = mapped_column(Uuid(as_uuid=True), ForeignKey("enterprises.id"), index=True)
+    rule_name: Mapped[str] = mapped_column(String(120))
+    summary_keywords: Mapped[list] = mapped_column(JSON, default=list)
+    counterparty_pattern: Mapped[Optional[str]] = mapped_column(String(160), nullable=True)
+    source_direction: Mapped[Optional[str]] = mapped_column(String(12), nullable=True)
+    invoice_direction: Mapped[Optional[str]] = mapped_column(String(12), nullable=True)
+    summary_template: Mapped[str] = mapped_column(String(160))
+    debit_account_code: Mapped[str] = mapped_column(String(32))
+    credit_account_code: Mapped[str] = mapped_column(String(32))
+    tax_account_code: Mapped[Optional[str]] = mapped_column(String(32), nullable=True)
+    require_confirmation: Mapped[bool] = mapped_column(Boolean, default=True)
+    created_at: Mapped[datetime] = mapped_column(DateTime, default=datetime.utcnow)
+
+
+class Voucher(Base):
+    __tablename__ = "vouchers"
+    __table_args__ = (
+        UniqueConstraint("monthly_work_package_id", "source_key", name="uq_vouchers_package_source_key"),
+        CheckConstraint("ai_confidence >= 0 AND ai_confidence <= 100", name="ck_vouchers_ai_confidence"),
+    )
+
+    id: Mapped[UUID] = mapped_column(Uuid(as_uuid=True), default=uuid4, primary_key=True)
+    channel_id: Mapped[UUID] = mapped_column(Uuid(as_uuid=True), default=DEFAULT_CHANNEL_ID, index=True)
+    organization_id: Mapped[UUID] = mapped_column(Uuid(as_uuid=True), ForeignKey("organizations.id"), index=True)
+    monthly_work_package_id: Mapped[UUID] = mapped_column(
+        Uuid(as_uuid=True), ForeignKey("monthly_work_packages.id"), index=True
+    )
+    voucher_date: Mapped[date] = mapped_column(Date)
+    voucher_number: Mapped[Optional[str]] = mapped_column(String(40), nullable=True)
+    summary: Mapped[str] = mapped_column(String(180))
+    attachment_count: Mapped[int] = mapped_column(Integer, default=0)
+    source_key: Mapped[str] = mapped_column(String(160))
+    source_data: Mapped[dict] = mapped_column(JSON, default=dict)
+    ai_confidence: Mapped[int] = mapped_column(Integer, default=0)
+    ai_reason: Mapped[str] = mapped_column(Text, default="")
+    status: Mapped[str] = mapped_column(String(32), default="PENDING_CONFIRMATION")
+    validation_errors: Mapped[list] = mapped_column(JSON, default=list)
+    confirmed_by: Mapped[Optional[str]] = mapped_column(String(80), nullable=True)
+    confirmed_at: Mapped[Optional[datetime]] = mapped_column(DateTime, nullable=True)
+    created_at: Mapped[datetime] = mapped_column(DateTime, default=datetime.utcnow)
+    updated_at: Mapped[datetime] = mapped_column(DateTime, default=datetime.utcnow, onupdate=datetime.utcnow)
+
+    entries: Mapped[list["VoucherEntry"]] = relationship(
+        "VoucherEntry",
+        back_populates="voucher",
+        cascade="all, delete-orphan",
+        order_by="VoucherEntry.line_no",
+    )
+
+
+class VoucherEntry(Base):
+    __tablename__ = "voucher_entries"
+
+    id: Mapped[UUID] = mapped_column(Uuid(as_uuid=True), default=uuid4, primary_key=True)
+    channel_id: Mapped[UUID] = mapped_column(Uuid(as_uuid=True), default=DEFAULT_CHANNEL_ID, index=True)
+    organization_id: Mapped[UUID] = mapped_column(Uuid(as_uuid=True), ForeignKey("organizations.id"), index=True)
+    voucher_id: Mapped[UUID] = mapped_column(Uuid(as_uuid=True), ForeignKey("vouchers.id"), index=True)
+    line_no: Mapped[int] = mapped_column(Integer)
+    direction: Mapped[str] = mapped_column(String(8))
+    account_code: Mapped[str] = mapped_column(String(32))
+    account_name: Mapped[str] = mapped_column(String(120))
+    amount: Mapped[Decimal] = mapped_column(Numeric(14, 2))
+    source_type: Mapped[str] = mapped_column(String(32))
+    source_id: Mapped[str] = mapped_column(String(64))
+
+    voucher: Mapped[Voucher] = relationship("Voucher", back_populates="entries")
 
 
 class MatchingRule(Base):

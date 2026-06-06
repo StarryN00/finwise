@@ -217,6 +217,37 @@ def test_generate_tax_filing_draft_uses_imported_invoice_totals_before_matching(
     assert draft.data["warnings"] == ["未匹配发票2张"]
 
 
+def test_generate_tax_filing_draft_normalizes_imported_invoice_signs(db_session):
+    package = make_package(db_session)
+    add_invoice(
+        db_session,
+        package,
+        direction="OUTPUT",
+        number="OUT-NEGATIVE-SIGN",
+        amount=Decimal("-100000"),
+        tax_amount=Decimal("-13000"),
+        confirmed=False,
+    )
+    add_invoice(
+        db_session,
+        package,
+        direction="INPUT",
+        number="IN-NEGATIVE-SIGN",
+        amount=Decimal("-40000"),
+        tax_amount=Decimal("-5200"),
+        confirmed=False,
+    )
+    db_session.commit()
+
+    draft = generate_tax_filing_draft(db_session, monthly_work_package_id=package.id)
+
+    assert as_decimal(draft.data["output_amount"]) == Decimal("100000.00")
+    assert as_decimal(draft.data["output_tax"]) == Decimal("13000.00")
+    assert as_decimal(draft.data["input_amount"]) == Decimal("40000.00")
+    assert as_decimal(draft.data["input_tax"]) == Decimal("5200.00")
+    assert as_decimal(draft.data["vat_payable"]) == Decimal("7800.00")
+
+
 def test_tax_filing_draft_html_endpoint_renders_online_preview(db_session):
     package = make_package(db_session)
     add_invoice(

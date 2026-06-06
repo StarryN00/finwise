@@ -4,7 +4,12 @@ import { describe, expect, it } from 'vitest'
 import { readFileSync } from 'node:fs'
 import { resolve } from 'node:path'
 import BankLedgerTable from '../components/source-ledgers/BankLedgerTable.vue'
-import { matchingStatusTag } from '../components/source-ledgers/ledgerFormatters'
+import {
+  bankCounterpartyLabel,
+  bankDirectionClass,
+  bankDirectionLabel,
+  sourceProcessingStatusTag,
+} from '../components/source-ledgers/ledgerFormatters'
 
 const root = resolve(__dirname, '..')
 const clientSource = readFileSync(resolve(root, 'api/client.js'), 'utf8')
@@ -31,9 +36,50 @@ describe('source ledger views', () => {
     expect(bankComponent).toContain('ledger-table-scroll')
     expect(bankComponent).toContain('交易对方')
     expect(bankComponent).toContain('收支方向')
-    expect(bankComponent).toContain('matching_status_label')
+    expect(bankComponent).toContain('source_processing_status_label')
+    expect(bankComponent).toContain('来源处理')
     expect(bankComponent).toContain('voucher_status_label')
     expect(bankViewSource).toContain('refreshBankLedger')
+  })
+
+  it('paginates the independent bank ledger page at 20 rows and reports filtered counts', () => {
+    const bankViewSource = readFileSync(resolve(__dirname, 'BankLedgerView.vue'), 'utf8')
+    expect(bankViewSource).toContain('const ledgerPageSize = 20')
+    expect(bankViewSource).toContain('const currentPage = ref(1)')
+    expect(bankViewSource).toContain('const pagedRows = computed')
+    expect(bankViewSource).toContain(':rows="pagedRows"')
+    expect(bankViewSource).toContain('当前显示 ${pagedRows.value.length} 条 / 筛选结果 ${filteredRows.value.length} 条 / 原始总数 ${bankRows.value.length} 条')
+    expect(bankViewSource).toContain('<el-pagination')
+    expect(bankViewSource).toContain('v-model:current-page="currentPage"')
+    expect(bankViewSource).toContain(':page-size="ledgerPageSize"')
+    expect(bankViewSource).toContain(':total="filteredRows.length"')
+    expect(bankViewSource).toContain('watch(keyword')
+    expect(bankViewSource).toContain('currentPage.value = 1')
+  })
+
+  it('puts voucher number first and keeps bank ledger summary compact', () => {
+    const bankComponent = readFileSync(resolve(root, 'components/source-ledgers/BankLedgerTable.vue'), 'utf8')
+    expect(bankComponent.indexOf('label="凭证号"')).toBeLessThan(bankComponent.indexOf('label="日期"'))
+    expect(bankComponent.indexOf('label="日期"')).toBeLessThan(bankComponent.indexOf('label="交易对方"'))
+    expect(bankComponent.indexOf('label="交易对方"')).toBeLessThan(bankComponent.indexOf('label="收支方向"'))
+    expect(bankComponent.indexOf('label="收支方向"')).toBeLessThan(bankComponent.indexOf('label="摘要"'))
+    expect(bankComponent).toContain('label="交易对方" width="390"')
+    expect(bankComponent).toContain('bankCounterpartyLabel(row)')
+    expect(bankComponent).not.toContain('prop="counterparty_name" label="交易对方" min-width')
+    expect(bankComponent).toContain('prop="summary" label="摘要" min-width="120"')
+    expect(bankComponent).not.toContain('prop="summary" label="摘要" width="120"')
+    expect(bankComponent).toContain('bank-direction-tag')
+    expect(bankComponent).toContain('bankDirectionLabel(row)')
+    expect(bankDirectionLabel({ credit_amount: '100.00', debit_amount: '0.00' })).toBe('收款')
+    expect(bankDirectionLabel({ credit_amount: '0.00', debit_amount: '100.00' })).toBe('付款')
+    expect(bankDirectionClass({ credit_amount: '100.00', debit_amount: '0.00' })).toBe('is-receipt')
+    expect(bankDirectionClass({ credit_amount: '0.00', debit_amount: '100.00' })).toBe('is-payment')
+  })
+
+  it('labels bank fee rows without pretending a real counterparty exists', () => {
+    expect(bankCounterpartyLabel({ counterparty_name: '苏州客户有限公司', summary: '电子汇入' })).toBe('苏州客户有限公司')
+    expect(bankCounterpartyLabel({ counterparty_name: '', summary: '收费', remark: '电子商业汇票-系统使用费' })).toBe('银行收费')
+    expect(bankCounterpartyLabel({ counterparty_name: '', summary: '电子转账' })).toBe('对方户名缺失')
   })
 
   it('keeps invoice ledger table usable and counterparty-focused', () => {
@@ -49,6 +95,21 @@ describe('source ledger views', () => {
     expect(invoiceViewSource).toContain('refreshInvoiceLedger')
   })
 
+  it('paginates the independent invoice ledger page at 20 rows and reports filtered counts', () => {
+    const invoiceViewSource = readFileSync(resolve(__dirname, 'InvoiceLedgerView.vue'), 'utf8')
+    expect(invoiceViewSource).toContain('const ledgerPageSize = 20')
+    expect(invoiceViewSource).toContain('const currentPage = ref(1)')
+    expect(invoiceViewSource).toContain('const pagedRows = computed')
+    expect(invoiceViewSource).toContain(':rows="pagedRows"')
+    expect(invoiceViewSource).toContain('当前显示 ${pagedRows.value.length} 张 / 筛选结果 ${filteredRows.value.length} 张 / 原始总数 ${invoiceRows.value.length} 张')
+    expect(invoiceViewSource).toContain('<el-pagination')
+    expect(invoiceViewSource).toContain('v-model:current-page="currentPage"')
+    expect(invoiceViewSource).toContain(':page-size="ledgerPageSize"')
+    expect(invoiceViewSource).toContain(':total="filteredRows.length"')
+    expect(invoiceViewSource).toContain('watch([keyword, directionFilter]')
+    expect(invoiceViewSource).toContain('currentPage.value = 1')
+  })
+
   it('uses reusable source ledger components that emit row selection for voucher workbench reuse', () => {
     const bankComponent = readFileSync(resolve(root, 'components/source-ledgers/BankLedgerTable.vue'), 'utf8')
     const invoiceComponent = readFileSync(resolve(root, 'components/source-ledgers/InvoiceLedgerTable.vue'), 'utf8')
@@ -60,8 +121,8 @@ describe('source ledger views', () => {
     expect(invoiceComponent).toContain('凭证号')
   })
 
-  it('keeps unmatched ledger rows in the warning attention state', () => {
-    expect(matchingStatusTag('UNMATCHED')).toBe('warning')
+  it('keeps single-sided source rows in the warning attention state', () => {
+    expect(sourceProcessingStatusTag('SINGLE_SIDED')).toBe('warning')
   })
 
   it('emits row-select with the ledger row payload when a bank row is selected', async () => {
@@ -76,6 +137,8 @@ describe('source ledger views', () => {
       balance: null,
       matching_status: 'UNMATCHED',
       matching_status_label: '未匹配',
+      source_processing_status: 'UNPROCESSED',
+      source_processing_status_label: '未处理',
       voucher_status: 'UNPROCESSED',
       voucher_status_label: '未处理',
       linked_invoice_count: 0,

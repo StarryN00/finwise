@@ -13,7 +13,18 @@ from app.api.deps import get_db
 from app.core.database import Base
 from app.core.org_context import ensure_default_organization
 from app.main import create_app
-from app.models import AccountSubject, AuditLog, BankTransaction, Enterprise, Invoice, MatchRecord, MonthlyWorkPackage, Voucher, VoucherRule
+from app.models import (
+    AccountSubject,
+    AuditLog,
+    BankTransaction,
+    Enterprise,
+    Invoice,
+    MatchRecord,
+    MonthlyWorkPackage,
+    Voucher,
+    VoucherEntry,
+    VoucherRule,
+)
 
 
 ORG = UUID("00000000-0000-0000-0000-000000000001")
@@ -210,6 +221,136 @@ def test_generate_and_confirm_voucher_api():
     assert confirmed["voucher_number"] == "记-0001"
 
 
+def test_generate_vouchers_treats_bidirectional_bank_only_counterparty_as_current_account():
+    client, db_session = make_context()
+    _enterprise, package = make_package(db_session)
+    counterparty = "上海涌杰实业有限公司"
+    receipt = BankTransaction(
+        organization_id=ORG,
+        monthly_work_package_id=package.id,
+        transaction_date=date(2026, 5, 10),
+        summary="电子汇入",
+        debit_amount=Decimal("0.00"),
+        credit_amount=Decimal("100000.00"),
+        counterparty_name=counterparty,
+    )
+    payment = BankTransaction(
+        organization_id=ORG,
+        monthly_work_package_id=package.id,
+        transaction_date=date(2026, 5, 27),
+        summary="电子转账",
+        debit_amount=Decimal("90000.00"),
+        credit_amount=Decimal("0.00"),
+        counterparty_name=counterparty,
+    )
+    db_session.add_all([receipt, payment])
+    db_session.commit()
+
+    generate_response = client.post(f"/api/monthly-packages/{package.id}/vouchers/generate")
+
+    assert generate_response.status_code == 201, generate_response.text
+    payload = generate_response.json()
+    assert payload["created_vouchers"] == 2
+    vouchers = {voucher.source_key: voucher for voucher in db_session.query(Voucher).all()}
+    receipt_voucher = vouchers[f"bank:{receipt.id}"]
+    payment_voucher = vouchers[f"bank:{payment.id}"]
+    assert receipt_voucher.source_data["source_group_type"] == "BIDIRECTIONAL_CURRENT_ACCOUNT"
+    assert payment_voucher.source_data["source_group_type"] == "BIDIRECTIONAL_CURRENT_ACCOUNT"
+    assert receipt_voucher.source_data["accounting_treatment"]["treatment_type"] == "往来款暂挂"
+    assert payment_voucher.source_data["accounting_treatment"]["treatment_type"] == "往来款暂挂"
+    assert receipt_voucher.source_data["accounting_treatment"]["counterparty_name"] == counterparty
+    assert payment_voucher.source_data["accounting_treatment"]["counterparty_name"] == counterparty
+    assert "同一对方当月存在收款和付款" in receipt_voucher.ai_reason
+    assert "同一对方当月存在收款和付款" in payment_voucher.ai_reason
+    assert [(entry.direction, entry.account_code, entry.amount) for entry in receipt_voucher.entries] == [
+        ("DEBIT", "1002", Decimal("100000.00")),
+        ("CREDIT", "2241", Decimal("100000.00")),
+    ]
+    assert [(entry.direction, entry.account_code, entry.amount) for entry in payment_voucher.entries] == [
+        ("DEBIT", "1221", Decimal("90000.00")),
+        ("CREDIT", "1002", Decimal("90000.00")),
+    ]
+
+
+def test_list_vouchers_api_filters_confirmed_status_and_keyword():
+    client, db_session = make_context()
+    _enterprise, package = make_package(db_session)
+    add_output_match(db_session, package)
+
+    generate_response = client.post(f"/api/monthly-packages/{package.id}/vouchers/generate")
+    assert generate_response.status_code == 201
+    generated_voucher = generate_response.json()["vouchers"][0]
+    confirm_response = client.post(
+        f"/api/vouchers/{generated_voucher['id']}/confirm",
+        json={"confirmed_by": "operator"},
+    )
+    assert confirm_response.status_code == 200
+
+    pending = Voucher(
+        organization_id=ORG,
+        monthly_work_package_id=package.id,
+        voucher_date=date(2026, 5, 11),
+        voucher_number=None,
+        summary="待确认测试凭证",
+        source_key="manual-pending",
+        source_data={"counterparty_name": "不会出现在已确认列表"},
+        ai_confidence=50,
+        ai_reason="测试未确认",
+        status="PENDING_CONFIRMATION",
+    )
+    pending.entries = [
+        VoucherEntry(
+            organization_id=ORG,
+            line_no=1,
+            direction="DEBIT",
+            account_code="560203",
+            account_name="服务费",
+            amount=Decimal("10.00"),
+            source_type="MANUAL",
+            source_id="manual-pending",
+        ),
+        VoucherEntry(
+            organization_id=ORG,
+            line_no=2,
+            direction="CREDIT",
+            account_code="1002",
+            account_name="银行存款",
+            amount=Decimal("10.00"),
+            source_type="MANUAL",
+            source_id="manual-pending",
+        ),
+    ]
+    db_session.add(pending)
+    db_session.commit()
+
+    confirmed_response = client.get(
+        f"/api/monthly-packages/{package.id}/vouchers",
+        params={"status": "CONFIRMED"},
+    )
+
+    assert confirmed_response.status_code == 200
+    confirmed_rows = confirmed_response.json()
+    assert len(confirmed_rows) == 1
+    assert confirmed_rows[0]["status"] == "CONFIRMED"
+    assert confirmed_rows[0]["voucher_number"] == "记-0001"
+
+    keyword_response = client.get(
+        f"/api/monthly-packages/{package.id}/vouchers",
+        params={"status": "CONFIRMED", "keyword": "苏州客户"},
+    )
+
+    assert keyword_response.status_code == 200
+    assert [row["voucher_number"] for row in keyword_response.json()] == ["记-0001"]
+
+    miss_response = client.get(
+        f"/api/monthly-packages/{package.id}/vouchers",
+        params={"status": "CONFIRMED", "keyword": "不会出现在已确认列表"},
+    )
+
+    assert miss_response.status_code == 200
+    assert miss_response.json() == []
+
+
 def test_list_bank_ledger_api_returns_processing_status():
     client, db_session = make_context()
     _enterprise, package = make_package(db_session)
@@ -229,6 +370,8 @@ def test_list_bank_ledger_api_returns_processing_status():
     assert row["counterparty_name"] == "苏州客户有限公司"
     assert row["transaction_amount"] == "1130.00"
     assert row["matching_status_label"] == "已匹配"
+    assert row["source_processing_status"] == "PAIRED"
+    assert row["source_processing_status_label"] == "已配对"
     assert row["voucher_status_label"] == "待确认"
     assert row["linked_invoice_count"] == 1
     assert row["linked_voucher_count"] == 1
@@ -264,9 +407,12 @@ def test_list_invoice_ledger_api_returns_counterparty_by_direction():
     assert input_row["counterparty_role"] == "销售方"
     assert input_row["counterparty_name"] == "苏州供应商有限公司"
     assert input_row["matching_status_label"] == "未匹配"
+    assert input_row["source_processing_status"] == "UNPROCESSED"
+    assert input_row["source_processing_status_label"] == "未处理"
     assert output_row["invoice_direction_label"] == "销项发票"
     assert output_row["counterparty_role"] == "购买方"
     assert output_row["counterparty_name"] == "苏州客户有限公司"
+    assert output_row["source_processing_status_label"] == "已配对"
 
 
 def test_voucher_ledger_summary_api_counts_processed_sources():
@@ -444,6 +590,106 @@ def test_voucher_preprocess_creates_ai_match_records_before_vouchers(monkeypatch
     assert audit.after_data["created_match_records"] == 2
 
 
+def test_voucher_preprocess_does_not_create_ai_match_for_confirmed_source(monkeypatch):
+    from app.services import voucher_ai_preprocess_service as service
+
+    client, db_session = make_context()
+    enterprise, package = make_package(db_session)
+    transaction = BankTransaction(
+        organization_id=ORG,
+        monthly_work_package_id=package.id,
+        transaction_date=date(2026, 5, 20),
+        summary="电子汇入",
+        debit_amount=Decimal("0.00"),
+        credit_amount=Decimal("300.00"),
+        counterparty_name="上海安费诺永亿通讯电子有限公司",
+    )
+    invoice = Invoice(
+        organization_id=ORG,
+        monthly_work_package_id=package.id,
+        invoice_direction="OUTPUT",
+        invoice_number="AI-CONFIRMED-SOURCE-001",
+        invoice_date=date(2026, 5, 18),
+        amount=Decimal("265.49"),
+        tax_amount=Decimal("34.51"),
+        total_amount=Decimal("300.00"),
+        seller_name=enterprise.name,
+        buyer_name="上海安费诺永亿通讯电子有限公司",
+    )
+    db_session.add_all([transaction, invoice])
+    db_session.flush()
+    confirmed_single = Voucher(
+        organization_id=ORG,
+        monthly_work_package_id=package.id,
+        voucher_date=transaction.transaction_date,
+        voucher_number="记-9003",
+        summary="已确认单边收款",
+        source_key=f"bank:{transaction.id}:confirmed",
+        source_data={
+            "source_group_type": "BANK_ONLY",
+            "voucher_task_type": "SINGLE_SOURCE",
+            "bank_transaction_id": str(transaction.id),
+        },
+        ai_confidence=45,
+        ai_reason="用户已确认该笔收款按单边处理",
+        status="CONFIRMED",
+        confirmed_by="operator",
+    )
+    confirmed_single.entries = [
+        VoucherEntry(
+            organization_id=ORG,
+            line_no=1,
+            direction="DEBIT",
+            account_code="1002",
+            account_name="银行存款",
+            amount=Decimal("300.00"),
+            source_type="BANK_TRANSACTION",
+            source_id=str(transaction.id),
+        ),
+        VoucherEntry(
+            organization_id=ORG,
+            line_no=2,
+            direction="CREDIT",
+            account_code="2203",
+            account_name="预收账款",
+            amount=Decimal("300.00"),
+            source_type="BANK_TRANSACTION",
+            source_id=str(transaction.id),
+        ),
+    ]
+    db_session.add(confirmed_single)
+    db_session.commit()
+    stub = StubVoucherPreprocessClient(
+        response={
+            "analysis_summary": "AI 误将已确认单边流水再次推荐匹配。",
+            "task_suggestions": [
+                {
+                    "source_key": "T001:I001",
+                    "task_type": "FULL_MATCH",
+                    "confidence": 92,
+                    "summary": "确认销售收入并收款",
+                    "reason": "交易对方一致且金额一致",
+                    "bank_refs": ["T001"],
+                    "invoice_refs": ["I001"],
+                }
+            ],
+        }
+    )
+    monkeypatch.setattr(service, "create_default_voucher_preprocess_client", lambda: stub)
+
+    response = client.post(f"/api/monthly-packages/{package.id}/vouchers/preprocess")
+
+    assert response.status_code == 201
+    assert db_session.query(MatchRecord).filter(MatchRecord.monthly_work_package_id == package.id).count() == 0
+    vouchers = db_session.query(Voucher).filter(Voucher.monthly_work_package_id == package.id).all()
+    assert len(vouchers) == 2
+    assert {voucher.status for voucher in vouchers} == {"CONFIRMED", "PENDING_CONFIRMATION"}
+    pending = next(voucher for voucher in vouchers if voucher.status == "PENDING_CONFIRMATION")
+    assert pending.source_data["source_group_type"] == "INVOICE_ONLY"
+    audit = db_session.query(AuditLog).filter(AuditLog.action == "VOUCHER_AI_PREPROCESS").one()
+    assert audit.after_data["created_match_records"] == 0
+
+
 def test_voucher_preprocess_groups_ai_matches_with_difference_completion(monkeypatch):
     from app.services import voucher_ai_preprocess_service as service
 
@@ -528,6 +774,213 @@ def test_voucher_preprocess_groups_ai_matches_with_difference_completion(monkeyp
     pending_after_second_run = [voucher for voucher in vouchers_after_second_run if voucher.status == "PENDING_CONFIRMATION"]
     assert len(pending_after_second_run) == 1
     assert pending_after_second_run[0].source_data["source_group_type"] == "ONE_BANK_TRANSACTION_MULTIPLE_INVOICES"
+
+
+def test_voucher_preprocess_rejects_ai_match_when_counterparties_do_not_match(monkeypatch):
+    from app.services import voucher_ai_preprocess_service as service
+
+    client, db_session = make_context()
+    enterprise, package = make_package(db_session, company_name="昆山黛珂特电子科技有限公司")
+    transaction = BankTransaction(
+        organization_id=ORG,
+        monthly_work_package_id=package.id,
+        transaction_date=date(2026, 4, 10),
+        summary="电子汇入",
+        debit_amount=Decimal("0.00"),
+        credit_amount=Decimal("50000.00"),
+        counterparty_name="上海涌杰实业有限公司",
+    )
+    invoice = Invoice(
+        organization_id=ORG,
+        monthly_work_package_id=package.id,
+        invoice_direction="OUTPUT",
+        invoice_number="OUT-MISMATCH-001",
+        invoice_date=date(2026, 4, 20),
+        amount=Decimal("1732.01"),
+        tax_amount=Decimal("225.16"),
+        total_amount=Decimal("1957.17"),
+        seller_name=enterprise.name,
+        buyer_name="上海安费诺永亿通讯电子有限公司",
+    )
+    db_session.add_all([transaction, invoice])
+    db_session.commit()
+    stub = StubVoucherPreprocessClient(
+        response={
+            "analysis_summary": "错误地建议跨主体匹配。",
+            "task_suggestions": [
+                {
+                    "task_type": "DIFFERENCE_COMPLETION",
+                    "confidence": 100,
+                    "summary": "确认销售收入并补齐差额",
+                    "reason": "流水与发票金额完全一致，交易对方相同",
+                    "bank_refs": ["T001"],
+                    "invoice_refs": ["I001"],
+                }
+            ],
+        }
+    )
+    monkeypatch.setattr(service, "create_default_voucher_preprocess_client", lambda: stub)
+
+    response = client.post(f"/api/monthly-packages/{package.id}/vouchers/preprocess")
+
+    assert response.status_code == 201
+    assert db_session.query(MatchRecord).filter(MatchRecord.monthly_work_package_id == package.id).count() == 0
+    vouchers = db_session.query(Voucher).filter(Voucher.monthly_work_package_id == package.id).all()
+    assert len(vouchers) == 2
+    assert {(voucher.source_data or {}).get("source_group_type") for voucher in vouchers} == {"BANK_ONLY", "INVOICE_ONLY"}
+    assert all((voucher.source_data or {}).get("source_group_type") != "DIFFERENCE_COMPLETION" for voucher in vouchers)
+    audit = db_session.query(AuditLog).filter(AuditLog.action == "VOUCHER_AI_PREPROCESS").one()
+    assert audit.after_data["created_match_records"] == 0
+
+
+def test_voucher_preprocess_does_not_recreate_operator_rejected_match(monkeypatch):
+    from app.services import voucher_ai_preprocess_service as service
+
+    client, db_session = make_context()
+    enterprise, package = make_package(db_session)
+    transaction = BankTransaction(
+        organization_id=ORG,
+        monthly_work_package_id=package.id,
+        transaction_date=date(2026, 5, 20),
+        summary="电子转账",
+        debit_amount=Decimal("113.00"),
+        credit_amount=Decimal("0.00"),
+        counterparty_name="苏州供应商有限公司",
+    )
+    invoice = Invoice(
+        organization_id=ORG,
+        monthly_work_package_id=package.id,
+        invoice_direction="INPUT",
+        invoice_number="IN-REJECTED-AI-001",
+        invoice_date=date(2026, 5, 18),
+        amount=Decimal("100.00"),
+        tax_amount=Decimal("13.00"),
+        total_amount=Decimal("113.00"),
+        seller_name="苏州供应商有限公司",
+        buyer_name=enterprise.name,
+    )
+    db_session.add_all([transaction, invoice])
+    db_session.flush()
+    rejected_match = MatchRecord(
+        organization_id=ORG,
+        monthly_work_package_id=package.id,
+        bank_transaction_id=transaction.id,
+        invoice_id=invoice.id,
+        match_method="AUTO_EXACT",
+        confidence=95,
+        explanation="人工已驳回的历史匹配",
+        confirmation_status="REJECTED",
+    )
+    db_session.add(rejected_match)
+    db_session.commit()
+    stub = StubVoucherPreprocessClient(
+        response={
+            "analysis_summary": "错误地再次建议同一组历史驳回匹配。",
+            "task_suggestions": [
+                {
+                    "task_type": "FULL_MATCH",
+                    "confidence": 96,
+                    "summary": "确认费用并付款",
+                    "reason": "金额一致且对方一致",
+                    "bank_refs": ["T001"],
+                    "invoice_refs": ["I001"],
+                }
+            ],
+        }
+    )
+    monkeypatch.setattr(service, "create_default_voucher_preprocess_client", lambda: stub)
+
+    response = client.post(f"/api/monthly-packages/{package.id}/vouchers/preprocess")
+
+    assert response.status_code == 201, response.text
+    matches = db_session.query(MatchRecord).filter(MatchRecord.monthly_work_package_id == package.id).all()
+    assert matches == [rejected_match]
+    vouchers = db_session.query(Voucher).filter(Voucher.monthly_work_package_id == package.id).all()
+    assert {voucher.summary for voucher in vouchers} == {"确认费用未付款", "记录银行付款待补发票"}
+    assert all(voucher.status == "PENDING_CONFIRMATION" for voucher in vouchers)
+    audit = db_session.query(AuditLog).filter(AuditLog.action == "VOUCHER_AI_PREPROCESS").one()
+    assert audit.after_data["created_match_records"] == 0
+
+
+def test_voucher_preprocess_restores_reassigned_single_bank_voucher(monkeypatch):
+    from app.services import voucher_ai_preprocess_service as service
+
+    client, db_session = make_context()
+    _enterprise, package = make_package(db_session)
+    transaction = BankTransaction(
+        organization_id=ORG,
+        monthly_work_package_id=package.id,
+        transaction_date=date(2026, 5, 10),
+        summary="电子汇入",
+        debit_amount=Decimal("0.00"),
+        credit_amount=Decimal("50000.00"),
+        counterparty_name="上海涌杰实业有限公司",
+    )
+    invoice = Invoice(
+        organization_id=ORG,
+        monthly_work_package_id=package.id,
+        invoice_direction="OUTPUT",
+        invoice_number="OUT-UNRELATED-001",
+        invoice_date=date(2026, 5, 11),
+        amount=Decimal("100.00"),
+        tax_amount=Decimal("13.00"),
+        total_amount=Decimal("113.00"),
+        seller_name="苏州凭证接口测试有限公司",
+        buyer_name="无关客户有限公司",
+    )
+    db_session.add_all([transaction, invoice])
+    db_session.flush()
+    rejected_voucher = Voucher(
+        organization_id=ORG,
+        monthly_work_package_id=package.id,
+        voucher_date=transaction.transaction_date,
+        summary="记录银行收款待补发票",
+        source_key=f"bank:{transaction.id}",
+        source_data={
+            "source_group_type": "BANK_ONLY",
+            "voucher_task_type": "SINGLE_SOURCE",
+            "bank_transaction_id": str(transaction.id),
+        },
+        ai_confidence=45,
+        ai_reason="原单边凭证被 AI 重新分配",
+        status="REJECTED",
+        validation_errors=["SOURCE_REASSIGNED_BY_AI"],
+    )
+    db_session.add(rejected_voucher)
+    db_session.commit()
+    stub = StubVoucherPreprocessClient(
+        response={
+            "analysis_summary": "暂无可配对项目。",
+            "task_suggestions": [
+                {
+                    "task_type": "SINGLE_SOURCE",
+                    "confidence": 80,
+                    "summary": "单边处理",
+                    "reason": "没有可配对项目",
+                    "invoice_refs": ["I001"],
+                }
+            ],
+        }
+    )
+    monkeypatch.setattr(service, "create_default_voucher_preprocess_client", lambda: stub)
+
+    response = client.post(f"/api/monthly-packages/{package.id}/vouchers/preprocess")
+
+    assert response.status_code == 201, response.text
+    vouchers = db_session.query(Voucher).filter(Voucher.monthly_work_package_id == package.id).all()
+    assert len(vouchers) == 2
+    restored = next(voucher for voucher in vouchers if voucher.source_key == f"bank:{transaction.id}")
+    assert restored.id == rejected_voucher.id
+    assert restored.status == "PENDING_CONFIRMATION"
+    assert restored.source_key == f"bank:{transaction.id}"
+    assert restored.validation_errors == []
+    assert restored.summary == "记录银行收款待补发票"
+    assert [(entry.direction, entry.account_code, entry.amount) for entry in restored.entries] == [
+        ("DEBIT", "1002", Decimal("50000.00")),
+        ("CREDIT", "2203", Decimal("50000.00")),
+    ]
+    audit = db_session.query(AuditLog).filter(AuditLog.action == "VOUCHER_AI_PREPROCESS").one()
+    assert audit.after_data["created_vouchers"] == 2
 
 
 def test_voucher_preprocess_uses_kimi_k26_supported_temperature():
@@ -1207,6 +1660,68 @@ def test_adjust_single_bank_receipt_voucher_treatment_api_rebuilds_entries_and_r
     assert adjusted["source_data"]["accounting_treatment"]["treatment_type"] == "往来款暂挂"
     assert adjusted["source_data"]["accounting_treatment"]["note"] == "客户说明该笔为临时往来款，暂不确认收入"
     assert adjusted["validation_errors"] == []
+
+
+def test_voucher_merge_suggestions_api_lists_and_applies_pending_bank_group():
+    client, db_session = make_context()
+    _enterprise, package = make_package(db_session)
+    transactions = [
+        BankTransaction(
+            organization_id=ORG,
+            monthly_work_package_id=package.id,
+            transaction_date=date(2026, 5, day),
+            summary="电子转账",
+            debit_amount=amount,
+            credit_amount=Decimal("0.00"),
+            counterparty_name="昆山合并付款供应商有限公司",
+        )
+        for day, amount in (
+            (8, Decimal("120.00")),
+            (15, Decimal("180.00")),
+            (22, Decimal("300.00")),
+        )
+    ]
+    db_session.add_all(transactions)
+    db_session.commit()
+
+    generate_response = client.post(f"/api/monthly-packages/{package.id}/vouchers/generate")
+    assert generate_response.status_code == 201, generate_response.text
+    assert generate_response.json()["created_vouchers"] == 3
+
+    suggestions_response = client.get(f"/api/monthly-packages/{package.id}/vouchers/merge-suggestions")
+    assert suggestions_response.status_code == 200, suggestions_response.text
+    suggestions = suggestions_response.json()["suggestions"]
+    assert len(suggestions) == 1
+    suggestion = suggestions[0]
+    assert suggestion["counterparty_name"] == "昆山合并付款供应商有限公司"
+    assert suggestion["direction"] == "OUTFLOW"
+    assert Decimal(str(suggestion["total_amount"])) == Decimal("600.00")
+    assert len(suggestion["source_voucher_ids"]) == 3
+    assert len(suggestion["sources"]) == 3
+    assert suggestion["recommended_credit_account_code"] == "1002"
+
+    apply_response = client.post(
+        f"/api/monthly-packages/{package.id}/vouchers/merge-suggestions/apply",
+        json={"source_voucher_ids": suggestion["source_voucher_ids"], "applied_by": "api-test"},
+    )
+
+    assert apply_response.status_code == 200, apply_response.text
+    merged = apply_response.json()
+    assert merged["status"] == "PENDING_CONFIRMATION"
+    assert merged["source_data"]["source_group_type"] == "AI_SUGGESTED_BANK_MERGE"
+    assert merged["source_data"]["voucher_task_type"] == "AI_SUGGESTED_MERGE"
+    assert len(merged["source_data"]["bank_transaction_ids"]) == 3
+    assert [entry["account_code"] for entry in merged["entries"]] == ["1123", "1002"]
+    assert Decimal(str(merged["entries"][0]["amount"])) == Decimal("600.00")
+
+    db_session.expire_all()
+    source_vouchers = (
+        db_session.query(Voucher)
+        .filter(Voucher.id.in_([UUID(item) for item in suggestion["source_voucher_ids"]]))
+        .all()
+    )
+    assert {voucher.status for voucher in source_vouchers} == {"REJECTED"}
+    assert all("MERGED_BY_OPERATOR" in (voucher.validation_errors or []) for voucher in source_vouchers)
 
 
 def test_confirm_voucher_api_validation_failure_returns_400_and_keeps_pending_status():

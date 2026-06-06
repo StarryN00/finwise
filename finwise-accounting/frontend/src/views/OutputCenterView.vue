@@ -1,14 +1,16 @@
 <template>
   <PackageContextBar status-label="输出状态" :status-value="outputStateText" />
 
-  <section class="output-grid">
-    <article v-for="item in outputs" :key="item.title" class="output-card" :class="{ disabled: item.disabled() }">
-      <div>
-        <h2 class="section-title">{{ item.title }}</h2>
+  <section class="output-list">
+    <article v-for="item in outputs" :key="item.title" class="output-row" :class="{ disabled: item.disabled() }">
+      <div class="output-row__info">
+        <div class="output-row__heading">
+          <h2 class="section-title">{{ item.title }}</h2>
+          <StatusTag :status="item.status()" />
+        </div>
         <p class="caption">{{ item.description }}</p>
       </div>
-      <StatusTag :status="item.status()" />
-      <div class="output-actions">
+      <div class="output-row__actions">
         <el-button :disabled="item.disabled()" :loading="loadingAction === item.key" type="primary" @click="item.handler">
           {{ item.action }}
         </el-button>
@@ -21,34 +23,15 @@
       </div>
     </article>
 
-    <article class="output-card tax-module" :class="{ disabled: !activePackage }">
-      <div class="tax-module__header">
-        <div>
+    <article class="output-row" :class="{ disabled: !activePackage }">
+      <div class="output-row__info">
+        <div class="output-row__heading">
           <h2 class="section-title">辅助申报表</h2>
-          <p class="caption">生成草稿后可在线核对，再下载电子税务申报辅助 Excel。</p>
+          <StatusTag :status="activePackage?.taxDraftStatus || 'DATA_INSUFFICIENT'" />
         </div>
-        <StatusTag :status="activePackage?.taxDraftStatus || 'DATA_INSUFFICIENT'" />
+        <p class="caption">生成草稿后可在线核对，再下载电子税务申报辅助 Excel。</p>
       </div>
-
-      <div class="tax-flow">
-        <div class="tax-flow__step" :class="{ done: activePackage?.taxDraftId }">
-          <span>1</span>
-          <strong>生成</strong>
-          <small>汇总进销项明细</small>
-        </div>
-        <div class="tax-flow__step" :class="{ done: activePackage?.taxDraftId }">
-          <span>2</span>
-          <strong>查看/修改</strong>
-          <small>核对申报口径</small>
-        </div>
-        <div class="tax-flow__step" :class="{ done: activePackage?.taxDraftStatus === 'EXPORTED' }">
-          <span>3</span>
-          <strong>下载</strong>
-          <small>导出辅助 Excel</small>
-        </div>
-      </div>
-
-      <div class="tax-actions">
+      <div class="output-row__actions">
         <el-button :disabled="!activePackage" :loading="loadingAction === 'tax'" type="primary" @click="generateTaxDraft">
           {{ activePackage?.taxDraftId ? '刷新申报草稿' : '生成申报草稿' }}
         </el-button>
@@ -123,7 +106,7 @@ const outputStateText = computed(() => {
 const outputs = [
   {
     key: 'statement',
-    title: '每月账目与报表',
+    title: '账目与报表',
     description: '基于已确认流水和发票生成资产负债、利润表估算',
     status: () => activePackage.value?.statementId ? 'READY_TO_EXPORT' : 'DATA_INSUFFICIENT',
     action: '生成报表',
@@ -135,7 +118,7 @@ const outputs = [
   },
   {
     key: 'report',
-    title: '完整健康诊断报告',
+    title: '健康诊断报告',
     description: '偿债、盈利、现金流、税务风险 8 段诊断',
     status: () => activePackage.value?.reportStatus || 'DATA_INSUFFICIENT',
     action: '生成报告',
@@ -235,108 +218,49 @@ function downloadHealthReportPdf() {
 </script>
 
 <style scoped>
-.output-grid {
+.output-list {
   display: grid;
-  grid-template-columns: repeat(3, minmax(0, 1fr));
-  gap: 16px;
+  gap: 12px;
   margin-top: 16px;
 }
 
-.output-card {
+.output-row {
   display: grid;
-  align-content: space-between;
-  gap: 18px;
-  min-height: 190px;
+  grid-template-columns: minmax(0, 1fr) auto;
+  align-items: center;
+  gap: 16px 24px;
   padding: 18px;
   border: 1px solid var(--fw-line);
   border-radius: var(--fw-radius);
   background: var(--fw-surface);
 }
 
-.output-card.disabled {
+.output-row.disabled {
   background: var(--fw-surface-muted);
 }
 
-.output-card .caption {
-  margin: 8px 0 0;
+.output-row__info {
+  min-width: 0;
 }
 
-.output-actions {
-  display: grid;
-  gap: 10px;
-}
-
-.output-actions :deep(.el-button) {
-  width: 100%;
-  margin-left: 0;
-}
-
-.tax-module {
-  gap: 16px;
-}
-
-.tax-module__header {
+.output-row__heading {
   display: flex;
-  align-items: flex-start;
-  justify-content: space-between;
-  gap: 16px;
+  align-items: center;
+  gap: 12px;
 }
 
-.tax-flow {
-  display: grid;
-  grid-template-columns: repeat(3, minmax(0, 1fr));
+.output-row .caption {
+  margin: 6px 0 0;
+}
+
+.output-row__actions {
+  display: flex;
+  flex-wrap: wrap;
+  justify-content: flex-end;
   gap: 10px;
 }
 
-.tax-flow__step {
-  display: grid;
-  gap: 4px;
-  min-height: 76px;
-  padding: 12px;
-  border: 1px solid var(--fw-line);
-  border-radius: 8px;
-  background: var(--fw-surface-muted);
-}
-
-.tax-flow__step span {
-  display: inline-grid;
-  place-items: center;
-  width: 22px;
-  height: 22px;
-  border-radius: 50%;
-  color: var(--fw-text-muted);
-  background: #eef2f7;
-  font-size: 12px;
-  font-weight: 700;
-}
-
-.tax-flow__step strong {
-  font-size: 13px;
-}
-
-.tax-flow__step small {
-  color: var(--fw-text-muted);
-  line-height: 1.4;
-}
-
-.tax-flow__step.done {
-  border-color: #b9dcff;
-  background: #eef6ff;
-}
-
-.tax-flow__step.done span {
-  color: #fff;
-  background: var(--fw-primary);
-}
-
-.tax-actions {
-  display: grid;
-  grid-template-columns: 1fr 1fr 1fr;
-  gap: 10px;
-}
-
-.tax-actions :deep(.el-button) {
-  width: 100%;
+.output-row__actions :deep(.el-button) {
   margin-left: 0;
 }
 
@@ -370,10 +294,21 @@ function downloadHealthReportPdf() {
   background: #fff7ed;
 }
 
+@media (max-width: 720px) {
+  .output-row {
+    grid-template-columns: 1fr;
+  }
+
+  .output-row__actions {
+    justify-content: stretch;
+  }
+
+  .output-row__actions :deep(.el-button) {
+    flex: 1 1 auto;
+  }
+}
+
 @media (max-width: 960px) {
-  .output-grid,
-  .tax-flow,
-  .tax-actions,
   .draft-form {
     grid-template-columns: 1fr;
   }

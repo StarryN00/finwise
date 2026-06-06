@@ -11,7 +11,19 @@ from app.api.deps import get_db
 from app.core.database import Base
 from app.core.org_context import ensure_default_organization
 from app.main import create_app
-from app.models import AccountingLine, BankTransaction, Enterprise, Invoice, MatchRecord, MatchingRule, MonthlyWorkPackage
+from app.models import (
+    AccountingLine,
+    BankTransaction,
+    Enterprise,
+    Invoice,
+    MatchRecord,
+    MatchingRule,
+    MonthlyWorkPackage,
+    Report,
+    TaxFilingDraft,
+    TechnologyProfile,
+    TechnologyTag,
+)
 from app.services.ai_matching_service import AiMatchingUnavailableError
 from app.services.matching_service import run_matching
 
@@ -306,6 +318,44 @@ def test_workspace_snapshot_can_focus_selected_package():
 def test_workspace_enterprise_rows_include_detail_fields():
     client, db_session = make_context()
     enterprise, _package = make_package(db_session)
+    profile = TechnologyProfile(
+        organization_id=ORG,
+        enterprise_id=enterprise.id,
+        overall_status="SCANNED_PENDING_REVIEW",
+        primary_provider="QICHACHA",
+        summary="命中高新技术企业，发明专利 2 件。",
+    )
+    db_session.add(profile)
+    db_session.flush()
+    db_session.add_all(
+        [
+            TechnologyTag(
+                organization_id=ORG,
+                enterprise_id=enterprise.id,
+                profile_id=profile.id,
+                category="TECH_QUALIFICATION",
+                name="高新技术企业",
+                status="HIT",
+                value="有效期内",
+                confidence=95,
+                source_provider="QICHACHA",
+                evidence_text="高新技术企业",
+            ),
+            TechnologyTag(
+                organization_id=ORG,
+                enterprise_id=enterprise.id,
+                profile_id=profile.id,
+                category="INTELLECTUAL_PROPERTY",
+                name="发明专利",
+                status="HIT",
+                value="2",
+                confidence=90,
+                source_provider="QICHACHA",
+                evidence_text="发明专利 2 件",
+            ),
+        ]
+    )
+    db_session.commit()
 
     response = client.get("/api/workspace")
 
@@ -316,6 +366,51 @@ def test_workspace_enterprise_rows_include_detail_fields():
     assert row["province"] == "江苏省"
     assert row["city"] == "苏州市"
     assert row["status"] == "ACTIVE"
+    assert row["technologyProfileStatus"] == "SCANNED_PENDING_REVIEW"
+    assert row["technologyProfileSummary"] == "命中高新技术企业，发明专利 2 件。"
+    assert row["technologyTags"] == ["高新技术企业"]
+    assert row["ipSummary"] == "发明专利 2"
+
+
+def test_workspace_health_report_checklist_requires_ready_report():
+    client, db_session = make_context()
+    _enterprise, package = make_package(db_session)
+    db_session.add(
+        Report(
+            organization_id=ORG,
+            monthly_work_package_id=package.id,
+            report_type="FINANCIAL_HEALTH",
+            status="DATA_INSUFFICIENT",
+        )
+    )
+    db_session.commit()
+
+    response = client.get("/api/workspace")
+
+    assert response.status_code == 200
+    health_item = next(item for item in response.json()["missingChecklist"] if item["label"] == "健康报告数据")
+    assert health_item["done"] is False
+
+
+def test_workspace_package_status_does_not_skip_unstarted_matching_when_tax_draft_exists():
+    client, db_session = make_context()
+    _enterprise, package = make_package(db_session)
+    db_session.add(
+        TaxFilingDraft(
+            organization_id=ORG,
+            monthly_work_package_id=package.id,
+            status="DRAFT",
+            data={"vat_payable": "100.00"},
+        )
+    )
+    db_session.commit()
+
+    response = client.get(f"/api/workspace?package_id={package.id}")
+
+    assert response.status_code == 200
+    package_row = response.json()["workPackages"][0]
+    assert package_row["status"] == "PENDING_IMPORT"
+    assert package_row["taxDraftStatus"] == "DRAFT"
 
 
 def test_confirm_unmatched_bank_transaction_creates_confirmed_line_and_rule():
