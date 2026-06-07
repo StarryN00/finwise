@@ -11,7 +11,7 @@ from app.api.deps import get_db
 from app.core.database import Base
 from app.core.org_context import ensure_default_organization
 from app.main import create_app
-from app.models import Enterprise, MonthlyWorkPackage, Voucher, VoucherEntry
+from app.models import Enterprise, HistoricalImportBatch, HistoricalLedgerEntry, MonthlyWorkPackage, Voucher, VoucherEntry
 
 
 ORG = UUID("00000000-0000-0000-0000-000000000001")
@@ -96,6 +96,39 @@ def add_voucher(db_session, package, *, number, voucher_date, status, entries):
     return voucher
 
 
+def add_historical_entry(db_session, package):
+    batch = HistoricalImportBatch(
+        organization_id=ORG,
+        enterprise_id=package.enterprise_id,
+        fiscal_year=2026,
+        period_start_month=1,
+        period_end_month=3,
+        ledger_filename="ledger.xlsx",
+        balance_filename="balance.xlsx",
+    )
+    db_session.add(batch)
+    db_session.flush()
+    db_session.add(
+        HistoricalLedgerEntry(
+            organization_id=ORG,
+            enterprise_id=package.enterprise_id,
+            import_batch_id=batch.id,
+            fiscal_year=2026,
+            period_start_month=1,
+            period_end_month=3,
+            voucher_date=date(2026, 3, 31),
+            voucher_no="记-0001",
+            summary="历史销售",
+            account_full_name="主营业务收入",
+            account_code="5001",
+            account_name="主营业务收入",
+            debit_amount=Decimal("0.00"),
+            credit_amount=Decimal("100.00"),
+        )
+    )
+    db_session.commit()
+
+
 def seed_ledgers(db_session, package):
     add_voucher(
         db_session,
@@ -158,3 +191,33 @@ def test_ledger_endpoints_return_only_confirmed_voucher_data():
     assert trial.json()["is_balanced"] is True
     assert accounts.status_code == 200
     assert accounts.json()[0]["account_code"] == "1002"
+
+
+def test_historical_ledger_endpoints_return_imported_historical_data():
+    client, db_session = make_context()
+    package = make_package(db_session)
+    add_historical_entry(db_session, package)
+    params = {"fiscal_year": 2026, "period_start_month": 1, "period_end_month": 3}
+
+    vouchers = client.get(f"/api/enterprises/{package.enterprise_id}/historical-imports/vouchers", params=params)
+    journal = client.get(f"/api/enterprises/{package.enterprise_id}/historical-imports/ledgers/journal", params=params)
+
+    assert vouchers.status_code == 200
+    assert vouchers.json()[0]["voucher_number"] == "记-0001"
+    assert vouchers.json()[0]["entries"][0]["account_code"] == "5001"
+    assert journal.status_code == 200
+    assert journal.json()[0]["source_type"] == "历史账套"
+
+    amount_search = client.get(
+        f"/api/enterprises/{package.enterprise_id}/historical-imports/vouchers",
+        params={**params, "keyword": "100.00"},
+    )
+    direction_search = client.get(
+        f"/api/enterprises/{package.enterprise_id}/historical-imports/vouchers",
+        params={**params, "keyword": "贷方"},
+    )
+
+    assert amount_search.status_code == 200
+    assert amount_search.json()[0]["voucher_number"] == "记-0001"
+    assert direction_search.status_code == 200
+    assert direction_search.json()[0]["voucher_number"] == "记-0001"

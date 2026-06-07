@@ -8,12 +8,15 @@ import { formatAmount } from '../components/source-ledgers/ledgerFormatters'
 const CONTEXT_STORAGE_KEY = 'finwise:voucher-management:context'
 
 const workspace = useWorkspaceStore()
+const sourceMode = ref('monthly')
 const selectedEnterpriseId = ref('')
 const selectedPeriodPackageId = ref('')
+const historicalFiscalYear = ref(new Date().getFullYear())
+const historicalStartMonth = ref(1)
+const historicalEndMonth = ref(12)
 const keyword = ref('')
 const vouchers = ref([])
 const isLoading = ref(false)
-const detailVisible = ref(false)
 const selectedVoucherId = ref('')
 const currentPage = ref(1)
 const pageSize = 20
@@ -27,6 +30,22 @@ const periodOptions = computed(() => {
 const activePackage = computed(() => {
   return (workspace.workPackages || []).find((item) => item.id === selectedPeriodPackageId.value) || null
 })
+const monthOptions = Array.from({ length: 12 }, (_, index) => {
+  const value = index + 1
+  return { value, label: `${value} 月` }
+})
+const historicalParams = computed(() => ({
+  fiscal_year: Number(historicalFiscalYear.value),
+  period_start_month: Number(historicalStartMonth.value),
+  period_end_month: Number(historicalEndMonth.value),
+}))
+const selectedContextLabel = computed(() => {
+  if (sourceMode.value === 'historical') {
+    if (Number(historicalStartMonth.value) === 1 && Number(historicalEndMonth.value) === 12) return `${historicalFiscalYear.value} 年`
+    return `${historicalFiscalYear.value} 年 ${historicalStartMonth.value} 月至 ${historicalEndMonth.value} 月`
+  }
+  return activePackage.value?.period || '-'
+})
 const selectedVoucher = computed(() => vouchers.value.find((item) => item.id === selectedVoucherId.value) || null)
 const voucherRows = computed(() =>
   vouchers.value.map((voucher) => ({
@@ -35,6 +54,7 @@ const voucherRows = computed(() =>
     debitTotal: entryTotal(voucher, 'DEBIT'),
     creditTotal: entryTotal(voucher, 'CREDIT'),
     sourceType: sourceTypeLabel(voucher),
+    maker: voucher.confirmed_by || (sourceMode.value === 'historical' ? '历史导入' : '-'),
   })),
 )
 const pageCount = computed(() => Math.max(1, Math.ceil(voucherRows.value.length / pageSize)))
@@ -42,12 +62,6 @@ const paginatedVoucherRows = computed(() => {
   const start = (currentPage.value - 1) * pageSize
   return voucherRows.value.slice(start, start + pageSize)
 })
-const selectedVoucherNumber = computed(() => {
-  const value = selectedVoucher.value?.voucher_number || '未编号'
-  return value.replace(/^记-?/, '')
-})
-const selectedVoucherTotal = computed(() => Math.max(entryTotal(selectedVoucher.value, 'DEBIT'), entryTotal(selectedVoucher.value, 'CREDIT')))
-const selectedVoucherUpperTotal = computed(() => amountToChineseUpper(selectedVoucherTotal.value))
 
 onMounted(async () => {
   restoreContext()
@@ -64,6 +78,10 @@ watch(
 )
 
 watch(selectedEnterpriseId, () => {
+  if (sourceMode.value === 'historical') {
+    loadConfirmedVouchers()
+    return
+  }
   const current = activePackage.value
   if (current && packageEnterpriseId(current) === selectedEnterpriseId.value) return
   selectedPeriodPackageId.value = periodOptions.value[0]?.id || ''
@@ -71,10 +89,17 @@ watch(selectedEnterpriseId, () => {
 
 watch(selectedPeriodPackageId, async (packageId) => {
   persistContext()
-  if (packageId) {
+  if (sourceMode.value === 'monthly' && packageId) {
     await loadConfirmedVouchers()
   } else {
     vouchers.value = []
+  }
+})
+
+watch([sourceMode, historicalFiscalYear, historicalStartMonth, historicalEndMonth], async () => {
+  persistContext()
+  if (sourceMode.value === 'historical' && selectedEnterpriseId.value) {
+    await loadConfirmedVouchers()
   }
 })
 
@@ -106,9 +131,14 @@ function restoreContext() {
     const parsed = JSON.parse(window.localStorage?.getItem(CONTEXT_STORAGE_KEY) || '{}')
     selectedEnterpriseId.value = parsed.enterpriseId || ''
     selectedPeriodPackageId.value = parsed.packageId || ''
+    sourceMode.value = parsed.sourceMode === 'historical' ? 'historical' : 'monthly'
+    historicalFiscalYear.value = parsed.historicalFiscalYear || historicalFiscalYear.value
+    historicalStartMonth.value = parsed.historicalStartMonth || 1
+    historicalEndMonth.value = parsed.historicalEndMonth || 12
   } catch {
     selectedEnterpriseId.value = ''
     selectedPeriodPackageId.value = ''
+    sourceMode.value = 'monthly'
   }
 }
 
@@ -118,19 +148,37 @@ function persistContext() {
     JSON.stringify({
       enterpriseId: selectedEnterpriseId.value,
       packageId: selectedPeriodPackageId.value,
+      sourceMode: sourceMode.value,
+      historicalFiscalYear: historicalFiscalYear.value,
+      historicalStartMonth: historicalStartMonth.value,
+      historicalEndMonth: historicalEndMonth.value,
     }),
   )
 }
 
 async function loadConfirmedVouchers() {
-  if (!selectedPeriodPackageId.value) return
+  if (sourceMode.value === 'monthly' && !selectedPeriodPackageId.value) return
+  if (sourceMode.value === 'historical' && !selectedEnterpriseId.value) return
+  if (sourceMode.value === 'historical' && Number(historicalStartMonth.value) > Number(historicalEndMonth.value)) {
+    ElMessage.warning('起始月份不能晚于截止月份')
+    return
+  }
   isLoading.value = true
   try {
     const params = { status: 'CONFIRMED' }
     const searchText = keyword.value.trim()
     if (searchText) params.keyword = searchText
-    const response = await api.vouchers.list(selectedPeriodPackageId.value, params)
-    vouchers.value = (response.data || []).filter((voucher) => voucher.status === 'CONFIRMED')
+    const response =
+      sourceMode.value === 'historical'
+        ? await api.historicalImports.vouchers(selectedEnterpriseId.value, {
+            ...historicalParams.value,
+            keyword: searchText || undefined,
+          })
+        : await api.vouchers.list(selectedPeriodPackageId.value, params)
+    vouchers.value =
+      sourceMode.value === 'historical'
+        ? response.data || []
+        : (response.data || []).filter((voucher) => voucher.status === 'CONFIRMED')
     if (selectedVoucherId.value && !vouchers.value.some((voucher) => voucher.id === selectedVoucherId.value)) {
       selectedVoucherId.value = ''
     }
@@ -151,7 +199,6 @@ function searchVouchers() {
 
 function openVoucherDetail(voucher) {
   selectedVoucherId.value = voucher.id
-  detailVisible.value = true
 }
 
 function goToPage(page) {
@@ -176,6 +223,7 @@ function voucherCounterparty(voucher) {
 }
 
 function sourceTypeLabel(voucher) {
+  if (sourceMode.value === 'historical' || voucher?.source_data?.source_type === 'HISTORICAL_LEDGER') return '历史账套'
   const source = voucher?.source_data || voucher?.sourceData || {}
   const hasBank = Boolean(source.bank_transaction || source.bank_transactions?.length || source.bankTransaction || source.bankTransactions?.length)
   const hasInvoice = Boolean(source.invoice || source.invoices?.length)
@@ -190,129 +238,157 @@ function formatDateTime(value) {
   return String(value).replace('T', ' ').slice(0, 16)
 }
 
-function amountToChineseUpper(value) {
-  const amount = Math.round(Number(value || 0) * 100)
-  if (!amount) return '零元整'
-  const integer = Math.floor(amount / 100)
-  const cent = amount % 100
-  const fraction = ['角', '分']
-  const digits = ['零', '壹', '贰', '叁', '肆', '伍', '陆', '柒', '捌', '玖']
-  const units = ['', '拾', '佰', '仟']
-  const bigUnits = ['', '万', '亿']
-  const parts = []
-  let remaining = integer
-  let groupIndex = 0
-  while (remaining > 0) {
-    const group = remaining % 10000
-    if (group) {
-      parts.unshift(`${fourDigitToUpper(group, digits, units)}${bigUnits[groupIndex]}`)
-    }
-    remaining = Math.floor(remaining / 10000)
-    groupIndex += 1
-  }
-  const integerText = `${parts.join('')}元`
-  if (cent === 0) return `${integerText}整`
-  const jiao = Math.floor(cent / 10)
-  const fen = cent % 10
-  return `${integerText}${jiao ? `${digits[jiao]}${fraction[0]}` : ''}${fen ? `${digits[fen]}${fraction[1]}` : ''}`
+function entryDebit(entry) {
+  return entry.direction === 'DEBIT' ? Number(entry.amount || 0) : 0
 }
 
-function fourDigitToUpper(value, digits, units) {
-  const chars = String(value).padStart(4, '0').split('').map(Number)
-  let output = ''
-  let zeroPending = false
-  chars.forEach((digit, index) => {
-    const unitIndex = 3 - index
-    if (!digit) {
-      zeroPending = Boolean(output)
-      return
-    }
-    if (zeroPending) {
-      output += '零'
-      zeroPending = false
-    }
-    output += `${digits[digit]}${units[unitIndex]}`
-  })
-  return output
+function entryCredit(entry) {
+  return entry.direction === 'CREDIT' ? Number(entry.amount || 0) : 0
+}
+
+function voucherNumberText(voucher) {
+  return voucher.voucher_number || '未编号'
+}
+
+function entryKey(voucher, entry, index) {
+  return entry.id || `${voucher.id}:${entry.line_no || index}`
+}
+
+function selectRailMonth(month) {
+  if (sourceMode.value !== 'historical') return
+  historicalStartMonth.value = month
+  historicalEndMonth.value = month
 }
 </script>
 
 <template>
-  <section class="panel voucher-management-page">
-    <div class="panel-header">
-      <div>
-        <h2>凭证管理</h2>
-        <p class="muted">查看已确认凭证，按主体、期间和关键词快速检索。</p>
+  <section class="voucher-management-page">
+    <header class="voucher-toolbar">
+      <div class="voucher-search">
+        <el-input v-model="keyword" clearable placeholder="可输入凭证号/摘要/科目/金额..." @clear="searchVouchers" @keyup.enter="searchVouchers" />
+        <button class="icon-search-button" type="button" aria-label="搜索凭证" :disabled="isLoading" @click="searchVouchers">⌕</button>
       </div>
-      <el-button :loading="isLoading" @click="loadConfirmedVouchers">刷新</el-button>
-    </div>
+      <button class="filter-button" type="button">更多条件⌄</button>
+      <button class="help-button" type="button">?</button>
+      <div class="toolbar-spacer" />
+      <button class="primary-action" type="button">+ 新增凭证</button>
+      <button class="outline-action" type="button">批量操作⌄</button>
+      <button class="text-action" type="button">导入/导出</button>
+      <button class="text-action" type="button">打印</button>
+      <button class="text-action" type="button">电子账本</button>
+      <button class="text-action" type="button">按日期编号</button>
+      <button class="text-action" type="button" :disabled="isLoading" @click="loadConfirmedVouchers">刷新</button>
+    </header>
 
-    <div class="context-grid">
+    <section class="voucher-filter-strip">
+      <div class="mode-toggle" aria-label="凭证来源">
+        <button type="button" :class="{ active: sourceMode === 'monthly' }" @click="sourceMode = 'monthly'">月度工作包</button>
+        <button type="button" :class="{ active: sourceMode === 'historical' }" @click="sourceMode = 'historical'">历史账套</button>
+      </div>
       <label>
         <span>企业主体</span>
         <el-select v-model="selectedEnterpriseId" placeholder="企业主体" filterable>
           <el-option v-for="enterprise in enterpriseOptions" :key="enterprise.id" :label="enterprise.name" :value="enterprise.id" />
         </el-select>
       </label>
-      <label>
+      <label v-if="sourceMode === 'monthly'">
         <span>工作期间</span>
         <el-select v-model="selectedPeriodPackageId" placeholder="工作期间">
           <el-option v-for="item in periodOptions" :key="item.id" :label="item.period" :value="item.id" />
         </el-select>
       </label>
-      <label class="search-field">
-        <span>搜索</span>
-        <div class="search-row">
-          <el-input v-model="keyword" placeholder="搜索凭证号、摘要、对方主体、科目" @keyup.enter="searchVouchers" />
-          <el-button class="search-button" type="primary" :loading="isLoading" @click="searchVouchers">搜索</el-button>
-        </div>
+      <label v-if="sourceMode === 'historical'">
+        <span>会计年度</span>
+        <el-input v-model="historicalFiscalYear" placeholder="会计年度" />
       </label>
-    </div>
+      <label v-if="sourceMode === 'historical'">
+        <span>起始月份</span>
+        <el-select v-model="historicalStartMonth" placeholder="起始月份">
+          <el-option v-for="month in monthOptions" :key="month.value" :label="month.label" :value="month.value" />
+        </el-select>
+      </label>
+      <label v-if="sourceMode === 'historical'">
+        <span>截止月份</span>
+        <el-select v-model="historicalEndMonth" placeholder="截止月份">
+          <el-option v-for="month in monthOptions" :key="month.value" :label="month.label" :value="month.value" />
+        </el-select>
+      </label>
+      <div class="list-summary">
+        <strong>{{ voucherRows.length }}</strong>
+        <span>{{ sourceMode === 'historical' ? '张历史凭证' : '张已确认凭证' }} · {{ selectedContextLabel }}</span>
+      </div>
+    </section>
 
-    <div class="list-summary">
-      <strong>显示 {{ voucherRows.length }} 张已确认凭证</strong>
-      <span>{{ activePackage?.company || '未选择企业' }} · {{ activePackage?.period || '-' }}</span>
-    </div>
+    <div class="voucher-ledger-layout">
+      <div class="voucher-ledger-scroll">
+        <table class="voucher-ledger-table">
+          <thead>
+            <tr>
+              <th class="check-col"><input type="checkbox" /></th>
+              <th>摘要</th>
+              <th>科目</th>
+              <th>借方金额</th>
+              <th>贷方金额</th>
+            </tr>
+          </thead>
+          <tbody>
+            <template v-for="voucher in paginatedVoucherRows" :key="voucher.id">
+              <tr class="voucher-meta-row" :class="{ selected: selectedVoucherId === voucher.id }">
+                <td class="check-col"><input type="checkbox" /></td>
+                <td colspan="4">
+                  <button class="voucher-number-link" type="button" @click="openVoucherDetail(voucher)">
+                    日期：{{ voucher.voucher_date }}
+                  </button>
+                  <span>制单人：{{ voucher.maker }}</span>
+                  <span>凭证字号：{{ voucherNumberText(voucher) }}</span>
+                  <span>附单据 {{ voucher.attachment_count || 0 }} 张</span>
+                  <span v-if="voucher.counterparty !== '-'">对方：{{ voucher.counterparty }}</span>
+                  <span>{{ voucher.sourceType }}</span>
+                  <span v-if="voucher.confirmed_at">确认：{{ formatDateTime(voucher.confirmed_at) }}</span>
+                </td>
+              </tr>
+              <tr v-for="(entry, index) in voucher.entries" :key="entryKey(voucher, entry, index)" class="voucher-entry-row">
+                <td class="check-col"></td>
+                <td class="summary-cell" :title="voucher.summary">{{ voucher.summary || '-' }}</td>
+                <td class="subject-cell">
+                  <span class="subject-code">{{ entry.account_code }}</span>
+                  {{ entry.account_name }}
+                </td>
+                <td class="amount">{{ entryDebit(entry) ? formatAmount(entryDebit(entry)) : '' }}</td>
+                <td class="amount">{{ entryCredit(entry) ? formatAmount(entryCredit(entry)) : '' }}</td>
+              </tr>
+              <tr class="voucher-total-row">
+                <td class="check-col"></td>
+                <td colspan="2"><span class="total-icon">总</span>合计</td>
+                <td class="amount">{{ formatAmount(voucher.debitTotal) }}</td>
+                <td class="amount">{{ formatAmount(voucher.creditTotal) }}</td>
+              </tr>
+            </template>
+            <tr v-if="!paginatedVoucherRows.length">
+              <td colspan="5" class="empty-cell">暂无凭证数据</td>
+            </tr>
+          </tbody>
+        </table>
+      </div>
 
-    <div class="voucher-table-wrap">
-      <table class="voucher-table">
-        <thead>
-          <tr>
-            <th>凭证日期</th>
-            <th>凭证号</th>
-            <th>摘要</th>
-            <th>对方主体</th>
-            <th>借方合计</th>
-            <th>贷方合计</th>
-            <th>来源类型</th>
-            <th>确认时间</th>
-            <th>操作</th>
-          </tr>
-        </thead>
-        <tbody>
-          <tr v-for="voucher in paginatedVoucherRows" :key="voucher.id">
-            <td>{{ voucher.voucher_date }}</td>
-            <td>
-              <button class="voucher-number-link" type="button" @click="openVoucherDetail(voucher)">
-                {{ voucher.voucher_number || '未编号' }}
-              </button>
-            </td>
-            <td class="cell-ellipsis" :title="voucher.summary">{{ voucher.summary }}</td>
-            <td class="cell-ellipsis" :title="voucher.counterparty">{{ voucher.counterparty }}</td>
-            <td class="amount">{{ formatAmount(voucher.debitTotal) }}</td>
-            <td class="amount">{{ formatAmount(voucher.creditTotal) }}</td>
-            <td>{{ voucher.sourceType }}</td>
-            <td>{{ formatDateTime(voucher.confirmed_at) }}</td>
-            <td>
-              <el-button class="view-voucher-button" type="primary" size="small" @click="openVoucherDetail(voucher)">查看详情</el-button>
-            </td>
-          </tr>
-        </tbody>
-      </table>
+      <aside class="period-rail" aria-label="期间选择">
+        <strong>期间选择</strong>
+        <span>{{ selectedContextLabel }}</span>
+        <div class="rail-year">{{ historicalFiscalYear || activePackage?.period?.slice(0, 4) || '2026' }}</div>
+        <button
+          v-for="month in monthOptions"
+          :key="month.value"
+          type="button"
+          :class="{ active: sourceMode === 'historical' && Number(historicalStartMonth) === month.value }"
+          @click="selectRailMonth(month.value)"
+        >
+          {{ String(month.value).padStart(2, '0') }}月
+        </button>
+      </aside>
     </div>
 
     <div class="pagination-bar" aria-label="凭证分页">
-      <span>每页 {{ pageSize }} 条</span>
+      <span>每页 {{ pageSize }} 张凭证</span>
       <span>第 {{ currentPage }} / {{ pageCount }} 页</span>
       <button class="pager-button previous-page-button" type="button" :disabled="currentPage <= 1" @click="goToPage(currentPage - 1)">
         上一页
@@ -321,206 +397,329 @@ function fourDigitToUpper(value, digits, units) {
         下一页
       </button>
     </div>
-
-    <el-dialog v-model="detailVisible" width="1120px" class="accounting-voucher-dialog" title="记账凭证">
-      <section v-if="selectedVoucher" class="accounting-voucher">
-        <h2>记账凭证</h2>
-        <div class="voucher-slip-meta">
-          <span>记 字第 {{ selectedVoucherNumber }} 号</span>
-          <span>日期：{{ selectedVoucher.voucher_date }}</span>
-          <span>附件 {{ selectedVoucher.attachment_count || 0 }} 张</span>
-        </div>
-        <table class="voucher-slip-table">
-          <thead>
-            <tr>
-              <th class="col-index">序号</th>
-              <th>摘要</th>
-              <th>会计科目</th>
-              <th>借方金额</th>
-              <th>贷方金额</th>
-            </tr>
-          </thead>
-          <tbody>
-            <tr v-for="entry in selectedVoucher.entries" :key="entry.line_no">
-              <td class="col-index">{{ entry.line_no }}</td>
-              <td>{{ selectedVoucher.summary }}</td>
-              <td>
-                <strong>{{ entry.account_code }}</strong>
-                {{ entry.account_name }}
-              </td>
-              <td class="digit-amount">{{ entry.direction === 'DEBIT' ? formatAmount(entry.amount) : '' }}</td>
-              <td class="digit-amount">{{ entry.direction === 'CREDIT' ? formatAmount(entry.amount) : '' }}</td>
-            </tr>
-            <tr class="total-row">
-              <td colspan="3">合计：{{ selectedVoucherUpperTotal }}</td>
-              <td class="digit-amount">{{ formatAmount(selectedVoucherTotal) }}</td>
-              <td class="digit-amount">{{ formatAmount(selectedVoucherTotal) }}</td>
-            </tr>
-          </tbody>
-        </table>
-        <div class="voucher-slip-footer">
-          <span>制单人：{{ selectedVoucher.confirmed_by || '-' }}</span>
-          <span>审核人：-</span>
-          <span>修改人：-</span>
-        </div>
-      </section>
-    </el-dialog>
   </section>
 </template>
 
 <style scoped>
 .voucher-management-page {
   display: grid;
-  gap: 16px;
+  gap: 10px;
+  min-height: calc(100vh - 96px);
+  background: #f5f7fb;
 }
 
-.panel-header,
-.search-row,
-.list-summary,
-.voucher-slip-meta,
-.voucher-slip-footer {
+.voucher-toolbar {
   display: flex;
   align-items: center;
-  justify-content: space-between;
-  gap: 12px;
+  gap: 10px;
+  min-height: 48px;
+  padding: 8px 12px;
+  border-bottom: 1px solid #dfe4ef;
+  background: #fff;
 }
 
-.panel-header h2,
-.accounting-voucher h2 {
-  margin: 0;
+.voucher-search {
+  display: flex;
+  align-items: center;
+  width: min(360px, 34vw);
+  border-bottom: 1px solid #e4e9f2;
 }
 
-.muted {
-  margin: 4px 0 0;
-  color: var(--fw-muted);
+.voucher-search :deep(.el-input__wrapper) {
+  box-shadow: none;
+  padding-left: 0;
 }
 
-.context-grid {
-  display: grid;
-  grid-template-columns: minmax(220px, 1fr) 180px minmax(360px, 2fr);
-  gap: 12px;
-  align-items: end;
+.icon-search-button,
+.help-button {
+  width: 30px;
+  height: 30px;
+  border: 0;
+  border-radius: 4px;
+  background: transparent;
+  color: #5b45e5;
+  cursor: pointer;
 }
 
-.context-grid label {
-  display: grid;
-  gap: 6px;
-  color: var(--fw-text);
-  font-weight: 600;
-}
-
-.search-row {
-  align-items: stretch;
-}
-
-.search-row .el-input {
-  flex: 1;
-}
-
-.list-summary {
-  justify-content: flex-start;
-  color: var(--fw-muted);
-}
-
-.list-summary strong {
-  color: var(--fw-text);
-}
-
-.voucher-table-wrap {
-  max-width: 100%;
-  overflow-x: auto;
-  border: 1px solid var(--fw-line);
-  border-radius: var(--fw-radius-sm);
-}
-
-.voucher-table {
-  width: 100%;
-  min-width: 1180px;
-  border-collapse: collapse;
-  table-layout: fixed;
-}
-
-.voucher-table th,
-.voucher-table td {
-  padding: 10px 12px;
-  border-bottom: 1px solid var(--fw-line);
-  text-align: left;
+.filter-button,
+.text-action {
+  height: 32px;
+  border: 0;
+  background: transparent;
+  color: #2f3a4c;
+  cursor: pointer;
   white-space: nowrap;
 }
 
-.voucher-table th {
-  background: #eef3f9;
-  color: #30415c;
+.toolbar-spacer {
+  flex: 1;
+}
+
+.primary-action,
+.outline-action {
+  height: 34px;
+  padding: 0 14px;
+  border-radius: 3px;
+  cursor: pointer;
+  white-space: nowrap;
+}
+
+.primary-action {
+  border: 1px solid #5946e8;
+  background: #5946e8;
+  color: #fff;
+}
+
+.outline-action {
+  border: 1px solid #5946e8;
+  background: #fff;
+  color: #5946e8;
+}
+
+.voucher-filter-strip {
+  display: grid;
+  grid-template-columns: max-content minmax(220px, 1fr) repeat(3, minmax(118px, 150px)) minmax(160px, auto);
+  gap: 12px;
+  align-items: center;
+  padding: 10px 12px;
+  border: 1px solid #e1e7f0;
+  border-radius: 6px;
+  background: #fff;
+}
+
+.voucher-filter-strip label {
+  display: grid;
+  gap: 4px;
+  color: #66758c;
+  font-size: 12px;
+}
+
+.list-summary {
+  display: flex;
+  align-items: baseline;
+  justify-content: flex-end;
+  gap: 6px;
+  color: #66758c;
+  white-space: nowrap;
+}
+
+.list-summary strong {
+  color: #1f2d3d;
+  font-size: 18px;
+}
+
+.mode-toggle {
+  display: inline-flex;
+  padding: 3px;
+  border: 1px solid #dce3ef;
+  border-radius: 4px;
+  background: #f6f9fc;
+}
+
+.mode-toggle button {
+  min-width: 88px;
+  height: 28px;
+  border: 0;
+  border-radius: 3px;
+  background: transparent;
+  color: #617089;
+  cursor: pointer;
+}
+
+.mode-toggle button.active {
+  background: #fff;
+  color: #5946e8;
+  box-shadow: 0 1px 3px rgb(15 23 42 / 12%);
+}
+
+.voucher-ledger-layout {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) 74px;
+  gap: 10px;
+  min-height: 0;
+}
+
+.voucher-ledger-scroll {
+  max-height: calc(100vh - 250px);
+  overflow-x: auto;
+  overflow-y: auto;
+  border: 1px solid #dbe2ec;
+  background: #fff;
+}
+
+.voucher-ledger-table {
+  width: 100%;
+  min-width: 1060px;
+  border-collapse: collapse;
+  table-layout: fixed;
+  color: #263243;
+  font-size: 14px;
+}
+
+.voucher-ledger-table thead th {
+  position: sticky;
+  top: 0;
+  z-index: 2;
+  height: 34px;
+  padding: 0 12px;
+  border-right: 1px solid #d7deea;
+  border-bottom: 1px solid #d7deea;
+  background: #e9ecf6;
+  color: #1f2d3d;
+  text-align: center;
   font-weight: 700;
 }
 
-.voucher-table th:nth-child(1),
-.voucher-table td:nth-child(1) {
-  width: 110px;
+.voucher-ledger-table th:nth-child(1),
+.voucher-ledger-table td:nth-child(1) {
+  width: 44px;
 }
 
-.voucher-table th:nth-child(2),
-.voucher-table td:nth-child(2) {
-  width: 110px;
+.voucher-ledger-table th:nth-child(2),
+.voucher-ledger-table td:nth-child(2) {
+  width: 280px;
 }
 
-.voucher-table th:nth-child(3),
-.voucher-table td:nth-child(3) {
-  width: 150px;
+.voucher-ledger-table th:nth-child(3),
+.voucher-ledger-table td:nth-child(3) {
+  width: 390px;
 }
 
-.voucher-table th:nth-child(4),
-.voucher-table td:nth-child(4) {
-  width: 240px;
+.voucher-ledger-table th:nth-child(4),
+.voucher-ledger-table td:nth-child(4),
+.voucher-ledger-table th:nth-child(5),
+.voucher-ledger-table td:nth-child(5) {
+  width: 220px;
 }
 
-.voucher-table th:nth-child(5),
-.voucher-table td:nth-child(5),
-.voucher-table th:nth-child(6),
-.voucher-table td:nth-child(6) {
-  width: 120px;
+.voucher-ledger-table td {
+  height: 34px;
+  padding: 0 12px;
+  border-right: 1px solid #dfe5ee;
+  border-bottom: 1px solid #dfe5ee;
+  background: #fff;
+  vertical-align: middle;
 }
 
-.voucher-table th:nth-child(7),
-.voucher-table td:nth-child(7) {
-  width: 100px;
+.check-col {
+  width: 44px;
+  padding: 0;
+  text-align: center;
 }
 
-.voucher-table th:nth-child(8),
-.voucher-table td:nth-child(8) {
-  width: 150px;
+.voucher-meta-row td {
+  height: 38px;
+  background: #fff;
+  color: #2f3a4c;
 }
 
-.voucher-table th:nth-child(9),
-.voucher-table td:nth-child(9) {
-  width: 120px;
+.voucher-meta-row.selected td {
+  background: #f7f5ff;
+}
+
+.voucher-meta-row span,
+.voucher-meta-row button {
+  margin-right: 34px;
 }
 
 .voucher-number-link {
   padding: 0;
   border: 0;
   background: transparent;
-  color: var(--fw-primary);
+  color: #263243;
   font: inherit;
-  font-weight: 700;
   cursor: pointer;
 }
 
 .voucher-number-link:hover {
+  color: #5946e8;
   text-decoration: underline;
 }
 
-.cell-ellipsis {
+.summary-cell,
+.subject-cell {
   overflow: hidden;
   text-overflow: ellipsis;
+  white-space: nowrap;
 }
 
-.pagination-bar {
-  display: flex;
-  justify-content: flex-end;
+.subject-code {
+  margin-right: 6px;
+  color: #39465a;
+}
+
+.voucher-total-row td {
+  height: 42px;
+  background: #f0fbfc;
+  color: #1d2c37;
+  font-weight: 700;
+}
+
+.total-icon {
+  display: inline-flex;
   align-items: center;
-  gap: 10px;
-  color: var(--fw-muted);
+  justify-content: center;
+  width: 18px;
+  height: 18px;
+  margin-right: 8px;
+  border-radius: 3px;
+  background: #6db4ff;
+  color: #fff;
+  font-size: 12px;
+}
+
+.empty-cell {
+  height: 160px;
+  color: #7a8798;
+  text-align: center;
+}
+
+.period-rail {
+  display: grid;
+  align-content: start;
+  gap: 8px;
+  padding: 10px 8px;
+  border: 1px solid #dbe2ec;
+  border-radius: 4px;
+  background: #fff;
+  color: #2f3a4c;
+  text-align: center;
+  box-shadow: 0 2px 8px rgb(20 31 52 / 10%);
+}
+
+.period-rail strong {
+  font-size: 12px;
+}
+
+.period-rail span {
+  color: #66758c;
+  font-size: 11px;
+  line-height: 1.3;
+}
+
+.rail-year {
+  width: max-content;
+  margin: 4px auto 0;
+  padding: 1px 5px;
+  border-radius: 8px;
+  background: #8b5cf6;
+  color: #fff;
+  font-size: 12px;
+}
+
+.period-rail button {
+  height: 24px;
+  border: 0;
+  border-radius: 12px;
+  background: transparent;
+  color: #2f3a4c;
+  font-weight: 700;
+  cursor: pointer;
+}
+
+.period-rail button.active {
+  background: #6752e8;
+  color: #fff;
 }
 
 .pager-button {
@@ -539,91 +738,42 @@ function fourDigitToUpper(value, digits, units) {
   cursor: not-allowed;
 }
 
-.amount,
-.digit-amount {
+.pagination-bar {
+  display: flex;
+  justify-content: flex-end;
+  align-items: center;
+  gap: 10px;
+  color: #66758c;
+}
+
+.amount {
   text-align: right;
   font-variant-numeric: tabular-nums;
 }
 
-.accounting-voucher {
-  padding: 8px 4px 4px;
-}
-
-.accounting-voucher h2 {
-  margin-bottom: 18px;
-  text-align: center;
-  font-size: 22px;
-  font-weight: 500;
-}
-
-.voucher-slip-meta {
-  padding: 0 36px 12px;
-  border-bottom: 1px solid #c7cbd3;
-  color: #303846;
-}
-
-.voucher-slip-table {
-  width: 100%;
-  margin-top: 14px;
-  border-collapse: collapse;
-  table-layout: fixed;
-}
-
-.voucher-slip-table th {
-  padding: 10px 8px;
-  border: 1px solid #23a9b8;
-  color: #fff;
-  background: #37bfd0;
-  text-align: center;
-  font-size: 15px;
-}
-
-.voucher-slip-table td {
-  height: 58px;
-  padding: 10px 12px;
-  border: 1px solid #c7cbd3;
-  vertical-align: top;
-}
-
-.voucher-slip-table .col-index {
-  width: 56px;
-  text-align: center;
-}
-
-.voucher-slip-table th:nth-child(2),
-.voucher-slip-table td:nth-child(2) {
-  width: 190px;
-}
-
-.voucher-slip-table th:nth-child(3),
-.voucher-slip-table td:nth-child(3) {
-  width: 360px;
-}
-
-.digit-amount {
-  width: 190px;
-  font-family: 'Courier New', monospace;
-  font-size: 22px;
-  letter-spacing: 4px;
-  vertical-align: middle;
-}
-
-.total-row td {
-  height: 54px;
-  font-weight: 700;
-  vertical-align: middle;
-}
-
-.voucher-slip-footer {
-  justify-content: flex-start;
-  gap: 100px;
-  padding: 14px 4px 2px;
-  color: #7d8796;
-}
-
 @media (max-width: 1080px) {
-  .context-grid {
+  .voucher-toolbar {
+    flex-wrap: wrap;
+  }
+
+  .voucher-search {
+    width: 100%;
+  }
+
+  .voucher-filter-strip,
+  .voucher-ledger-layout {
     grid-template-columns: 1fr;
+  }
+
+  .period-rail {
+    grid-template-columns: repeat(6, 1fr);
+    text-align: center;
+  }
+
+  .period-rail strong,
+  .period-rail span,
+  .rail-year {
+    grid-column: 1 / -1;
   }
 }
 </style>

@@ -9,9 +9,13 @@ const CONTEXT_STORAGE_KEY = 'finwise:ledger:context'
 const pageSize = 20
 
 const workspace = useWorkspaceStore()
+const sourceMode = ref('monthly')
 const selectedEnterpriseId = ref('')
 const selectedPeriodPackageId = ref('')
 const selectedAccountCode = ref('')
+const historicalFiscalYear = ref(new Date().getFullYear())
+const historicalStartMonth = ref(1)
+const historicalEndMonth = ref(12)
 const activeTab = ref('journal')
 const keyword = ref('')
 const currentPage = ref(1)
@@ -47,6 +51,22 @@ const periodOptions = computed(() => {
 })
 const activePackage = computed(() => {
   return (workspace.workPackages || []).find((item) => item.id === selectedPeriodPackageId.value) || null
+})
+const monthOptions = Array.from({ length: 12 }, (_, index) => {
+  const value = index + 1
+  return { value, label: `${value} 月` }
+})
+const historicalParams = computed(() => ({
+  fiscal_year: Number(historicalFiscalYear.value),
+  period_start_month: Number(historicalStartMonth.value),
+  period_end_month: Number(historicalEndMonth.value),
+}))
+const selectedPeriodLabel = computed(() => {
+  if (sourceMode.value === 'historical') {
+    if (Number(historicalStartMonth.value) === 1 && Number(historicalEndMonth.value) === 12) return `${historicalFiscalYear.value} 年`
+    return `${historicalFiscalYear.value} 年 ${historicalStartMonth.value} 月至 ${historicalEndMonth.value} 月`
+  }
+  return activePackage.value?.period || '-'
 })
 
 const tabOptions = [
@@ -140,6 +160,10 @@ watch(
 )
 
 watch(selectedEnterpriseId, () => {
+  if (sourceMode.value === 'historical') {
+    loadLedgers()
+    return
+  }
   const current = activePackage.value
   if (current && packageEnterpriseId(current) === selectedEnterpriseId.value) return
   selectedPeriodPackageId.value = periodOptions.value[0]?.id || ''
@@ -148,7 +172,7 @@ watch(selectedEnterpriseId, () => {
 watch(selectedPeriodPackageId, async (packageId) => {
   persistContext()
   currentPage.value = 1
-  if (packageId) {
+  if (sourceMode.value === 'monthly' && packageId) {
     await loadLedgers()
   } else {
     resetLedgerData()
@@ -157,8 +181,15 @@ watch(selectedPeriodPackageId, async (packageId) => {
 
 watch(selectedAccountCode, async () => {
   currentPage.value = 1
-  if (selectedPeriodPackageId.value && activeTab.value === 'detail') {
+  if (activeTab.value === 'detail' && canLoadLedgers()) {
     await loadDetailLedger()
+  }
+})
+
+watch([sourceMode, historicalFiscalYear, historicalStartMonth, historicalEndMonth], async () => {
+  currentPage.value = 1
+  if (sourceMode.value === 'historical' && selectedEnterpriseId.value) {
+    await loadLedgers()
   }
 })
 
@@ -202,9 +233,14 @@ function restoreContext() {
     const parsed = JSON.parse(raw || '{}')
     selectedEnterpriseId.value = parsed.enterpriseId || ''
     selectedPeriodPackageId.value = parsed.packageId || ''
+    sourceMode.value = parsed.sourceMode === 'historical' ? 'historical' : 'monthly'
+    historicalFiscalYear.value = parsed.historicalFiscalYear || historicalFiscalYear.value
+    historicalStartMonth.value = parsed.historicalStartMonth || 1
+    historicalEndMonth.value = parsed.historicalEndMonth || 12
   } catch {
     selectedEnterpriseId.value = ''
     selectedPeriodPackageId.value = ''
+    sourceMode.value = 'monthly'
   }
 }
 
@@ -215,6 +251,10 @@ function persistContext() {
     JSON.stringify({
       enterpriseId: selectedEnterpriseId.value,
       packageId: selectedPeriodPackageId.value,
+      sourceMode: sourceMode.value,
+      historicalFiscalYear: historicalFiscalYear.value,
+      historicalStartMonth: historicalStartMonth.value,
+      historicalEndMonth: historicalEndMonth.value,
     }),
   )
 }
@@ -244,17 +284,32 @@ function resetLedgerData() {
 }
 
 async function loadLedgers(showSuccess = false) {
-  if (!selectedPeriodPackageId.value) return
+  if (!canLoadLedgers()) return
+  if (sourceMode.value === 'historical' && Number(historicalStartMonth.value) > Number(historicalEndMonth.value)) {
+    ElMessage.warning('起始月份不能晚于截止月份')
+    return
+  }
   isLoading.value = true
   try {
-    const [summaryResponse, accountsResponse, journalResponse, generalResponse, trialResponse] = await Promise.all([
-      api.ledgers.summary(selectedPeriodPackageId.value),
-      api.ledgers.accounts(selectedPeriodPackageId.value),
-      api.ledgers.journal(selectedPeriodPackageId.value),
-      api.ledgers.general(selectedPeriodPackageId.value),
-      api.ledgers.trialBalance(selectedPeriodPackageId.value),
-    ])
-    summary.value = summaryResponse.data || summary.value
+    const [summaryResponse, accountsResponse, journalResponse, generalResponse, trialResponse] =
+      sourceMode.value === 'historical'
+        ? await loadHistoricalLedgerResponses()
+        : await Promise.all([
+            api.ledgers.summary(selectedPeriodPackageId.value),
+            api.ledgers.accounts(selectedPeriodPackageId.value),
+            api.ledgers.journal(selectedPeriodPackageId.value),
+            api.ledgers.general(selectedPeriodPackageId.value),
+            api.ledgers.trialBalance(selectedPeriodPackageId.value),
+          ])
+    summary.value =
+      sourceMode.value === 'historical'
+        ? {
+            confirmed_voucher_count: countHistoricalVouchers(journalResponse.data || []),
+            pending_voucher_count: 0,
+            entry_count: (journalResponse.data || []).length,
+            is_final: true,
+          }
+        : summaryResponse.data || summary.value
     accountOptions.value = accountsResponse.data || []
     journalRows.value = journalResponse.data || []
     generalRows.value = generalResponse.data || []
@@ -263,7 +318,7 @@ async function loadLedgers(showSuccess = false) {
       selectedAccountCode.value = accountOptions.value[0].account_code
     }
     await loadDetailLedger()
-    if (showSuccess) ElMessage.success(`账簿已刷新，共 ${summary.value.confirmed_voucher_count || 0} 张已确认凭证`)
+    if (showSuccess) ElMessage.success(`账簿已刷新，共 ${summary.value.confirmed_voucher_count || 0} 张凭证`)
   } catch (error) {
     ElMessage.error(error?.response?.data?.detail || error?.message || '账簿加载失败')
   } finally {
@@ -272,12 +327,37 @@ async function loadLedgers(showSuccess = false) {
 }
 
 async function loadDetailLedger() {
-  if (!selectedPeriodPackageId.value || !selectedAccountCode.value) {
+  if (!canLoadLedgers() || !selectedAccountCode.value) {
     detailRows.value = []
     return
   }
-  const response = await api.ledgers.detail(selectedPeriodPackageId.value, selectedAccountCode.value)
+  const response =
+    sourceMode.value === 'historical'
+      ? await api.historicalImports.detail(selectedEnterpriseId.value, {
+          ...historicalParams.value,
+          account_code: selectedAccountCode.value,
+        })
+      : await api.ledgers.detail(selectedPeriodPackageId.value, selectedAccountCode.value)
   detailRows.value = response.data || []
+}
+
+function canLoadLedgers() {
+  if (sourceMode.value === 'historical') return Boolean(selectedEnterpriseId.value)
+  return Boolean(selectedPeriodPackageId.value)
+}
+
+function loadHistoricalLedgerResponses() {
+  return Promise.all([
+    Promise.resolve({ data: null }),
+    api.historicalImports.accounts(selectedEnterpriseId.value, historicalParams.value),
+    api.historicalImports.journal(selectedEnterpriseId.value, historicalParams.value),
+    api.historicalImports.general(selectedEnterpriseId.value, historicalParams.value),
+    api.historicalImports.trialBalance(selectedEnterpriseId.value, historicalParams.value),
+  ])
+}
+
+function countHistoricalVouchers(rows) {
+  return new Set(rows.map((row) => `${row.voucher_date}:${row.voucher_number}`)).size
 }
 
 function withAccountLabel(row) {
@@ -329,10 +409,15 @@ function goToPage(page) {
       <header class="panel-header">
         <div>
           <h2>账簿</h2>
-          <p>基于已确认凭证生成序时账、总账、明细账与余额表。</p>
+          <p>{{ sourceMode === 'historical' ? '查询已导入历史账套的序时账、总账、明细账与余额表。' : '基于已确认凭证生成序时账、总账、明细账与余额表。' }}</p>
         </div>
         <el-button :loading="isLoading" @click="() => loadLedgers(true)">刷新</el-button>
       </header>
+
+      <div class="mode-toggle" aria-label="账簿来源">
+        <button type="button" :class="{ active: sourceMode === 'monthly' }" @click="sourceMode = 'monthly'">月度工作包</button>
+        <button type="button" :class="{ active: sourceMode === 'historical' }" @click="sourceMode = 'historical'">历史账套</button>
+      </div>
 
       <div class="context-bar">
         <label class="field">
@@ -346,7 +431,7 @@ function goToPage(page) {
             />
           </el-select>
         </label>
-        <label class="field">
+        <label v-if="sourceMode === 'monthly'" class="field">
           <span>工作期间</span>
           <el-select v-model="selectedPeriodPackageId" placeholder="工作期间">
             <el-option
@@ -357,11 +442,27 @@ function goToPage(page) {
             />
           </el-select>
         </label>
+        <label v-if="sourceMode === 'historical'" class="field">
+          <span>会计年度</span>
+          <el-input v-model="historicalFiscalYear" placeholder="会计年度" />
+        </label>
+        <label v-if="sourceMode === 'historical'" class="field">
+          <span>起始月份</span>
+          <el-select v-model="historicalStartMonth" placeholder="起始月份">
+            <el-option v-for="month in monthOptions" :key="month.value" :label="month.label" :value="month.value" />
+          </el-select>
+        </label>
+        <label v-if="sourceMode === 'historical'" class="field">
+          <span>截止月份</span>
+          <el-select v-model="historicalEndMonth" placeholder="截止月份">
+            <el-option v-for="month in monthOptions" :key="month.value" :label="month.label" :value="month.value" />
+          </el-select>
+        </label>
       </div>
 
       <div class="summary-grid">
         <div class="summary-card">
-          <span>已确认凭证</span>
+          <span>{{ sourceMode === 'historical' ? '历史凭证' : '已确认凭证' }}</span>
           <strong>{{ summary.confirmed_voucher_count }}</strong>
         </div>
         <div class="summary-card">
@@ -407,7 +508,7 @@ function goToPage(page) {
       </div>
 
       <div v-if="activeTab === 'detail'" class="active-account">
-        当前明细科目：{{ activeAccountLabel }}
+        当前明细科目：{{ activeAccountLabel }} · {{ selectedPeriodLabel }}
       </div>
 
       <div class="ledger-table-scroll">
@@ -496,13 +597,38 @@ function goToPage(page) {
 
 .context-bar {
   display: grid;
-  grid-template-columns: minmax(260px, 1fr) 180px;
+  grid-template-columns: minmax(260px, 1fr) repeat(3, minmax(140px, 180px));
   gap: 14px;
   padding: 14px;
   margin-bottom: 14px;
   border: 1px solid #dbe5f2;
   border-radius: 6px;
   background: #f6f9fc;
+}
+
+.mode-toggle {
+  display: inline-flex;
+  padding: 3px;
+  margin-bottom: 12px;
+  border: 1px solid #d8e2f0;
+  border-radius: 6px;
+  background: #f6f9fc;
+}
+
+.mode-toggle button {
+  min-width: 96px;
+  height: 30px;
+  border: 0;
+  border-radius: 4px;
+  background: transparent;
+  color: #52657c;
+  cursor: pointer;
+}
+
+.mode-toggle button.active {
+  background: #fff;
+  color: #1f6feb;
+  box-shadow: 0 1px 3px rgb(15 23 42 / 12%);
 }
 
 .field {

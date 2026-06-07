@@ -19,6 +19,9 @@ vi.mock('../api/client', () => ({
     vouchers: {
       list: vi.fn(),
     },
+    historicalImports: {
+      vouchers: vi.fn(),
+    },
     workspace: {
       snapshot: vi.fn(),
     },
@@ -151,6 +154,7 @@ describe('VoucherManagementView', () => {
       },
     })
     api.vouchers.list.mockResolvedValue({ data: [confirmedVoucher] })
+    api.historicalImports.vouchers.mockResolvedValue({ data: [] })
     api.workspace.snapshot.mockResolvedValue({
       data: {
         selectedPackageId: 'package-1',
@@ -173,41 +177,38 @@ describe('VoucherManagementView', () => {
     await workspace.loadWorkspace()
     await flushPromises()
 
-    expect(wrapper.text()).toContain('凭证管理')
+    expect(wrapper.text()).toContain('月度工作包')
+    expect(wrapper.text()).toContain('历史账套')
     expect(wrapper.text()).toContain('企业主体')
     expect(wrapper.text()).toContain('工作期间')
     expect(api.vouchers.list).toHaveBeenCalledWith('package-1', { status: 'CONFIRMED' })
 
-    await wrapper.find('input[placeholder="搜索凭证号、摘要、对方主体、科目"]').setValue('聚之利')
-    await wrapper.find('button.search-button').trigger('click')
+    await wrapper.find('input[placeholder="可输入凭证号/摘要/科目/金额..."]').setValue('聚之利')
+    await wrapper.find('button.icon-search-button').trigger('click')
     await flushPromises()
 
     expect(api.vouchers.list).toHaveBeenLastCalledWith('package-1', { status: 'CONFIRMED', keyword: '聚之利' })
-    expect(wrapper.text()).toContain('显示 1 张已确认凭证')
+    expect(wrapper.text()).toContain('1张已确认凭证')
   })
 
-  it('opens an accounting voucher detail dialog from a confirmed voucher row', async () => {
+  it('renders voucher entries inline with debit, credit, and total rows', async () => {
     const wrapper = mountView()
     const workspace = useWorkspaceStore()
     await workspace.loadWorkspace()
     await flushPromises()
 
-    await wrapper.find('button.view-voucher-button').trigger('click')
-    await flushPromises()
-
-    expect(wrapper.find('.accounting-voucher-dialog').exists()).toBe(true)
-    expect(wrapper.text()).toContain('记账凭证')
-    expect(wrapper.text()).toContain('记 字第 0065 号')
+    expect(wrapper.find('.voucher-ledger-table').exists()).toBe(true)
     expect(wrapper.text()).toContain('日期：2026-04-24')
-    expect(wrapper.text()).toContain('附件 1 张')
+    expect(wrapper.text()).toContain('凭证字号：记-0065')
+    expect(wrapper.text()).toContain('附单据 1 张')
     expect(wrapper.text()).toContain('应收账款_昆山聚之利电子有限公司')
     expect(wrapper.text()).toContain('借方金额')
     expect(wrapper.text()).toContain('贷方金额')
-    expect(wrapper.text()).toContain('合计')
-    expect(wrapper.text()).toContain('壹拾陆万叁仟叁佰贰拾捌元整')
+    expect(wrapper.text()).toContain('总合计')
+    expect(wrapper.text()).toContain('163,328.00')
   })
 
-  it('opens the accounting voucher detail dialog by clicking the voucher number', async () => {
+  it('selects an inline voucher group by clicking the voucher date', async () => {
     const wrapper = mountView()
     const workspace = useWorkspaceStore()
     await workspace.loadWorkspace()
@@ -216,9 +217,8 @@ describe('VoucherManagementView', () => {
     await wrapper.find('button.voucher-number-link').trigger('click')
     await flushPromises()
 
-    expect(wrapper.find('.accounting-voucher-dialog').exists()).toBe(true)
-    expect(wrapper.text()).toContain('记账凭证')
-    expect(wrapper.text()).toContain('记 字第 0065 号')
+    expect(wrapper.find('.voucher-meta-row.selected').exists()).toBe(true)
+    expect(wrapper.text()).toContain('凭证字号：记-0065')
   })
 
   it('paginates confirmed vouchers with 20 rows per page by default', async () => {
@@ -231,10 +231,10 @@ describe('VoucherManagementView', () => {
     await workspace.loadWorkspace()
     await flushPromises()
 
-    expect(wrapper.text()).toContain('显示 21 张已确认凭证')
+    expect(wrapper.text()).toContain('21张已确认凭证')
     expect(wrapper.text()).toContain('已确认凭证 0020')
     expect(wrapper.text()).not.toContain('已确认凭证 0021')
-    expect(wrapper.text()).toContain('每页 20 条')
+    expect(wrapper.text()).toContain('每页 20 张凭证')
 
     await wrapper.find('button.next-page-button').trigger('click')
     await flushPromises()
@@ -294,7 +294,7 @@ describe('VoucherManagementView', () => {
     await workspace.loadWorkspace()
     await flushPromises()
 
-    expect(wrapper.text()).toContain('显示 1 张已确认凭证')
+    expect(wrapper.text()).toContain('1张已确认凭证')
     expect(wrapper.text()).toContain('销聚之利')
     expect(wrapper.text()).not.toContain('待确认凭证不应出现在凭证管理')
     expect(wrapper.text()).not.toContain('已驳回凭证不应出现在凭证管理')

@@ -29,6 +29,9 @@ def initialize_database() -> None:
             _ensure_sqlite_column(connection, "technology_scan_jobs", "review_required_count", "INTEGER DEFAULT 0")
             _ensure_sqlite_column(connection, "technology_scan_jobs", "created_by", "VARCHAR(80) DEFAULT 'operator'")
             _ensure_sqlite_column(connection, "technology_scan_jobs", "updated_at", "DATETIME")
+            for table_name in ("historical_import_batches", "historical_ledger_entries", "historical_balance_rows"):
+                _ensure_sqlite_column(connection, table_name, "period_start_month", "INTEGER DEFAULT 1")
+                _ensure_sqlite_column(connection, table_name, "period_end_month", "INTEGER DEFAULT 12")
         connection.execute(
             text(
                 "CREATE UNIQUE INDEX IF NOT EXISTS "

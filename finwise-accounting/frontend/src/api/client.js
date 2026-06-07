@@ -41,6 +41,12 @@ export const api = {
   },
   historicalImports: {
     importGbt24589: (enterpriseId, formData) => apiClient.post(`/enterprises/${enterpriseId}/historical-imports/gbt24589`, formData),
+    vouchers: (enterpriseId, params = {}) => apiClient.get(`/enterprises/${enterpriseId}/historical-imports/vouchers`, { params }),
+    accounts: (enterpriseId, params = {}) => apiClient.get(`/enterprises/${enterpriseId}/historical-imports/ledgers/accounts`, { params }),
+    journal: (enterpriseId, params = {}) => apiClient.get(`/enterprises/${enterpriseId}/historical-imports/ledgers/journal`, { params }),
+    general: (enterpriseId, params = {}) => apiClient.get(`/enterprises/${enterpriseId}/historical-imports/ledgers/general`, { params }),
+    detail: (enterpriseId, params = {}) => apiClient.get(`/enterprises/${enterpriseId}/historical-imports/ledgers/detail`, { params }),
+    trialBalance: (enterpriseId, params = {}) => apiClient.get(`/enterprises/${enterpriseId}/historical-imports/ledgers/trial-balance`, { params }),
   },
   matching: {
     run: (packageId) => apiClient.post(`/monthly-packages/${packageId}/matching/run`),

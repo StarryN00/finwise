@@ -342,6 +342,22 @@ def test_list_vouchers_api_filters_confirmed_status_and_keyword():
     assert keyword_response.status_code == 200
     assert [row["voucher_number"] for row in keyword_response.json()] == ["记-0001"]
 
+    amount_response = client.get(
+        f"/api/monthly-packages/{package.id}/vouchers",
+        params={"status": "CONFIRMED", "keyword": "1,130.00"},
+    )
+
+    assert amount_response.status_code == 200
+    assert [row["voucher_number"] for row in amount_response.json()] == ["记-0001"]
+
+    account_response = client.get(
+        f"/api/monthly-packages/{package.id}/vouchers",
+        params={"status": "CONFIRMED", "keyword": "主营业务收入"},
+    )
+
+    assert account_response.status_code == 200
+    assert [row["voucher_number"] for row in account_response.json()] == ["记-0001"]
+
     miss_response = client.get(
         f"/api/monthly-packages/{package.id}/vouchers",
         params={"status": "CONFIRMED", "keyword": "不会出现在已确认列表"},

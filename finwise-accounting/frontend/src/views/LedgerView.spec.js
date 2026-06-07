@@ -26,6 +26,13 @@ vi.mock('../api/client', () => ({
       detail: vi.fn(),
       trialBalance: vi.fn(),
     },
+    historicalImports: {
+      accounts: vi.fn(),
+      journal: vi.fn(),
+      general: vi.fn(),
+      detail: vi.fn(),
+      trialBalance: vi.fn(),
+    },
     workspace: {
       snapshot: vi.fn(),
     },
@@ -188,6 +195,23 @@ describe('LedgerView', () => {
         difference: '0.00',
       },
     })
+    api.historicalImports.accounts.mockResolvedValue({ data: [] })
+    api.historicalImports.journal.mockResolvedValue({ data: [] })
+    api.historicalImports.general.mockResolvedValue({ data: [] })
+    api.historicalImports.detail.mockResolvedValue({ data: [] })
+    api.historicalImports.trialBalance.mockResolvedValue({
+      data: {
+        rows: [],
+        is_balanced: true,
+        difference: '0.00',
+        opening_debit_total: '0.00',
+        opening_credit_total: '0.00',
+        period_debit_total: '0.00',
+        period_credit_total: '0.00',
+        closing_debit_total: '0.00',
+        closing_credit_total: '0.00',
+      },
+    })
     api.workspace.snapshot.mockResolvedValue({
       data: {
         selectedPackageId: 'package-1',
@@ -213,6 +237,8 @@ describe('LedgerView', () => {
     expect(api.ledgers.summary).toHaveBeenCalledWith('package-1')
     expect(api.ledgers.journal).toHaveBeenCalledWith('package-1')
     expect(wrapper.text()).toContain('账簿')
+    expect(wrapper.text()).toContain('月度工作包')
+    expect(wrapper.text()).toContain('历史账套')
     expect(wrapper.text()).toContain('序时账')
     expect(wrapper.text()).toContain('总账')
     expect(wrapper.text()).toContain('明细账')
@@ -258,5 +284,7 @@ describe('LedgerView', () => {
     expect(source).toContain('auxiliary-row')
     expect(source).toContain('account-parent-row')
     expect(source).toContain('const pageSize = 20')
+    expect(source).toContain('api.historicalImports.journal')
+    expect(source).toContain('api.historicalImports.trialBalance')
   })
 })

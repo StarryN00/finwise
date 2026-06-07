@@ -13,11 +13,14 @@ from sqlalchemy.orm import Session
 
 from app.api.deps import get_db
 from app.schemas.historical_import import HistoricalImportBatchRead
+from app.schemas.ledger import AccountOptionRead, DetailLedgerRowRead, GeneralLedgerRowRead, JournalLedgerRowRead, TrialBalanceRead
+from app.schemas.voucher import HistoricalVoucherRead
 from app.services.historical_import_service import (
     HistoricalEnterpriseNotFoundError,
     HistoricalImportError,
     import_historical_books,
 )
+from app.services.ledger_service import LedgerService
 
 
 router = APIRouter(prefix="/api/enterprises/{enterprise_id}/historical-imports", tags=["historical-imports"])
@@ -70,6 +73,8 @@ class ParsedHistoricalUpload:
 def import_gbt24589_historical_books_endpoint(
     enterprise_id: UUID,
     fiscal_year: int = Form(...),
+    period_start_month: int = Form(1),
+    period_end_month: int = Form(12),
     ledger_file: UploadFile = File(...),
     balance_file: UploadFile = File(...),
     db: Session = Depends(get_db),
@@ -81,6 +86,8 @@ def import_gbt24589_historical_books_endpoint(
             db,
             enterprise_id=enterprise_id,
             fiscal_year=fiscal_year,
+            period_start_month=period_start_month,
+            period_end_month=period_end_month,
             ledger_rows=ledger_upload.rows,
             balance_rows=balance_upload.rows,
             ledger_filename=ledger_file.filename or "",
@@ -88,6 +95,106 @@ def import_gbt24589_historical_books_endpoint(
             source_metadata={**ledger_upload.metadata, **balance_upload.metadata},
             file_hashes={"ledger_sha256": ledger_upload.file_hash, "balance_sha256": balance_upload.file_hash},
         )
+    )
+
+
+@router.get("/vouchers", response_model=list[HistoricalVoucherRead])
+def list_historical_vouchers_endpoint(
+    enterprise_id: UUID,
+    fiscal_year: int,
+    period_start_month: int = 1,
+    period_end_month: int = 12,
+    keyword: str | None = None,
+    db: Session = Depends(get_db),
+):
+    return LedgerService(db).list_historical_vouchers(
+        enterprise_id,
+        fiscal_year=fiscal_year,
+        period_start_month=period_start_month,
+        period_end_month=period_end_month,
+        keyword=keyword,
+    )
+
+
+@router.get("/ledgers/accounts", response_model=list[AccountOptionRead])
+def list_historical_ledger_accounts_endpoint(
+    enterprise_id: UUID,
+    fiscal_year: int,
+    period_start_month: int = 1,
+    period_end_month: int = 12,
+    db: Session = Depends(get_db),
+) -> list[AccountOptionRead]:
+    return LedgerService(db).get_historical_account_options(
+        enterprise_id,
+        fiscal_year=fiscal_year,
+        period_start_month=period_start_month,
+        period_end_month=period_end_month,
+    )
+
+
+@router.get("/ledgers/journal", response_model=list[JournalLedgerRowRead])
+def list_historical_journal_endpoint(
+    enterprise_id: UUID,
+    fiscal_year: int,
+    period_start_month: int = 1,
+    period_end_month: int = 12,
+    db: Session = Depends(get_db),
+) -> list[JournalLedgerRowRead]:
+    return LedgerService(db).get_historical_journal(
+        enterprise_id,
+        fiscal_year=fiscal_year,
+        period_start_month=period_start_month,
+        period_end_month=period_end_month,
+    )
+
+
+@router.get("/ledgers/general", response_model=list[GeneralLedgerRowRead])
+def list_historical_general_endpoint(
+    enterprise_id: UUID,
+    fiscal_year: int,
+    period_start_month: int = 1,
+    period_end_month: int = 12,
+    db: Session = Depends(get_db),
+) -> list[GeneralLedgerRowRead]:
+    return LedgerService(db).get_historical_general(
+        enterprise_id,
+        fiscal_year=fiscal_year,
+        period_start_month=period_start_month,
+        period_end_month=period_end_month,
+    )
+
+
+@router.get("/ledgers/detail", response_model=list[DetailLedgerRowRead])
+def list_historical_detail_endpoint(
+    enterprise_id: UUID,
+    fiscal_year: int,
+    account_code: str,
+    period_start_month: int = 1,
+    period_end_month: int = 12,
+    db: Session = Depends(get_db),
+) -> list[DetailLedgerRowRead]:
+    return LedgerService(db).get_historical_detail(
+        enterprise_id,
+        fiscal_year=fiscal_year,
+        period_start_month=period_start_month,
+        period_end_month=period_end_month,
+        account_code=account_code,
+    )
+
+
+@router.get("/ledgers/trial-balance", response_model=TrialBalanceRead)
+def get_historical_trial_balance_endpoint(
+    enterprise_id: UUID,
+    fiscal_year: int,
+    period_start_month: int = 1,
+    period_end_month: int = 12,
+    db: Session = Depends(get_db),
+) -> TrialBalanceRead:
+    return LedgerService(db).get_historical_trial_balance(
+        enterprise_id,
+        fiscal_year=fiscal_year,
+        period_start_month=period_start_month,
+        period_end_month=period_end_month,
     )
 
 

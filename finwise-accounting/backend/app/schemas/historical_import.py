@@ -15,6 +15,8 @@ class HistoricalImportBatchRead(BaseModel):
     organization_id: UUID
     enterprise_id: UUID
     fiscal_year: int
+    period_start_month: int
+    period_end_month: int
     source_standard: str
     ledger_filename: str
     balance_filename: str

@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+from calendar import monthrange
 from collections import defaultdict
 from datetime import date
 from decimal import Decimal, ROUND_HALF_UP
@@ -8,7 +9,7 @@ from uuid import UUID
 from sqlalchemy import func, select
 from sqlalchemy.orm import Session, joinedload
 
-from app.models import HistoricalBalanceRow, MonthlyWorkPackage, Voucher, VoucherEntry
+from app.models import HistoricalBalanceRow, HistoricalLedgerEntry, MonthlyWorkPackage, Voucher, VoucherEntry
 from app.schemas.ledger import (
     AccountOptionRead,
     DetailLedgerRowRead,
@@ -17,6 +18,7 @@ from app.schemas.ledger import (
     LedgerSummaryRead,
     TrialBalanceRead,
 )
+from app.schemas.voucher import HistoricalVoucherEntryRead, HistoricalVoucherRead
 
 
 CONFIRMED_STATUS = "CONFIRMED"
@@ -201,6 +203,280 @@ class LedgerService:
             difference=difference,
         )
 
+    def get_historical_journal(
+        self,
+        enterprise_id: UUID,
+        *,
+        fiscal_year: int,
+        period_start_month: int,
+        period_end_month: int,
+    ) -> list[JournalLedgerRowRead]:
+        rows: list[JournalLedgerRowRead] = []
+        for entry in self._historical_entries(
+            enterprise_id,
+            fiscal_year=fiscal_year,
+            period_start_month=period_start_month,
+            period_end_month=period_end_month,
+        ):
+            rows.append(
+                JournalLedgerRowRead(
+                    voucher_id=_historical_voucher_id(entry),
+                    voucher_entry_id=str(entry.id),
+                    voucher_date=entry.voucher_date,
+                    voucher_number=entry.voucher_no or "未编号",
+                    summary=entry.summary,
+                    account_code=entry.account_code,
+                    account_name=entry.account_name,
+                    direction="DEBIT" if _money(entry.debit_amount) else "CREDIT",
+                    direction_label="借方" if _money(entry.debit_amount) else "贷方",
+                    debit_amount=_money(entry.debit_amount),
+                    credit_amount=_money(entry.credit_amount),
+                    source_type="历史账套",
+                )
+            )
+        return rows
+
+    def get_historical_general(
+        self,
+        enterprise_id: UUID,
+        *,
+        fiscal_year: int,
+        period_start_month: int,
+        period_end_month: int,
+    ) -> list[GeneralLedgerRowRead]:
+        balance_rows = self._historical_balance_rows(
+            enterprise_id,
+            fiscal_year=fiscal_year,
+            period_start_month=period_start_month,
+            period_end_month=period_end_month,
+        )
+        if balance_rows:
+            return [
+                _historical_balance_to_general_row(row)
+                for row in balance_rows
+            ]
+
+        grouped: dict[str, dict[str, Decimal | str]] = {}
+        for entry in self._historical_entries(
+            enterprise_id,
+            fiscal_year=fiscal_year,
+            period_start_month=period_start_month,
+            period_end_month=period_end_month,
+        ):
+            bucket = grouped.setdefault(
+                entry.account_code,
+                {
+                    "account_name": entry.account_name,
+                    "period_debit": Decimal("0.00"),
+                    "period_credit": Decimal("0.00"),
+                },
+            )
+            bucket["period_debit"] = _money(bucket["period_debit"]) + _money(entry.debit_amount)
+            bucket["period_credit"] = _money(bucket["period_credit"]) + _money(entry.credit_amount)
+        return [
+            self._build_general_row(
+                account_code=account_code,
+                account_name=str(values["account_name"]),
+                opening_debit=Decimal("0.00"),
+                opening_credit=Decimal("0.00"),
+                period_debit=_money(values["period_debit"]),
+                period_credit=_money(values["period_credit"]),
+            )
+            for account_code, values in sorted(grouped.items())
+        ]
+
+    def get_historical_account_options(
+        self,
+        enterprise_id: UUID,
+        *,
+        fiscal_year: int,
+        period_start_month: int,
+        period_end_month: int,
+    ) -> list[AccountOptionRead]:
+        return [
+            AccountOptionRead(
+                account_code=row.account_code,
+                account_name=row.account_name,
+                account_category=row.account_category,
+            )
+            for row in self.get_historical_general(
+                enterprise_id,
+                fiscal_year=fiscal_year,
+                period_start_month=period_start_month,
+                period_end_month=period_end_month,
+            )
+        ]
+
+    def get_historical_detail(
+        self,
+        enterprise_id: UUID,
+        *,
+        fiscal_year: int,
+        period_start_month: int,
+        period_end_month: int,
+        account_code: str,
+    ) -> list[DetailLedgerRowRead]:
+        balance_direction = _normal_balance(account_code)
+        balance_row = next(
+            (
+                row
+                for row in self._historical_balance_rows(
+                    enterprise_id,
+                    fiscal_year=fiscal_year,
+                    period_start_month=period_start_month,
+                    period_end_month=period_end_month,
+                )
+                if row.account_code == account_code
+            ),
+            None,
+        )
+        running_balance = Decimal("0.00")
+        rows: list[DetailLedgerRowRead] = []
+        if balance_row:
+            running_balance = self._opening_running_balance(
+                {
+                    "opening_debit": _money(balance_row.opening_debit),
+                    "opening_credit": _money(balance_row.opening_credit),
+                },
+                balance_direction,
+            )
+            if running_balance != Decimal("0.00"):
+                rows.append(
+                    DetailLedgerRowRead(
+                        voucher_id=f"historical-opening:{enterprise_id}:{fiscal_year}:{period_start_month}:{period_end_month}:{account_code}",
+                        voucher_entry_id=f"historical-opening:{enterprise_id}:{fiscal_year}:{period_start_month}:{period_end_month}:{account_code}",
+                        voucher_date=date(fiscal_year, period_start_month, 1),
+                        voucher_number="-",
+                        summary="期初余额",
+                        counter_accounts="-",
+                        counter_account_display="-",
+                        debit_amount=Decimal("0.00"),
+                        credit_amount=Decimal("0.00"),
+                        balance_direction=balance_direction,
+                        balance_direction_label=_balance_direction_label(balance_direction),
+                        balance=_money(running_balance),
+                    )
+                )
+        for entry in self._historical_entries(
+            enterprise_id,
+            fiscal_year=fiscal_year,
+            period_start_month=period_start_month,
+            period_end_month=period_end_month,
+        ):
+            if entry.account_code != account_code:
+                continue
+            debit_amount = _money(entry.debit_amount)
+            credit_amount = _money(entry.credit_amount)
+            if balance_direction == "DEBIT":
+                running_balance = running_balance + debit_amount - credit_amount
+            else:
+                running_balance = running_balance + credit_amount - debit_amount
+            rows.append(
+                DetailLedgerRowRead(
+                    voucher_id=_historical_voucher_id(entry),
+                    voucher_entry_id=str(entry.id),
+                    voucher_date=entry.voucher_date,
+                    voucher_number=entry.voucher_no or "未编号",
+                    summary=entry.summary,
+                    counter_accounts="-",
+                    counter_account_display="-",
+                    debit_amount=debit_amount,
+                    credit_amount=credit_amount,
+                    balance_direction=balance_direction,
+                    balance_direction_label=_balance_direction_label(balance_direction),
+                    balance=_money(running_balance),
+                )
+            )
+        return rows
+
+    def get_historical_trial_balance(
+        self,
+        enterprise_id: UUID,
+        *,
+        fiscal_year: int,
+        period_start_month: int,
+        period_end_month: int,
+    ) -> TrialBalanceRead:
+        rows = self.get_historical_general(
+            enterprise_id,
+            fiscal_year=fiscal_year,
+            period_start_month=period_start_month,
+            period_end_month=period_end_month,
+        )
+        opening_debit_total = _sum(row.opening_debit for row in rows)
+        opening_credit_total = _sum(row.opening_credit for row in rows)
+        period_debit_total = _sum(row.period_debit for row in rows)
+        period_credit_total = _sum(row.period_credit for row in rows)
+        closing_debit_total = _sum(row.closing_debit for row in rows)
+        closing_credit_total = _sum(row.closing_credit for row in rows)
+        period_diff = abs(period_debit_total - period_credit_total)
+        closing_diff = abs(closing_debit_total - closing_credit_total)
+        difference = _money(max(period_diff, closing_diff))
+        return TrialBalanceRead(
+            rows=rows,
+            opening_debit_total=opening_debit_total,
+            opening_credit_total=opening_credit_total,
+            period_debit_total=period_debit_total,
+            period_credit_total=period_credit_total,
+            closing_debit_total=closing_debit_total,
+            closing_credit_total=closing_credit_total,
+            is_balanced=difference == Decimal("0.00"),
+            difference=difference,
+        )
+
+    def list_historical_vouchers(
+        self,
+        enterprise_id: UUID,
+        *,
+        fiscal_year: int,
+        period_start_month: int,
+        period_end_month: int,
+        keyword: str | None = None,
+    ) -> list[HistoricalVoucherRead]:
+        grouped: dict[tuple[date, str], list[HistoricalLedgerEntry]] = defaultdict(list)
+        search_terms = _search_terms(keyword or "")
+        for entry in self._historical_entries(
+            enterprise_id,
+            fiscal_year=fiscal_year,
+            period_start_month=period_start_month,
+            period_end_month=period_end_month,
+        ):
+            grouped[(entry.voucher_date, entry.voucher_no or "未编号")].append(entry)
+
+        vouchers: list[HistoricalVoucherRead] = []
+        for (voucher_date, voucher_no), entries in grouped.items():
+            if search_terms and not any(_historical_entry_matches_terms(entry, search_terms) for entry in entries):
+                continue
+            first = entries[0]
+            vouchers.append(
+                HistoricalVoucherRead(
+                    id=_historical_voucher_id(first),
+                    voucher_date=voucher_date,
+                    voucher_number=voucher_no,
+                    summary=first.summary,
+                    source_key=f"historical:{enterprise_id}:{voucher_date.isoformat()}:{voucher_no}",
+                    source_data={
+                        "source_type": "HISTORICAL_LEDGER",
+                        "fiscal_year": fiscal_year,
+                        "period_start_month": period_start_month,
+                        "period_end_month": period_end_month,
+                    },
+                    created_at=first.created_at,
+                    entries=[
+                        HistoricalVoucherEntryRead(
+                            id=str(entry.id),
+                            line_no=index,
+                            direction="DEBIT" if _money(entry.debit_amount) else "CREDIT",
+                            account_code=entry.account_code,
+                            account_name=entry.account_name,
+                            amount=_money(entry.debit_amount) if _money(entry.debit_amount) else _money(entry.credit_amount),
+                        )
+                        for index, entry in enumerate(entries, start=1)
+                    ],
+                )
+            )
+        return vouchers
+
     def _confirmed_vouchers(self, package_id: UUID) -> list[Voucher]:
         return list(
             self.db.scalars(
@@ -210,6 +486,60 @@ class LedgerService:
                 .order_by(Voucher.voucher_date.asc(), Voucher.voucher_number.asc(), Voucher.created_at.asc())
             )
             .unique()
+            .all()
+        )
+
+    def _historical_entries(
+        self,
+        enterprise_id: UUID,
+        *,
+        fiscal_year: int,
+        period_start_month: int,
+        period_end_month: int,
+    ) -> list[HistoricalLedgerEntry]:
+        return list(
+            self.db.scalars(
+                select(HistoricalLedgerEntry)
+                .where(
+                    HistoricalLedgerEntry.enterprise_id == enterprise_id,
+                    HistoricalLedgerEntry.fiscal_year == fiscal_year,
+                    HistoricalLedgerEntry.voucher_date >= date(fiscal_year, period_start_month, 1),
+                    HistoricalLedgerEntry.voucher_date <= _period_end_date(fiscal_year, period_end_month),
+                )
+                .order_by(
+                    HistoricalLedgerEntry.voucher_date.asc(),
+                    HistoricalLedgerEntry.voucher_no.asc(),
+                    HistoricalLedgerEntry.created_at.asc(),
+                    HistoricalLedgerEntry.id.asc(),
+                )
+            )
+            .all()
+        )
+
+    def _historical_balance_rows(
+        self,
+        enterprise_id: UUID,
+        *,
+        fiscal_year: int,
+        period_start_month: int,
+        period_end_month: int,
+    ) -> list[HistoricalBalanceRow]:
+        return list(
+            self.db.scalars(
+                select(HistoricalBalanceRow)
+                .where(
+                    HistoricalBalanceRow.enterprise_id == enterprise_id,
+                    HistoricalBalanceRow.fiscal_year == fiscal_year,
+                    HistoricalBalanceRow.period_start_month <= period_start_month,
+                    HistoricalBalanceRow.period_end_month >= period_end_month,
+                )
+                .order_by(
+                    HistoricalBalanceRow.period_start_month.desc(),
+                    HistoricalBalanceRow.period_end_month.asc(),
+                    HistoricalBalanceRow.created_at.desc(),
+                    HistoricalBalanceRow.account_code.asc(),
+                )
+            )
             .all()
         )
 
@@ -393,6 +723,10 @@ def _sum(values) -> Decimal:
     return _money(total)
 
 
+def _money_text(value: Decimal | str) -> str:
+    return f"{_money(value):,.2f}"
+
+
 def _direction_label(direction: str) -> str:
     return {"DEBIT": "借方", "CREDIT": "贷方"}.get(direction, direction)
 
@@ -417,6 +751,25 @@ def _account_category(account_code: str) -> str:
         "5": "损益",
         "6": "损益",
     }.get(first_digit, "其他")
+
+
+def _historical_balance_to_general_row(row: HistoricalBalanceRow) -> GeneralLedgerRowRead:
+    balance_direction = _normal_balance(row.account_code)
+    return GeneralLedgerRowRead(
+        account_code=row.account_code,
+        account_name=row.account_name,
+        account_category=_account_category(row.account_code),
+        balance_direction=balance_direction,
+        balance_direction_label=_balance_direction_label(balance_direction),
+        opening_debit=_money(row.opening_debit),
+        opening_credit=_money(row.opening_credit),
+        period_debit=_money(row.period_debit),
+        period_credit=_money(row.period_credit),
+        closing_debit=_money(row.closing_debit),
+        closing_credit=_money(row.closing_credit),
+        display_code=row.account_code,
+        display_name=row.account_name,
+    )
 
 
 def _counter_accounts(entries: list[VoucherEntry], account_code: str) -> str:
@@ -523,3 +876,45 @@ def _first_text(source: dict | None, paths: tuple[tuple[str, ...], ...]) -> str 
         if text:
             return text
     return None
+
+
+def _historical_voucher_id(entry: HistoricalLedgerEntry) -> str:
+    voucher_no = entry.voucher_no or "未编号"
+    return f"historical:{entry.enterprise_id}:{entry.voucher_date.isoformat()}:{voucher_no}"
+
+
+def _period_end_date(fiscal_year: int, period_end_month: int) -> date:
+    return date(fiscal_year, period_end_month, monthrange(fiscal_year, period_end_month)[1])
+
+
+def _historical_entry_search_text(entry: HistoricalLedgerEntry) -> str:
+    values = [
+        entry.voucher_date.isoformat(),
+        entry.voucher_date.strftime("%Y%m%d"),
+        entry.voucher_no or "",
+        entry.summary or "",
+        entry.account_code or "",
+        entry.account_name or "",
+        entry.account_full_name or "",
+        "借方" if _money(entry.debit_amount) else "",
+        "贷方" if _money(entry.credit_amount) else "",
+        str(entry.debit_amount or ""),
+        str(entry.credit_amount or ""),
+        _money_text(entry.debit_amount or Decimal("0.00")),
+        _money_text(entry.credit_amount or Decimal("0.00")),
+        str(entry.auxiliary or ""),
+    ]
+    return "\n".join(_normalize_search_value(value) for value in values if value not in (None, ""))
+
+
+def _historical_entry_matches_terms(entry: HistoricalLedgerEntry, terms: list[str]) -> bool:
+    haystack = _historical_entry_search_text(entry)
+    return all(term in haystack for term in terms)
+
+
+def _search_terms(keyword: str) -> list[str]:
+    return [_normalize_search_value(term) for term in str(keyword or "").split() if _normalize_search_value(term)]
+
+
+def _normalize_search_value(value) -> str:
+    return str(value or "").strip().lower().replace(",", "").replace("，", "").replace(" ", "")

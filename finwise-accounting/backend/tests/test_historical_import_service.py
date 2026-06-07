@@ -205,6 +205,94 @@ def test_historical_import_rejects_wrong_fiscal_year_metadata(db_session):
         raise AssertionError("expected fiscal year metadata mismatch to be rejected")
 
 
+def test_historical_import_accepts_selected_partial_accounting_period(db_session):
+    enterprise = make_enterprise(db_session)
+
+    result = import_historical_books(
+        db_session,
+        enterprise_id=enterprise.id,
+        fiscal_year=2026,
+        period_start_month=1,
+        period_end_month=3,
+        ledger_rows=[
+            {
+                "date": "2026-03-31",
+                "voucher_no": "记-001",
+                "summary": "季度测试",
+                "account_full_name": "银行存款",
+                "account_code": "1002",
+                "account_name": "银行存款",
+                "debit_amount": "100.00",
+                "credit_amount": "",
+            }
+        ],
+        balance_rows=[],
+        ledger_filename="序时账.xls",
+        balance_filename="余额表.xls",
+        source_metadata={"ledger_period_text": "2026年01月至2026年03月"},
+    )
+
+    assert result.fiscal_year == 2026
+    assert result.period_start_month == 1
+    assert result.period_end_month == 3
+    entry = db_session.query(HistoricalLedgerEntry).one()
+    assert entry.period_start_month == 1
+    assert entry.period_end_month == 3
+
+
+def test_historical_import_rejects_wrong_accounting_period_metadata(db_session):
+    enterprise = make_enterprise(db_session)
+
+    try:
+        import_historical_books(
+            db_session,
+            enterprise_id=enterprise.id,
+            fiscal_year=2026,
+            period_start_month=1,
+            period_end_month=3,
+            ledger_rows=[],
+            balance_rows=[],
+            ledger_filename="序时账.xls",
+            balance_filename="余额表.xls",
+            source_metadata={"ledger_period_text": "2026年01月至2026年12月"},
+        )
+    except HistoricalImportError as exc:
+        assert "selected accounting period" in str(exc)
+    else:
+        raise AssertionError("expected accounting period metadata mismatch to be rejected")
+
+
+def test_historical_import_rejects_ledger_rows_outside_selected_period(db_session):
+    enterprise = make_enterprise(db_session)
+
+    result = import_historical_books(
+        db_session,
+        enterprise_id=enterprise.id,
+        fiscal_year=2026,
+        period_start_month=1,
+        period_end_month=3,
+        ledger_rows=[
+            {
+                "date": "2026-04-01",
+                "voucher_no": "记-001",
+                "summary": "期间外",
+                "account_full_name": "银行存款",
+                "account_code": "1002",
+                "account_name": "银行存款",
+                "debit_amount": "100.00",
+                "credit_amount": "",
+            }
+        ],
+        balance_rows=[],
+        ledger_filename="序时账.xls",
+        balance_filename="余额表.xls",
+    )
+
+    assert result.status == "FAILED"
+    assert result.validation_summary["ledger_error_count"] == 1
+    assert db_session.query(HistoricalLedgerEntry).count() == 0
+
+
 def test_historical_import_preserves_endpoint_auxiliary_dimensions(db_session):
     enterprise = make_enterprise(db_session)
 
@@ -300,7 +388,7 @@ def test_historical_import_endpoint_accepts_two_files(db_session, tmp_path):
     with ledger_path.open("rb") as ledger_file, balance_path.open("rb") as balance_file:
         response = client.post(
             f"/api/enterprises/{enterprise.id}/historical-imports/gbt24589",
-            data={"fiscal_year": "2025"},
+            data={"fiscal_year": "2025", "period_start_month": "1", "period_end_month": "12"},
             files={
                 "ledger_file": ("ledger.xlsx", ledger_file, "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet"),
                 "balance_file": ("balance.xlsx", balance_file, "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet"),
@@ -310,3 +398,5 @@ def test_historical_import_endpoint_accepts_two_files(db_session, tmp_path):
     assert response.status_code == 201
     assert response.json()["created_ledger_rows"] == 1
     assert response.json()["created_balance_rows"] == 1
+    assert response.json()["period_start_month"] == 1
+    assert response.json()["period_end_month"] == 12

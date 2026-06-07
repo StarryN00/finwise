@@ -36,6 +36,8 @@ describe('HistoricalImportView', () => {
     expect(source).toContain('GB/T24589-2010')
     expect(source).toContain('企业')
     expect(source).toContain('会计年度')
+    expect(source).toContain('起始月份')
+    expect(source).toContain('截止月份')
     expect(source).toContain('序时账')
     expect(source).toContain('余额表')
     expect(source).toContain('导入历史账套')
@@ -106,6 +108,9 @@ describe('HistoricalImportView', () => {
         },
       },
     })
+    wrapper.vm.form.fiscalYear = 2026
+    wrapper.vm.form.periodStartMonth = 1
+    wrapper.vm.form.periodEndMonth = 3
 
     await selectFile(wrapper, 'input[accept=".xls,.xlsx"]', new File(['ledger'], '序时账_2025.xls'))
     await selectFile(wrapper, 'input[accept=".xls,.xlsx"]', new File(['balance'], '余额表_2025.xls'), 1)
@@ -113,7 +118,11 @@ describe('HistoricalImportView', () => {
     await flushPromises()
 
     expect(api.historicalImports.importGbt24589).toHaveBeenCalledWith('enterprise-1', expect.any(FormData))
-    expect(wrapper.text()).toContain('2025 年历史账套已导入：序时账 4664 行，余额表 297 行')
+    const formData = api.historicalImports.importGbt24589.mock.calls[0][1]
+    expect(formData.get('fiscal_year')).toBe('2026')
+    expect(formData.get('period_start_month')).toBe('1')
+    expect(formData.get('period_end_month')).toBe('3')
+    expect(wrapper.text()).toContain('2026 年 1 月至 3 月 历史账套已导入：序时账 4664 行，余额表 297 行')
     expect(wrapper.text()).toContain('凭证数量')
     expect(wrapper.text()).toContain('1060')
   })

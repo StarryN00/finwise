@@ -2,7 +2,7 @@ from datetime import date
 from decimal import Decimal
 from uuid import UUID
 
-from app.models import Enterprise, HistoricalBalanceRow, HistoricalImportBatch, MonthlyWorkPackage, Voucher, VoucherEntry
+from app.models import Enterprise, HistoricalBalanceRow, HistoricalImportBatch, HistoricalLedgerEntry, MonthlyWorkPackage, Voucher, VoucherEntry
 from app.services.ledger_service import LedgerService
 
 
@@ -103,6 +103,50 @@ def add_historical_balance(
     return row
 
 
+def add_historical_entry(
+    db_session,
+    package,
+    *,
+    voucher_date,
+    voucher_no,
+    summary,
+    account_code,
+    account_name,
+    debit_amount="0.00",
+    credit_amount="0.00",
+):
+    batch = HistoricalImportBatch(
+        organization_id=ORG,
+        enterprise_id=package.enterprise_id,
+        fiscal_year=package.period_year,
+        period_start_month=1,
+        period_end_month=3,
+        ledger_filename="ledger.xlsx",
+        balance_filename="balance.xlsx",
+    )
+    db_session.add(batch)
+    db_session.flush()
+    entry = HistoricalLedgerEntry(
+        organization_id=ORG,
+        enterprise_id=package.enterprise_id,
+        import_batch_id=batch.id,
+        fiscal_year=package.period_year,
+        period_start_month=1,
+        period_end_month=3,
+        voucher_date=voucher_date,
+        voucher_no=voucher_no,
+        summary=summary,
+        account_full_name=account_name,
+        account_code=account_code,
+        account_name=account_name,
+        debit_amount=money(debit_amount),
+        credit_amount=money(credit_amount),
+    )
+    db_session.add(entry)
+    db_session.commit()
+    return entry
+
+
 def test_journal_uses_only_confirmed_vouchers_and_sorts_rows(db_session):
     package = make_package(db_session)
     add_voucher(
@@ -145,6 +189,73 @@ def test_journal_uses_only_confirmed_vouchers_and_sorts_rows(db_session):
     assert rows[0].account_code == "560203"
     assert rows[0].debit_amount == money("100.00")
     assert rows[1].credit_amount == money("100.00")
+
+
+def test_historical_journal_and_vouchers_query_imported_entries_by_period(db_session):
+    package = make_package(db_session)
+    add_historical_entry(
+        db_session,
+        package,
+        voucher_date=date(2026, 3, 31),
+        voucher_no="记-0001",
+        summary="历史销售",
+        account_code="1122",
+        account_name="应收账款",
+        debit_amount="100.00",
+    )
+    add_historical_entry(
+        db_session,
+        package,
+        voucher_date=date(2026, 3, 31),
+        voucher_no="记-0001",
+        summary="历史销售",
+        account_code="5001",
+        account_name="主营业务收入",
+        credit_amount="100.00",
+    )
+
+    service = LedgerService(db_session)
+    journal = service.get_historical_journal(
+        package.enterprise_id,
+        fiscal_year=2026,
+        period_start_month=1,
+        period_end_month=3,
+    )
+    vouchers = service.list_historical_vouchers(
+        package.enterprise_id,
+        fiscal_year=2026,
+        period_start_month=1,
+        period_end_month=3,
+    )
+
+    assert [row.account_code for row in journal] == ["1122", "5001"]
+    assert journal[0].source_type == "历史账套"
+    assert len(vouchers) == 1
+    assert vouchers[0].voucher_number == "记-0001"
+    assert len(vouchers[0].entries) == 2
+
+
+def test_historical_trial_balance_uses_imported_balance_rows(db_session):
+    package = make_package(db_session)
+    add_historical_balance(
+        db_session,
+        package,
+        account_code="1002",
+        account_name="银行存款",
+        opening_debit="10.00",
+        closing_debit="30.00",
+    )
+
+    trial = LedgerService(db_session).get_historical_trial_balance(
+        package.enterprise_id,
+        fiscal_year=2026,
+        period_start_month=1,
+        period_end_month=3,
+    )
+
+    assert trial.rows[0].account_code == "1002"
+    assert trial.rows[0].opening_debit == money("10.00")
+    assert trial.rows[0].closing_debit == money("30.00")
 
 
 def test_general_ledger_groups_current_period_amounts(db_session):

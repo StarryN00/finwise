@@ -52,6 +52,8 @@ def import_historical_books(
     *,
     enterprise_id: UUID,
     fiscal_year: int,
+    period_start_month: int = 1,
+    period_end_month: int = 12,
     ledger_rows: list[dict],
     balance_rows: list[dict],
     ledger_filename: str,
@@ -63,15 +65,38 @@ def import_historical_books(
     organization_id = get_current_organization_id()
     if enterprise is None or enterprise.organization_id != organization_id:
         raise HistoricalEnterpriseNotFoundError("Enterprise not found.")
+    _validate_period(fiscal_year=fiscal_year, period_start_month=period_start_month, period_end_month=period_end_month)
     source_metadata = source_metadata or {}
-    _validate_source_metadata(source_metadata, enterprise_name=enterprise.name, fiscal_year=fiscal_year)
+    _validate_source_metadata(
+        source_metadata,
+        enterprise_name=enterprise.name,
+        fiscal_year=fiscal_year,
+        period_start_month=period_start_month,
+        period_end_month=period_end_month,
+    )
 
-    existing_ledger_rows = _existing_count(db, HistoricalLedgerEntry, enterprise_id=enterprise_id, fiscal_year=fiscal_year)
-    existing_balance_rows = _existing_count(db, HistoricalBalanceRow, enterprise_id=enterprise_id, fiscal_year=fiscal_year)
+    existing_ledger_rows = _existing_count(
+        db,
+        HistoricalLedgerEntry,
+        enterprise_id=enterprise_id,
+        fiscal_year=fiscal_year,
+        period_start_month=period_start_month,
+        period_end_month=period_end_month,
+    )
+    existing_balance_rows = _existing_count(
+        db,
+        HistoricalBalanceRow,
+        enterprise_id=enterprise_id,
+        fiscal_year=fiscal_year,
+        period_start_month=period_start_month,
+        period_end_month=period_end_month,
+    )
     batch = HistoricalImportBatch(
         organization_id=organization_id,
         enterprise_id=enterprise_id,
         fiscal_year=fiscal_year,
+        period_start_month=period_start_month,
+        period_end_month=period_end_month,
         ledger_filename=ledger_filename,
         balance_filename=balance_filename,
         source_metadata=source_metadata,
@@ -86,6 +111,8 @@ def import_historical_books(
         organization_id=organization_id,
         enterprise_id=enterprise_id,
         fiscal_year=fiscal_year,
+        period_start_month=period_start_month,
+        period_end_month=period_end_month,
         rows=ledger_rows,
     )
     balance_errors = _add_balance_rows(
@@ -94,6 +121,8 @@ def import_historical_books(
         organization_id=organization_id,
         enterprise_id=enterprise_id,
         fiscal_year=fiscal_year,
+        period_start_month=period_start_month,
+        period_end_month=period_end_month,
         rows=balance_rows,
     )
     db.flush()
@@ -106,7 +135,14 @@ def import_historical_books(
     if batch.created_ledger_rows or batch.created_balance_rows:
         batch.replaced_ledger_rows = existing_ledger_rows
         batch.replaced_balance_rows = existing_balance_rows
-        _delete_previous_rows(db, enterprise_id=enterprise_id, fiscal_year=fiscal_year, current_batch_id=batch.id)
+        _delete_previous_rows(
+            db,
+            enterprise_id=enterprise_id,
+            fiscal_year=fiscal_year,
+            period_start_month=period_start_month,
+            period_end_month=period_end_month,
+            current_batch_id=batch.id,
+        )
     db.flush()
     db.expunge(batch)
 
@@ -125,17 +161,23 @@ def _add_ledger_entries(
     organization_id: UUID,
     enterprise_id: UUID,
     fiscal_year: int,
+    period_start_month: int,
+    period_end_month: int,
     rows: list[dict],
 ) -> list[dict]:
     errors = []
     for index, row in enumerate(rows, start=1):
         try:
             voucher_date = to_date(row.get("date"))
+            if voucher_date.year != fiscal_year or voucher_date.month < period_start_month or voucher_date.month > period_end_month:
+                raise ImportValidationError("voucher_date is outside the selected accounting period")
             entry = HistoricalLedgerEntry(
                 organization_id=organization_id,
                 enterprise_id=enterprise_id,
                 import_batch_id=batch.id,
                 fiscal_year=fiscal_year,
+                period_start_month=period_start_month,
+                period_end_month=period_end_month,
                 voucher_date=voucher_date,
                 voucher_no=_required_string(row, ["voucher_no"], "voucher_no"),
                 summary=str(row.get("summary") or ""),
@@ -160,6 +202,8 @@ def _add_balance_rows(
     organization_id: UUID,
     enterprise_id: UUID,
     fiscal_year: int,
+    period_start_month: int,
+    period_end_month: int,
     rows: list[dict],
 ) -> list[dict]:
     errors = []
@@ -170,6 +214,8 @@ def _add_balance_rows(
                 enterprise_id=enterprise_id,
                 import_batch_id=batch.id,
                 fiscal_year=fiscal_year,
+                period_start_month=period_start_month,
+                period_end_month=period_end_month,
                 account_code=_required_string(row, ["account_code"], "account_code"),
                 account_name=_required_string(row, ["account_name"], "account_name"),
                 opening_debit=to_decimal(row.get("opening_debit")),
@@ -243,7 +289,23 @@ def _ledger_auxiliary(row: dict) -> dict:
     return auxiliary
 
 
-def _validate_source_metadata(source_metadata: dict, *, enterprise_name: str, fiscal_year: int) -> None:
+def _validate_period(*, fiscal_year: int, period_start_month: int, period_end_month: int) -> None:
+    if fiscal_year < 2000 or fiscal_year > 2100:
+        raise HistoricalImportError("Selected fiscal year is out of supported range.")
+    if period_start_month < 1 or period_start_month > 12 or period_end_month < 1 or period_end_month > 12:
+        raise HistoricalImportError("Selected historical import period month is out of supported range.")
+    if period_start_month > period_end_month:
+        raise HistoricalImportError("Selected historical import period start month cannot be after end month.")
+
+
+def _validate_source_metadata(
+    source_metadata: dict,
+    *,
+    enterprise_name: str,
+    fiscal_year: int,
+    period_start_month: int,
+    period_end_month: int,
+) -> None:
     company_names = [
         str(value).strip()
         for value in (
@@ -265,18 +327,40 @@ def _validate_source_metadata(source_metadata: dict, *, enterprise_name: str, fi
         if value
     ]
     for period_text in period_texts:
+        periods = _periods_from_text(period_text)
         years = {int(match) for match in re.findall(r"(20\d{2})年", period_text)}
         if years and years != {fiscal_year}:
             raise HistoricalImportError("Uploaded historical files do not match the selected fiscal year.")
+        if periods:
+            months = [period[1] for period in periods if period[0] == fiscal_year]
+            if months and (min(months), max(months)) != (period_start_month, period_end_month):
+                raise HistoricalImportError("Uploaded historical files do not match the selected accounting period.")
 
 
-def _delete_previous_rows(db: Session, *, enterprise_id: UUID, fiscal_year: int, current_batch_id: UUID) -> None:
+def _periods_from_text(period_text: str) -> list[tuple[int, int]]:
+    return [
+        (int(year), int(month))
+        for year, month in re.findall(r"(20\d{2})年\s*(\d{1,2})月", period_text)
+    ]
+
+
+def _delete_previous_rows(
+    db: Session,
+    *,
+    enterprise_id: UUID,
+    fiscal_year: int,
+    period_start_month: int,
+    period_end_month: int,
+    current_batch_id: UUID,
+) -> None:
     organization_id = get_current_organization_id()
     common_filters = (
         lambda model: (
             model.organization_id == organization_id,
             model.enterprise_id == enterprise_id,
             model.fiscal_year == fiscal_year,
+            model.period_start_month <= period_end_month,
+            model.period_end_month >= period_start_month,
             model.import_batch_id != current_batch_id,
         )
     )
@@ -284,7 +368,15 @@ def _delete_previous_rows(db: Session, *, enterprise_id: UUID, fiscal_year: int,
     db.execute(delete(HistoricalBalanceRow).where(*common_filters(HistoricalBalanceRow)))
 
 
-def _existing_count(db: Session, model, *, enterprise_id: UUID, fiscal_year: int) -> int:
+def _existing_count(
+    db: Session,
+    model,
+    *,
+    enterprise_id: UUID,
+    fiscal_year: int,
+    period_start_month: int,
+    period_end_month: int,
+) -> int:
     return int(
         db.scalar(
             select(func.count())
@@ -293,6 +385,8 @@ def _existing_count(db: Session, model, *, enterprise_id: UUID, fiscal_year: int
                 model.organization_id == get_current_organization_id(),
                 model.enterprise_id == enterprise_id,
                 model.fiscal_year == fiscal_year,
+                model.period_start_month <= period_end_month,
+                model.period_end_month >= period_start_month,
             )
         )
         or 0

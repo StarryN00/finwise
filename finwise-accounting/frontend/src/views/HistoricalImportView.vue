@@ -28,6 +28,26 @@
       <el-form-item label="会计年度">
         <el-input-number v-model="form.fiscalYear" :min="2000" :max="2100" controls-position="right" />
       </el-form-item>
+      <el-form-item label="起始月份">
+        <el-select v-model="form.periodStartMonth" placeholder="选择起始月份">
+          <el-option
+            v-for="month in monthOptions"
+            :key="month.value"
+            :label="month.label"
+            :value="month.value"
+          />
+        </el-select>
+      </el-form-item>
+      <el-form-item label="截止月份">
+        <el-select v-model="form.periodEndMonth" placeholder="选择截止月份">
+          <el-option
+            v-for="month in monthOptions"
+            :key="month.value"
+            :label="month.label"
+            :value="month.value"
+          />
+        </el-select>
+      </el-form-item>
     </el-form>
 
     <div class="file-grid">
@@ -82,6 +102,8 @@ const now = new Date()
 const form = reactive({
   enterpriseId: '',
   fiscalYear: now.getFullYear() - 1,
+  periodStartMonth: 1,
+  periodEndMonth: 12,
 })
 const ledgerInput = ref(null)
 const balanceInput = ref(null)
@@ -90,6 +112,10 @@ const balanceFile = ref(null)
 const isSubmitting = ref(false)
 const importResult = ref(null)
 const lastFeedback = ref('')
+const monthOptions = Array.from({ length: 12 }, (_, index) => {
+  const value = index + 1
+  return { value, label: `${value} 月` }
+})
 
 watch(
   () => workspace.enterprises,
@@ -149,16 +175,22 @@ async function submitHistoricalImport() {
     ElMessage.warning('请同时选择序时账和余额表')
     return
   }
+  if (form.periodStartMonth > form.periodEndMonth) {
+    ElMessage.warning('起始月份不能晚于截止月份')
+    return
+  }
   isSubmitting.value = true
   lastFeedback.value = ''
   try {
     const formData = new FormData()
     formData.append('fiscal_year', String(form.fiscalYear))
+    formData.append('period_start_month', String(form.periodStartMonth))
+    formData.append('period_end_month', String(form.periodEndMonth))
     formData.append('ledger_file', ledgerFile.value)
     formData.append('balance_file', balanceFile.value)
     const response = await api.historicalImports.importGbt24589(form.enterpriseId, formData)
     importResult.value = response.data
-    lastFeedback.value = `${form.fiscalYear} 年历史账套已导入：序时账 ${response.data.created_ledger_rows} 行，余额表 ${response.data.created_balance_rows} 行`
+    lastFeedback.value = `${periodLabel()} 历史账套已导入：序时账 ${response.data.created_ledger_rows} 行，余额表 ${response.data.created_balance_rows} 行`
     ElMessage.success('历史账套已导入')
   } catch (error) {
     const detail = error?.response?.data?.detail || error?.message || '历史账套导入失败'
@@ -189,10 +221,19 @@ function unbalancedVoucherNote(summary) {
   return samples.map((item) => `${item.voucher_date} ${item.voucher_no}`).join('；')
 }
 
+function periodLabel() {
+  if (form.periodStartMonth === 1 && form.periodEndMonth === 12) return `${form.fiscalYear} 年`
+  return `${form.fiscalYear} 年 ${form.periodStartMonth} 月至 ${form.periodEndMonth} 月`
+}
+
 function translateImportError(message) {
   return String(message)
     .replace('Only .xlsx and .xls files are supported.', '仅支持 .xlsx、.xls 文件')
     .replace('Could not read import file:', '无法读取导入文件：')
+    .replace('Uploaded historical files do not match the selected fiscal year.', '上传的历史账套期间与选择的会计年度不一致')
+    .replace('Uploaded historical files do not match the selected accounting period.', '上传的历史账套期间与选择的会计期间不一致')
+    .replace('Selected historical import period month is out of supported range.', '选择的月份超出支持范围')
+    .replace('Selected historical import period start month cannot be after end month.', '起始月份不能晚于截止月份')
     .replace('Enterprise not found.', '未找到企业')
 }
 </script>
@@ -217,9 +258,9 @@ function translateImportError(message) {
 
 .historical-form {
   display: grid;
-  grid-template-columns: minmax(260px, 1fr) 220px;
+  grid-template-columns: minmax(260px, 1fr) 180px 180px 180px;
   gap: 12px;
-  max-width: 760px;
+  max-width: 980px;
 }
 
 .file-grid {

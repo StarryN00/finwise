@@ -375,24 +375,53 @@ def apply_voucher_merge_suggestion(
 
 
 def _voucher_matches_keyword(voucher: Voucher, keyword: str) -> bool:
+    terms = _search_terms(keyword)
+    if not terms:
+        return True
     values = [
         voucher.voucher_number or "",
         voucher.summary or "",
         voucher.status or "",
         voucher.ai_reason or "",
         voucher.voucher_date.isoformat() if voucher.voucher_date else "",
+        _date_compact(voucher.voucher_date) if voucher.voucher_date else "",
     ]
     for entry in voucher.entries:
         values.extend(
             [
                 entry.account_code or "",
                 entry.account_name or "",
+                _voucher_entry_direction_label(entry.direction),
                 str(entry.amount or ""),
+                _money_text(entry.amount or Decimal("0.00")),
             ]
         )
     if voucher.source_data:
         values.append(json.dumps(voucher.source_data, ensure_ascii=False, default=str))
-    return keyword in "\n".join(values)
+    haystack = _normalized_search_text(values)
+    return all(term in haystack for term in terms)
+
+
+def _search_terms(keyword: str) -> list[str]:
+    return [_normalize_search_value(term) for term in str(keyword or "").split() if _normalize_search_value(term)]
+
+
+def _normalized_search_text(values: list[str]) -> str:
+    normalized_values = [_normalize_search_value(value) for value in values if value not in (None, "")]
+    return "\n".join(normalized_values)
+
+
+def _normalize_search_value(value) -> str:
+    text = str(value or "").strip().lower()
+    return text.replace(",", "").replace("，", "").replace(" ", "")
+
+
+def _date_compact(value: date) -> str:
+    return value.strftime("%Y%m%d")
+
+
+def _voucher_entry_direction_label(direction: str) -> str:
+    return {"DEBIT": "借方", "CREDIT": "贷方"}.get(direction, direction or "")
 
 
 def _build_voucher_merge_suggestions(db: Session, *, package: MonthlyWorkPackage) -> list[dict]:

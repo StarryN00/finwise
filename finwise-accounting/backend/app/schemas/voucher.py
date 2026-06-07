@@ -68,6 +68,31 @@ class VoucherRead(BaseModel):
     entries: list[VoucherEntryRead]
 
 
+class HistoricalVoucherEntryRead(BaseModel):
+    id: str
+    line_no: int
+    direction: str
+    account_code: str
+    account_name: str
+    amount: Decimal
+    source_type: str = "HISTORICAL_LEDGER"
+
+
+class HistoricalVoucherRead(BaseModel):
+    id: str
+    voucher_date: date
+    voucher_number: str
+    summary: str
+    attachment_count: int = 0
+    source_key: str
+    source_data: dict
+    status: str = "IMPORTED"
+    confirmed_by: Optional[str] = None
+    confirmed_at: Optional[datetime] = None
+    created_at: Optional[datetime] = None
+    entries: list[HistoricalVoucherEntryRead]
+
+
 class VoucherGenerateResponse(BaseModel):
     model_config = ConfigDict(from_attributes=True)
 
