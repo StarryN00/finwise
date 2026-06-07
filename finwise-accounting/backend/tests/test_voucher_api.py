@@ -986,8 +986,10 @@ def test_voucher_preprocess_restores_reassigned_single_bank_voucher(monkeypatch)
 def test_voucher_preprocess_uses_kimi_k26_supported_temperature():
     from app.services import voucher_ai_preprocess_service as service
 
-    assert service._temperature_for_model("kimi-k2.6") == 1
+    assert service._temperature_for_model("kimi-k2.6") == 0.6
+    assert service._thinking_for_model("kimi-k2.6") == {"type": "disabled"}
     assert service._temperature_for_model(" moonshot-v1-32k ") == 0.2
+    assert service._thinking_for_model(" moonshot-v1-32k ") is None
 
 
 def test_voucher_preprocess_endpoint_interrupts_when_kimi_fails(monkeypatch):

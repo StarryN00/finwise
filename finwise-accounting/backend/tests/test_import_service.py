@@ -1,3 +1,4 @@
+from decimal import Decimal
 from uuid import UUID
 
 import pandas as pd
@@ -200,6 +201,25 @@ def test_import_frame_detects_late_bank_header_and_multiple_sheets(tmp_path):
     assert frame.iloc[0]["摘要"] == "付款"
 
 
+def test_import_frame_detects_general_taxpayer_invoice_checklist(tmp_path):
+    path = tmp_path / "general-taxpayer-input-invoices.xlsx"
+    rows = [
+        ["发票清单", "发票清单", "发票清单", "发票清单", "发票清单", "发票清单", "发票清单", "发票清单"],
+        ["纳税人识别号", "91320583TEST", "", "税款所属期", "202604", "", "纳税人名称", "苏州测试企业"],
+        ["序号", "勾选状态", "数电发票号码", "发票代码", "发票号码", "开票日期", "销售方名称", "金额", "税额", "有效抵扣税额"],
+        [1, "已勾选", "26312000002191099006", "263120000021", "91099006", "2026-04-10 13:09:39", "上海供应商", "25663.72", "3336.28", "3336.28"],
+        ["合计", "", "", "", "", "", "", "25663.72", "3336.28", "3336.28"],
+    ]
+    with pd.ExcelWriter(path) as writer:
+        pd.DataFrame(rows).to_excel(writer, sheet_name="发票", header=False, index=False)
+
+    frame = _read_import_frame(str(path), ".xlsx")
+
+    assert list(frame.columns)[:6] == ["序号", "勾选状态", "数电发票号码", "发票代码", "发票号码", "开票日期"]
+    assert len(frame) == 1
+    assert frame.iloc[0]["销售方名称"] == "上海供应商"
+
+
 def test_import_invoice_rows_maps_input_and_output(db_session):
     package = make_package(db_session)
 
@@ -214,6 +234,60 @@ def test_import_invoice_rows_maps_input_and_output(db_session):
     assert result["created"] == 1
     assert result["errors"] == []
     assert invoice.invoice_direction == "OUTPUT"
+
+
+def test_import_invoice_rows_accepts_general_taxpayer_input_without_total_amount(db_session):
+    package = make_package(db_session)
+
+    result = import_invoice_rows(
+        db_session,
+        monthly_work_package_id=package.id,
+        direction="INPUT",
+        rows=[
+            {
+                "数电发票号码": "26312000002191099006",
+                "发票号码": "91099006",
+                "开票日期": "2026-04-10 13:09:39",
+                "销售方名称": "上海供应商",
+                "金额": "25663.72",
+                "税额": "3336.28",
+                "有效抵扣税额": "3336.28",
+            }
+        ],
+    )
+
+    invoice = db_session.query(Invoice).one()
+    assert result["created"] == 1
+    assert result["errors"] == []
+    assert invoice.invoice_direction == "INPUT"
+    assert invoice.invoice_number == "26312000002191099006"
+    assert invoice.invoice_date.isoformat() == "2026-04-10"
+    assert invoice.amount == Decimal("25663.72")
+    assert invoice.tax_amount == Decimal("3336.28")
+    assert invoice.total_amount == Decimal("29000.00")
+    assert invoice.seller_name == "上海供应商"
+
+
+def test_import_invoice_rows_skips_general_taxpayer_invoice_summary_row(db_session):
+    package = make_package(db_session)
+
+    result = import_invoice_rows(
+        db_session,
+        monthly_work_package_id=package.id,
+        direction="INPUT",
+        rows=[
+            {
+                "序号": "合计",
+                "金额": "25663.72",
+                "税额": "3336.28",
+                "有效抵扣税额": "3336.28",
+            }
+        ],
+    )
+
+    assert result["created"] == 0
+    assert result["errors"] == []
+    assert db_session.query(Invoice).count() == 0
 
 
 def test_import_invoice_rows_accepts_digital_invoice_number(db_session):

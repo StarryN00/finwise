@@ -50,7 +50,7 @@ def _read_import_frame(path: str, suffix: str) -> pd.DataFrame:
         last_error: Exception | None = None
         for encoding in ("utf-8", "gb18030", "gbk"):
             try:
-                return pd.read_csv(path, encoding=encoding)
+                return pd.read_csv(path, encoding=encoding, dtype=str)
             except UnicodeDecodeError as exc:
                 last_error = exc
         if last_error is not None:
@@ -68,17 +68,17 @@ def _read_import_frame(path: str, suffix: str) -> pd.DataFrame:
 def _read_excel_preferred_sheet(path: str, **kwargs) -> pd.DataFrame:
     workbook = pd.ExcelFile(path)
     sheet_name = "发票基础信息" if "发票基础信息" in workbook.sheet_names else workbook.sheet_names[0]
-    return pd.read_excel(path, sheet_name=sheet_name, **kwargs)
+    return pd.read_excel(path, sheet_name=sheet_name, dtype=str, **kwargs)
 
 
 def _detect_excel_import_frame(path: str) -> pd.DataFrame | None:
     workbook = pd.ExcelFile(path)
     candidates = []
     for sheet_name in workbook.sheet_names:
-        preview = pd.read_excel(path, sheet_name=sheet_name, header=None, nrows=30)
+        preview = pd.read_excel(path, sheet_name=sheet_name, header=None, nrows=30, dtype=str)
         for row_index in range(len(preview)):
             headers = {str(value).strip() for value in preview.iloc[row_index].dropna().tolist()}
-            score = _import_header_score(headers)
+            score = max(_import_header_score(headers), _invoice_header_score(headers))
             if score >= 6:
                 candidates.append((score, sheet_name, row_index))
 
@@ -86,7 +86,7 @@ def _detect_excel_import_frame(path: str) -> pd.DataFrame | None:
         return None
 
     _score, sheet_name, row_index = max(candidates, key=lambda item: item[0])
-    detected = pd.read_excel(path, sheet_name=sheet_name, header=row_index)
+    detected = pd.read_excel(path, sheet_name=sheet_name, header=row_index, dtype=str)
     return _drop_summary_rows(detected)
 
 
@@ -100,7 +100,7 @@ def _looks_like_bank_header(columns: set[str]) -> bool:
 
 
 def _looks_like_invoice_header(columns: set[str]) -> bool:
-    return _has_any(columns, INVOICE_COLUMNS["invoice_date"]) and _has_any(columns, INVOICE_COLUMNS["invoice_number"])
+    return _invoice_header_score(columns) >= 6
 
 
 def _import_header_score(columns: set[str]) -> int:
@@ -120,6 +120,23 @@ def _import_header_score(columns: set[str]) -> int:
     return score
 
 
+def _invoice_header_score(columns: set[str]) -> int:
+    score = 0
+    if _has_any(columns, INVOICE_COLUMNS["invoice_number"]):
+        score += 3
+    if _has_any(columns, INVOICE_COLUMNS["invoice_date"]):
+        score += 3
+    if _has_any(columns, INVOICE_COLUMNS["amount"]):
+        score += 2
+    if _has_any(columns, INVOICE_COLUMNS["tax_amount"]):
+        score += 2
+    if _has_any(columns, INVOICE_COLUMNS["total_amount"]):
+        score += 1
+    if _has_any(columns, INVOICE_COLUMNS["seller_name"]) or _has_any(columns, INVOICE_COLUMNS["buyer_name"]):
+        score += 1
+    return score
+
+
 def _has_any(columns: set[str], aliases: list[str]) -> bool:
     normalized_columns = {_normalize_header(column) for column in columns}
     for alias in aliases:
@@ -135,7 +152,7 @@ def _normalize_header(value: str) -> str:
 
 def _drop_summary_rows(frame: pd.DataFrame) -> pd.DataFrame:
     if "序号" in frame.columns:
-        frame = frame[frame["序号"].astype(str) != "合计行"]
+        frame = frame[~frame["序号"].astype(str).str.strip().isin({"合计", "合计行", "总计"})]
     return frame.dropna(how="all")
 
 

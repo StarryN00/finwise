@@ -81,10 +81,10 @@ BANK_COLUMNS = {
 }
 
 INVOICE_COLUMNS = {
-    "invoice_number": ["发票号码", "数电发票号码", "发票代码", "发票编码"],
+    "invoice_number": ["数电发票号码", "发票号码", "发票代码", "发票编码"],
     "invoice_date": ["开票日期", "日期"],
     "amount": ["金额", "不含税金额", "合计金额"],
-    "tax_amount": ["税额", "税款"],
+    "tax_amount": ["税额", "税款", "有效抵扣税额"],
     "total_amount": ["价税合计", "总金额", "税后合计"],
     "seller_name": ["销售方名称", "销货方", "卖方名称"],
     "buyer_name": ["购买方名称", "购货方", "买方名称"],
@@ -235,6 +235,8 @@ def import_invoice_rows(db: Session, *, monthly_work_package_id: UUID, direction
     errors: list[dict] = []
 
     for index, row in enumerate(rows, start=1):
+        if _is_invoice_summary_row(row):
+            continue
         try:
             invoice = Invoice(
                 organization_id=organization_id,
@@ -244,7 +246,7 @@ def import_invoice_rows(db: Session, *, monthly_work_package_id: UUID, direction
                 invoice_date=to_date(pick(row, INVOICE_COLUMNS["invoice_date"])),
                 amount=_required_decimal(row, INVOICE_COLUMNS["amount"], "amount"),
                 tax_amount=_required_decimal(row, INVOICE_COLUMNS["tax_amount"], "tax_amount"),
-                total_amount=_required_decimal(row, INVOICE_COLUMNS["total_amount"], "total_amount"),
+                total_amount=_invoice_total_amount(row),
                 seller_name=pick(row, INVOICE_COLUMNS["seller_name"]),
                 buyer_name=pick(row, INVOICE_COLUMNS["buyer_name"]),
                 raw_row_data=_json_safe_row(row),
@@ -285,6 +287,16 @@ def _is_bank_summary_row(row: dict) -> bool:
     if any(value in {"合计", "合计行", "本页合计", "总计"} for value in values):
         return True
     return False
+
+
+def _is_invoice_summary_row(row: dict) -> bool:
+    sequence = str(row.get("序号", "")).strip()
+    if sequence in {"合计", "合计行", "总计"}:
+        return True
+    values = [str(value).strip() for value in row.values() if not _is_blank(value)]
+    return any(value in {"合计", "合计行", "总计"} for value in values) and _is_blank(
+        pick(row, INVOICE_COLUMNS["invoice_number"])
+    )
 
 
 def _bank_amounts(row: dict, *, enterprise_name: str) -> tuple[Decimal, Decimal]:
@@ -361,6 +373,17 @@ def _required_decimal(row: dict, aliases: list[str], field_name: str) -> Decimal
     if _is_blank(value):
         raise ValueError(f"missing required decimal value: {field_name}")
     return to_decimal(value)
+
+
+def _invoice_total_amount(row: dict) -> Decimal:
+    value = pick(row, INVOICE_COLUMNS["total_amount"])
+    if not _is_blank(value):
+        return to_decimal(value)
+    return _required_decimal(row, INVOICE_COLUMNS["amount"], "amount") + _required_decimal(
+        row,
+        INVOICE_COLUMNS["tax_amount"],
+        "tax_amount",
+    )
 
 
 def _required_string(row: dict, aliases: list[str], field_name: str) -> str:

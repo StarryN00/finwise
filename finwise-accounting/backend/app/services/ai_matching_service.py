@@ -29,10 +29,11 @@ class AiMatchingClient(Protocol):
 
 
 class MoonshotAiMatchingClient:
-    def __init__(self, *, api_key: str, base_url: str, model: str):
+    def __init__(self, *, api_key: str, base_url: str, model: str, timeout_seconds: int = 240):
         self.api_key = api_key
         self.base_url = base_url.rstrip("/")
         self.model = model
+        self.timeout_seconds = timeout_seconds
 
     def propose_matches(self, payload: dict) -> dict:
         if not self.api_key:
@@ -64,7 +65,7 @@ class MoonshotAiMatchingClient:
             method="POST",
         )
         try:
-            with request.urlopen(http_request, timeout=45) as response:
+            with request.urlopen(http_request, timeout=self.timeout_seconds) as response:
                 response_data = json.loads(response.read().decode("utf-8"))
             content = response_data["choices"][0]["message"]["content"]
             return json.loads(content)
@@ -100,6 +101,7 @@ def run_ai_matching(db: Session, *, monthly_work_package_id: UUID, ai_client: Ai
         api_key=settings.moonshot_api_key,
         base_url=settings.moonshot_base_url,
         model=settings.moonshot_model,
+        timeout_seconds=settings.moonshot_timeout_seconds,
     )
     threshold = settings.ai_match_confidence_threshold
     existing_pairs = _existing_match_pairs(db, package.id)

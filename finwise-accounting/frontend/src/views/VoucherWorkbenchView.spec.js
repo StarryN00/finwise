@@ -15,6 +15,7 @@ import { ElMessage } from 'element-plus'
 vi.mock('element-plus', () => ({
   ElMessage: {
     error: vi.fn(),
+    info: vi.fn(() => ({ close: vi.fn() })),
     success: vi.fn(),
     warning: vi.fn(),
   },
@@ -957,7 +958,7 @@ function mergeSuggestionFixture() {
 }
 
 function aiButton(wrapper) {
-  return wrapper.findAll('button').find((button) => button.text() === 'AI 预处理')
+  return wrapper.findAll('button').find((button) => button.text().includes('AI 预处理'))
 }
 
 function mergeSuggestionButton(wrapper) {

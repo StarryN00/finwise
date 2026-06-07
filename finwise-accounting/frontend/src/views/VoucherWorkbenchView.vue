@@ -22,7 +22,7 @@
             :disabled="!activePackage"
             @click="preprocessVouchers"
           >
-            AI 预处理
+            {{ isGenerating ? 'AI 预处理中...' : 'AI 预处理' }}
           </el-button>
         </div>
       </div>
@@ -1622,6 +1622,11 @@ async function preprocessVouchers() {
   const requestId = ++preprocessRequestId
   isGenerating.value = true
   preprocessAudit.value = null
+  const processingMessage = ElMessage.info({
+    message: 'AI 预处理中，数据量较大时可能需要 1-3 分钟，请勿刷新页面',
+    duration: 0,
+    showClose: true,
+  })
   try {
     const response = await api.vouchers.preprocess(packageId)
     if (isStalePreprocess(requestId, packageId)) return
@@ -1638,6 +1643,7 @@ async function preprocessVouchers() {
     if (isStalePreprocess(requestId, packageId)) return
     ElMessage.error(error?.response?.data?.detail || error?.message || 'AI 预处理失败')
   } finally {
+    processingMessage?.close?.()
     if (!isStalePreprocess(requestId, packageId)) {
       isGenerating.value = false
     }

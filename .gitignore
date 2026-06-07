@@ -21,6 +21,7 @@ finwise-accounting/backend/storage/
 
 # Env
 .env
+.env.*
 .env.local
 !.env.example
 

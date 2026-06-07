@@ -1,6 +1,6 @@
 import axios from 'axios'
 
-const AI_REQUEST_TIMEOUT_MS = 120000
+const AI_REQUEST_TIMEOUT_MS = 300000
 
 export const apiClient = axios.create({
   baseURL: '/api',

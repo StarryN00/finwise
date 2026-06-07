@@ -20,6 +20,7 @@ class Settings(BaseSettings):
     moonshot_base_url: str = "https://api.moonshot.cn/v1"
     moonshot_model: str = "moonshot-v1-32k"
     moonshot_report_model: str = "moonshot-v1-8k"
+    moonshot_timeout_seconds: int = 240
     ai_match_confidence_threshold: int = 90
 
 

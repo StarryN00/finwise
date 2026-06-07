@@ -55,8 +55,10 @@ VOUCHER_PREPROCESS_SYSTEM_PROMPT = (
     "对方别名和历史规则判断。不要输出企业全称、税号、银行账号或完整发票号。先完整比对全部流水和发票，"
     "必须优先分析 candidate_match_groups；如果候选组显示同一交易对方且方向兼容，即使金额不完全一致，"
     "也应输出带 bank_refs 和 invoice_refs 的 FULL_MATCH 或 DIFFERENCE_COMPLETION 建议，而不是单边处理。"
-    "但只返回最需要人工关注或最能代表处理规则的重点建议，task_suggestions 最多 30 条。返回 JSON，格式为 "
-    '{"analysis_summary":"中文概括，说明已比对范围、主要处理策略和需人工关注点",'
+    "但只返回最需要人工关注或最能代表处理规则的重点建议，task_suggestions 最多 12 条。"
+    "必须输出紧凑 JSON：不要输出推理过程、Markdown、换行缩进或长篇解释；analysis_summary 不超过 80 个汉字；"
+    "每条 summary 不超过 24 个汉字，reason 不超过 40 个汉字。返回 JSON，格式为 "
+    '{"analysis_summary":"中文短句",'
     '"task_suggestions":[{"source_key":"string","task_type":"FULL_MATCH|DIFFERENCE_COMPLETION|'
     'SINGLE_SOURCE|HISTORICAL_REVIEW","confidence":0-100,"summary":"中文凭证摘要",'
     '"reason":"中文原因","bank_refs":["T001"],"invoice_refs":["I001"],'
@@ -83,10 +85,11 @@ class VoucherPreprocessClient(Protocol):
 
 
 class MoonshotVoucherPreprocessClient:
-    def __init__(self, *, api_key: str, base_url: str, model: str):
+    def __init__(self, *, api_key: str, base_url: str, model: str, timeout_seconds: int = 240):
         self.api_key = api_key
         self.base_url = base_url.rstrip("/")
         self.model = model
+        self.timeout_seconds = timeout_seconds
 
     def propose_voucher_tasks(self, payload: dict) -> dict:
         if not self.api_key:
@@ -102,6 +105,9 @@ class MoonshotVoucherPreprocessClient:
                 {"role": "user", "content": json.dumps(payload, ensure_ascii=False)},
             ],
         }
+        thinking = _thinking_for_model(self.model)
+        if thinking is not None:
+            body["thinking"] = thinking
         http_request = request.Request(
             f"{self.base_url}/chat/completions",
             data=json.dumps(body, ensure_ascii=False).encode("utf-8"),
@@ -109,9 +115,12 @@ class MoonshotVoucherPreprocessClient:
             method="POST",
         )
         try:
-            with request.urlopen(http_request, timeout=90) as response:
+            with request.urlopen(http_request, timeout=self.timeout_seconds) as response:
                 response_data = json.loads(response.read().decode("utf-8"))
-            return json.loads(response_data["choices"][0]["message"]["content"])
+            choice = response_data["choices"][0]
+            if choice.get("finish_reason") == "length":
+                raise VoucherAiPreprocessUnavailableError("AI 输出过长被截断，请缩小数据范围后重试", used_kimi=True)
+            return json.loads(choice["message"]["content"])
         except TimeoutError as exc:
             raise VoucherAiPreprocessUnavailableError("AI 服务响应超时", used_kimi=True) from exc
         except error.HTTPError as exc:
@@ -126,13 +135,20 @@ def create_default_voucher_preprocess_client() -> VoucherPreprocessClient:
         api_key=settings.moonshot_api_key,
         base_url=settings.moonshot_base_url,
         model=settings.moonshot_model,
+        timeout_seconds=settings.moonshot_timeout_seconds,
     )
 
 
 def _temperature_for_model(model: str) -> float:
     if model.strip().lower() == "kimi-k2.6":
-        return 1
+        return 0.6
     return 0.2
+
+
+def _thinking_for_model(model: str) -> dict[str, str] | None:
+    if model.strip().lower() == "kimi-k2.6":
+        return {"type": "disabled"}
+    return None
 
 
 def run_voucher_ai_preprocessing(
