@@ -52,6 +52,21 @@ Financing product matching is simplified: Excel-maintained product library with 
 - UI text, reports, and business terminology: Chinese (zh-CN)
 - Product documentation is in Chinese (see `docs/产品规划.md`)
 
+## Frontend UI Layout Rules
+
+The product is an operator-facing workbench. Tables and dense management pages must remain usable at narrow desktop widths and laptop split-screen widths.
+
+- Any Element Plus table whose total column width may exceed its container must be wrapped in a visible horizontal scroll container. Never rely on clipped overflow.
+- Wrapped tables must still fill available desktop width: table classes should use `width: 100%` plus a sensible `min-width`, and at least one non-critical text column should use `min-width` rather than fixed `width` to absorb extra space.
+- Table columns must use intentional widths based on content. Do not let one text column consume remaining space when it hides action/status columns.
+- Backend enum values must not be shown raw in the UI. Map categories, directions, statuses, and business types to zh-CN labels in the view or a shared formatter.
+- Dense workbench pages should prefer compact fixed columns for codes, statuses, booleans, dates, directions, and amounts; use `show-overflow-tooltip` for long names.
+- Source-level UI tests for new table pages must assert the scroll container, zh-CN enum formatter, and important column labels.
+- After any new or changed page/window action, tests must include at least one real user-flow verification for each critical button or selector path: click the control, observe the network/API request or state transition, and verify visible user feedback. Do not rely only on source-level checks, build success, or static DOM assertions.
+- Vue event bindings must not pass raw DOM event objects into functions that expect business IDs or payloads. For handlers such as refresh, export, generate, confirm, and import, use explicit no-argument wrapper functions or inline argument calls, then verify the resulting API path does not contain values like `[object PointerEvent]`.
+- Manual refresh or no-op actions must still provide visible feedback, such as a success message, refreshed timestamp, or updated count, so operators can tell the click was handled even when the data is unchanged.
+- Follow `docs/frontend-ui-layout-guidelines.md` when adding or modifying frontend tables, management pages, or workbench screens.
+
 ## Skill routing
 
 When the user's request matches an available skill, ALWAYS invoke it using the Skill

@@ -16,11 +16,15 @@ class EnterpriseSource(str, Enum):
     DIRECT = "DIRECT"
     LIU = "LIU"
     PING = "PING"
+    CHANNEL = "CHANNEL"
+    REFERRAL = "REFERRAL"
 
 
 class EnterpriseStatus(str, Enum):
     ACTIVE = "ACTIVE"
     INACTIVE = "INACTIVE"
+    SUSPENDED = "SUSPENDED"
+    CANCELLED = "CANCELLED"
 
 
 class EnterpriseBase(BaseModel):

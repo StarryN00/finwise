@@ -11,7 +11,8 @@ const workspace = useWorkspaceStore()
 const sourceMode = ref('monthly')
 const selectedEnterpriseId = ref('')
 const selectedPeriodPackageId = ref('')
-const historicalFiscalYear = ref(new Date().getFullYear())
+const currentFiscalYear = new Date().getFullYear()
+const historicalFiscalYear = ref(currentFiscalYear)
 const historicalStartMonth = ref(1)
 const historicalEndMonth = ref(12)
 const keyword = ref('')
@@ -32,8 +33,12 @@ const activePackage = computed(() => {
 })
 const monthOptions = Array.from({ length: 12 }, (_, index) => {
   const value = index + 1
-  return { value, label: `${value} 月` }
+  return { value, label: `${String(value).padStart(2, '0')}月` }
 })
+const yearOptions = Array.from({ length: 10 }, (_, index) => currentFiscalYear + 1 - index).map((year) => ({
+  value: year,
+  label: `${year}`,
+}))
 const historicalParams = computed(() => ({
   fiscal_year: Number(historicalFiscalYear.value),
   period_start_month: Number(historicalStartMonth.value),
@@ -45,6 +50,27 @@ const selectedContextLabel = computed(() => {
     return `${historicalFiscalYear.value} 年 ${historicalStartMonth.value} 月至 ${historicalEndMonth.value} 月`
   }
   return activePackage.value?.period || '-'
+})
+const voucherCountLabel = computed(() => (sourceMode.value === 'historical' ? '历史凭证' : '已确认凭证'))
+const selectedEnterpriseName = computed(() => {
+  return enterpriseOptions.value.find((enterprise) => enterprise.id === selectedEnterpriseId.value)?.name || '当前企业'
+})
+const selectedPeriodParts = computed(() => parsePeriod(activePackage.value?.period))
+const railYear = computed(() => {
+  if (sourceMode.value === 'historical') return Number(historicalFiscalYear.value) || new Date().getFullYear()
+  return selectedPeriodParts.value.year || new Date().getFullYear()
+})
+const activeRailMonth = computed(() => {
+  if (sourceMode.value === 'historical') return Number(historicalStartMonth.value)
+  return selectedPeriodParts.value.month
+})
+const availableMonthlyPeriodMonths = computed(() => {
+  return new Set(
+    periodOptions.value
+      .map((item) => parsePeriod(item.period))
+      .filter((period) => period.year === railYear.value && period.month)
+      .map((period) => period.month),
+  )
 })
 const selectedVoucher = computed(() => vouchers.value.find((item) => item.id === selectedVoucherId.value) || null)
 const voucherRows = computed(() =>
@@ -61,6 +87,16 @@ const pageCount = computed(() => Math.max(1, Math.ceil(voucherRows.value.length 
 const paginatedVoucherRows = computed(() => {
   const start = (currentPage.value - 1) * pageSize
   return voucherRows.value.slice(start, start + pageSize)
+})
+const hasVoucherRows = computed(() => voucherRows.value.length > 0)
+const emptyStateTitle = computed(() => {
+  if (keyword.value.trim()) return '没有找到匹配的凭证'
+  return sourceMode.value === 'historical' ? '当前历史期间暂无凭证' : '当前月份暂无已确认凭证'
+})
+const emptyStateDescription = computed(() => {
+  if (keyword.value.trim()) return '请调整搜索关键词，或清空搜索后查看当前期间的全部凭证。'
+  if (sourceMode.value === 'historical') return '当前企业在所选历史账套期间内没有可展示凭证。请切换年度、月份范围，或先导入历史账套。'
+  return '凭证管理只展示已确认凭证。请先在凭证生成页完成凭证确认，或切换到已有已确认凭证的月份。'
 })
 
 onMounted(async () => {
@@ -101,10 +137,22 @@ watch([sourceMode, historicalFiscalYear, historicalStartMonth, historicalEndMont
   if (sourceMode.value === 'historical' && selectedEnterpriseId.value) {
     await loadConfirmedVouchers()
   }
+  if (sourceMode.value === 'monthly') {
+    ensureSelection()
+    if (selectedPeriodPackageId.value) {
+      await loadConfirmedVouchers()
+    }
+  }
 })
 
 function packageEnterpriseId(item) {
   return item?.enterpriseId || item?.enterprise_id || ''
+}
+
+function parsePeriod(period) {
+  const matched = String(period || '').match(/^(\d{4})-(\d{1,2})$/)
+  if (!matched) return { year: null, month: null }
+  return { year: Number(matched[1]), month: Number(matched[2]) }
 }
 
 function ensureSelection() {
@@ -132,7 +180,7 @@ function restoreContext() {
     selectedEnterpriseId.value = parsed.enterpriseId || ''
     selectedPeriodPackageId.value = parsed.packageId || ''
     sourceMode.value = parsed.sourceMode === 'historical' ? 'historical' : 'monthly'
-    historicalFiscalYear.value = parsed.historicalFiscalYear || historicalFiscalYear.value
+    historicalFiscalYear.value = Number(parsed.historicalFiscalYear) || historicalFiscalYear.value
     historicalStartMonth.value = parsed.historicalStartMonth || 1
     historicalEndMonth.value = parsed.historicalEndMonth || 12
   } catch {
@@ -197,6 +245,11 @@ function searchVouchers() {
   return loadConfirmedVouchers()
 }
 
+function clearKeywordAndReload() {
+  keyword.value = ''
+  return loadConfirmedVouchers()
+}
+
 function openVoucherDetail(voucher) {
   selectedVoucherId.value = voucher.id
 }
@@ -255,9 +308,31 @@ function entryKey(voucher, entry, index) {
 }
 
 function selectRailMonth(month) {
-  if (sourceMode.value !== 'historical') return
+  if (sourceMode.value === 'monthly') {
+    const target = periodOptions.value.find((item) => {
+      const period = parsePeriod(item.period)
+      return period.year === railYear.value && period.month === Number(month)
+    })
+    if (!target) {
+      ElMessage.warning('当前企业没有该月份工作包')
+      return
+    }
+    selectedPeriodPackageId.value = target.id
+    return
+  }
   historicalStartMonth.value = month
   historicalEndMonth.value = month
+}
+
+function hasMonthlyPackage(month) {
+  if (sourceMode.value !== 'monthly') return true
+  return availableMonthlyPeriodMonths.value.has(Number(month))
+}
+
+function monthButtonTitle(month) {
+  const label = `${railYear.value}-${String(month).padStart(2, '0')}`
+  if (sourceMode.value === 'monthly' && !hasMonthlyPackage(month)) return `${label} 暂无工作包`
+  return label
 }
 </script>
 
@@ -268,19 +343,11 @@ function selectRailMonth(month) {
         <el-input v-model="keyword" clearable placeholder="可输入凭证号/摘要/科目/金额..." @clear="searchVouchers" @keyup.enter="searchVouchers" />
         <button class="icon-search-button" type="button" aria-label="搜索凭证" :disabled="isLoading" @click="searchVouchers">⌕</button>
       </div>
-      <button class="filter-button" type="button">更多条件⌄</button>
-      <button class="help-button" type="button">?</button>
       <div class="toolbar-spacer" />
-      <button class="primary-action" type="button">+ 新增凭证</button>
-      <button class="outline-action" type="button">批量操作⌄</button>
-      <button class="text-action" type="button">导入/导出</button>
-      <button class="text-action" type="button">打印</button>
-      <button class="text-action" type="button">电子账本</button>
-      <button class="text-action" type="button">按日期编号</button>
       <button class="text-action" type="button" :disabled="isLoading" @click="loadConfirmedVouchers">刷新</button>
     </header>
 
-    <section class="voucher-filter-strip">
+    <section class="voucher-filter-strip" :class="{ historical: sourceMode === 'historical' }">
       <div class="mode-toggle" aria-label="凭证来源">
         <button type="button" :class="{ active: sourceMode === 'monthly' }" @click="sourceMode = 'monthly'">月度工作包</button>
         <button type="button" :class="{ active: sourceMode === 'historical' }" @click="sourceMode = 'historical'">历史账套</button>
@@ -299,7 +366,9 @@ function selectRailMonth(month) {
       </label>
       <label v-if="sourceMode === 'historical'">
         <span>会计年度</span>
-        <el-input v-model="historicalFiscalYear" placeholder="会计年度" />
+        <el-select v-model="historicalFiscalYear" placeholder="会计年度">
+          <el-option v-for="year in yearOptions" :key="year.value" :label="year.label" :value="year.value" />
+        </el-select>
       </label>
       <label v-if="sourceMode === 'historical'">
         <span>起始月份</span>
@@ -313,18 +382,45 @@ function selectRailMonth(month) {
           <el-option v-for="month in monthOptions" :key="month.value" :label="month.label" :value="month.value" />
         </el-select>
       </label>
-      <div class="list-summary">
-        <strong>{{ voucherRows.length }}</strong>
-        <span>{{ sourceMode === 'historical' ? '张历史凭证' : '张已确认凭证' }} · {{ selectedContextLabel }}</span>
+      <div class="list-summary" data-testid="voucher-count-summary">
+        <span>{{ voucherCountLabel }}：</span>
+        <strong data-testid="voucher-count">{{ voucherRows.length }}</strong>
+        <span> 张 · {{ selectedContextLabel }}</span>
       </div>
     </section>
 
-    <div class="voucher-ledger-layout">
+    <section v-if="!hasVoucherRows" class="voucher-empty-state" data-testid="voucher-empty-state">
+      <div class="empty-state-mark">凭</div>
+      <div class="empty-state-content">
+        <p class="empty-state-kicker">{{ selectedEnterpriseName }} · {{ selectedContextLabel }}</p>
+        <h2>{{ emptyStateTitle }}</h2>
+        <p>{{ emptyStateDescription }}</p>
+        <dl>
+          <div>
+            <dt>当前来源</dt>
+            <dd>{{ sourceMode === 'historical' ? '历史账套' : '月度工作包' }}</dd>
+          </div>
+          <div>
+            <dt>当前筛选</dt>
+            <dd>{{ keyword.trim() || '未输入关键词' }}</dd>
+          </div>
+          <div>
+            <dt>{{ voucherCountLabel }}</dt>
+            <dd>{{ voucherRows.length }} 张</dd>
+          </div>
+        </dl>
+      </div>
+      <div class="empty-state-actions">
+        <button v-if="keyword.trim()" class="pager-button" type="button" :disabled="isLoading" @click="clearKeywordAndReload">清空搜索</button>
+        <button class="pager-button primary-empty-action" type="button" :disabled="isLoading" @click="loadConfirmedVouchers">刷新</button>
+      </div>
+    </section>
+
+    <div v-else class="voucher-ledger-layout">
       <div class="voucher-ledger-scroll">
         <table class="voucher-ledger-table">
           <thead>
             <tr>
-              <th class="check-col"><input type="checkbox" /></th>
               <th>摘要</th>
               <th>科目</th>
               <th>借方金额</th>
@@ -334,7 +430,6 @@ function selectRailMonth(month) {
           <tbody>
             <template v-for="voucher in paginatedVoucherRows" :key="voucher.id">
               <tr class="voucher-meta-row" :class="{ selected: selectedVoucherId === voucher.id }">
-                <td class="check-col"><input type="checkbox" /></td>
                 <td colspan="4">
                   <button class="voucher-number-link" type="button" @click="openVoucherDetail(voucher)">
                     日期：{{ voucher.voucher_date }}
@@ -348,7 +443,6 @@ function selectRailMonth(month) {
                 </td>
               </tr>
               <tr v-for="(entry, index) in voucher.entries" :key="entryKey(voucher, entry, index)" class="voucher-entry-row">
-                <td class="check-col"></td>
                 <td class="summary-cell" :title="voucher.summary">{{ voucher.summary || '-' }}</td>
                 <td class="subject-cell">
                   <span class="subject-code">{{ entry.account_code }}</span>
@@ -358,36 +452,34 @@ function selectRailMonth(month) {
                 <td class="amount">{{ entryCredit(entry) ? formatAmount(entryCredit(entry)) : '' }}</td>
               </tr>
               <tr class="voucher-total-row">
-                <td class="check-col"></td>
                 <td colspan="2"><span class="total-icon">总</span>合计</td>
                 <td class="amount">{{ formatAmount(voucher.debitTotal) }}</td>
                 <td class="amount">{{ formatAmount(voucher.creditTotal) }}</td>
               </tr>
             </template>
-            <tr v-if="!paginatedVoucherRows.length">
-              <td colspan="5" class="empty-cell">暂无凭证数据</td>
-            </tr>
           </tbody>
         </table>
       </div>
 
       <aside class="period-rail" aria-label="期间选择">
         <strong>期间选择</strong>
-        <span>{{ selectedContextLabel }}</span>
-        <div class="rail-year">{{ historicalFiscalYear || activePackage?.period?.slice(0, 4) || '2026' }}</div>
+        <span>{{ sourceMode === 'monthly' ? '工作包月份' : selectedContextLabel }}</span>
+        <div class="rail-year">{{ railYear }}</div>
         <button
           v-for="month in monthOptions"
           :key="month.value"
           type="button"
-          :class="{ active: sourceMode === 'historical' && Number(historicalStartMonth) === month.value }"
+          :class="{ active: activeRailMonth === month.value, unavailable: sourceMode === 'monthly' && !hasMonthlyPackage(month.value) }"
+          :disabled="sourceMode === 'monthly' && !hasMonthlyPackage(month.value)"
+          :title="monthButtonTitle(month.value)"
           @click="selectRailMonth(month.value)"
         >
-          {{ String(month.value).padStart(2, '0') }}月
+          {{ month.label }}
         </button>
       </aside>
     </div>
 
-    <div class="pagination-bar" aria-label="凭证分页">
+    <div v-if="hasVoucherRows" class="pagination-bar" aria-label="凭证分页">
       <span>每页 {{ pageSize }} 张凭证</span>
       <span>第 {{ currentPage }} / {{ pageCount }} 页</span>
       <button class="pager-button previous-page-button" type="button" :disabled="currentPage <= 1" @click="goToPage(currentPage - 1)">
@@ -403,6 +495,7 @@ function selectRailMonth(month) {
 <style scoped>
 .voucher-management-page {
   display: grid;
+  align-content: start;
   gap: 10px;
   min-height: calc(100vh - 96px);
   background: #f5f7fb;
@@ -430,8 +523,7 @@ function selectRailMonth(month) {
   padding-left: 0;
 }
 
-.icon-search-button,
-.help-button {
+.icon-search-button {
   width: 30px;
   height: 30px;
   border: 0;
@@ -441,7 +533,6 @@ function selectRailMonth(month) {
   cursor: pointer;
 }
 
-.filter-button,
 .text-action {
   height: 32px;
   border: 0;
@@ -455,36 +546,19 @@ function selectRailMonth(month) {
   flex: 1;
 }
 
-.primary-action,
-.outline-action {
-  height: 34px;
-  padding: 0 14px;
-  border-radius: 3px;
-  cursor: pointer;
-  white-space: nowrap;
-}
-
-.primary-action {
-  border: 1px solid #5946e8;
-  background: #5946e8;
-  color: #fff;
-}
-
-.outline-action {
-  border: 1px solid #5946e8;
-  background: #fff;
-  color: #5946e8;
-}
-
 .voucher-filter-strip {
   display: grid;
-  grid-template-columns: max-content minmax(220px, 1fr) repeat(3, minmax(118px, 150px)) minmax(160px, auto);
+  grid-template-columns: max-content minmax(320px, 1fr) minmax(150px, 180px) minmax(230px, auto);
   gap: 12px;
-  align-items: center;
+  align-items: end;
   padding: 10px 12px;
   border: 1px solid #e1e7f0;
   border-radius: 6px;
   background: #fff;
+}
+
+.voucher-filter-strip.historical {
+  grid-template-columns: max-content minmax(260px, 1fr) repeat(3, minmax(118px, 140px)) minmax(230px, auto);
 }
 
 .voucher-filter-strip label {
@@ -494,11 +568,26 @@ function selectRailMonth(month) {
   font-size: 12px;
 }
 
+.voucher-filter-strip :deep(.el-select),
+.voucher-filter-strip :deep(.el-input) {
+  width: 100%;
+}
+
+.voucher-filter-strip :deep(.el-select__wrapper),
+.voucher-filter-strip :deep(.el-input__wrapper) {
+  min-height: 32px;
+}
+
 .list-summary {
   display: flex;
-  align-items: baseline;
-  justify-content: flex-end;
+  align-items: center;
+  justify-content: flex-start;
   gap: 6px;
+  min-height: 32px;
+  padding: 0 12px;
+  border: 1px solid #d9e8ff;
+  border-radius: 4px;
+  background: #f7fbff;
   color: #66758c;
   white-space: nowrap;
 }
@@ -539,6 +628,102 @@ function selectRailMonth(month) {
   min-height: 0;
 }
 
+.voucher-empty-state {
+  display: grid;
+  grid-template-columns: 72px minmax(0, 1fr) max-content;
+  gap: 22px;
+  align-items: center;
+  min-height: 360px;
+  padding: 36px;
+  border: 1px solid #dbe2ec;
+  border-radius: 8px;
+  background:
+    linear-gradient(135deg, rgb(47 122 247 / 7%), transparent 48%),
+    #fff;
+  box-shadow: 0 1px 2px rgb(20 31 52 / 4%);
+}
+
+.empty-state-mark {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 64px;
+  height: 64px;
+  border: 1px solid #b9d5ff;
+  border-radius: 16px;
+  background: #eef6ff;
+  color: #1f73e8;
+  font-size: 28px;
+  font-weight: 800;
+}
+
+.empty-state-content {
+  display: grid;
+  gap: 10px;
+}
+
+.empty-state-kicker {
+  margin: 0;
+  color: #66758c;
+  font-size: 13px;
+}
+
+.empty-state-content h2 {
+  margin: 0;
+  color: #172033;
+  font-size: 22px;
+  line-height: 1.35;
+}
+
+.empty-state-content p {
+  max-width: 720px;
+  margin: 0;
+  color: #4c5d73;
+  line-height: 1.7;
+}
+
+.empty-state-content dl {
+  display: grid;
+  grid-template-columns: repeat(3, minmax(140px, 1fr));
+  gap: 10px;
+  max-width: 760px;
+  margin: 10px 0 0;
+}
+
+.empty-state-content dl div {
+  min-width: 0;
+  padding: 12px;
+  border: 1px solid #e2e8f2;
+  border-radius: 6px;
+  background: #f8fbff;
+}
+
+.empty-state-content dt {
+  color: #77859a;
+  font-size: 12px;
+}
+
+.empty-state-content dd {
+  overflow: hidden;
+  margin: 4px 0 0;
+  color: #1f2d3d;
+  font-weight: 700;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.empty-state-actions {
+  display: flex;
+  gap: 10px;
+  align-self: end;
+}
+
+.primary-empty-action {
+  border-color: #2f7af7;
+  background: #2f7af7;
+  color: #fff;
+}
+
 .voucher-ledger-scroll {
   max-height: calc(100vh - 250px);
   overflow-x: auto;
@@ -572,23 +757,18 @@ function selectRailMonth(month) {
 
 .voucher-ledger-table th:nth-child(1),
 .voucher-ledger-table td:nth-child(1) {
-  width: 44px;
+  width: 280px;
 }
 
 .voucher-ledger-table th:nth-child(2),
 .voucher-ledger-table td:nth-child(2) {
-  width: 280px;
-}
-
-.voucher-ledger-table th:nth-child(3),
-.voucher-ledger-table td:nth-child(3) {
   width: 390px;
 }
 
+.voucher-ledger-table th:nth-child(3),
+.voucher-ledger-table td:nth-child(3),
 .voucher-ledger-table th:nth-child(4),
-.voucher-ledger-table td:nth-child(4),
-.voucher-ledger-table th:nth-child(5),
-.voucher-ledger-table td:nth-child(5) {
+.voucher-ledger-table td:nth-child(4) {
   width: 220px;
 }
 
@@ -599,12 +779,6 @@ function selectRailMonth(month) {
   border-bottom: 1px solid #dfe5ee;
   background: #fff;
   vertical-align: middle;
-}
-
-.check-col {
-  width: 44px;
-  padding: 0;
-  text-align: center;
 }
 
 .voucher-meta-row td {
@@ -668,12 +842,6 @@ function selectRailMonth(month) {
   font-size: 12px;
 }
 
-.empty-cell {
-  height: 160px;
-  color: #7a8798;
-  text-align: center;
-}
-
 .period-rail {
   display: grid;
   align-content: start;
@@ -709,7 +877,7 @@ function selectRailMonth(month) {
 
 .period-rail button {
   height: 24px;
-  border: 0;
+  border: 1px solid transparent;
   border-radius: 12px;
   background: transparent;
   color: #2f3a4c;
@@ -718,8 +886,16 @@ function selectRailMonth(month) {
 }
 
 .period-rail button.active {
-  background: #6752e8;
+  border-color: #2f7af7;
+  background: #2f7af7;
   color: #fff;
+}
+
+.period-rail button.unavailable,
+.period-rail button:disabled {
+  background: #f3f6fa;
+  color: #a5afbf;
+  cursor: not-allowed;
 }
 
 .pager-button {
@@ -774,6 +950,19 @@ function selectRailMonth(month) {
   .period-rail span,
   .rail-year {
     grid-column: 1 / -1;
+  }
+
+  .voucher-empty-state {
+    grid-template-columns: 1fr;
+    min-height: 320px;
+  }
+
+  .empty-state-actions {
+    align-self: auto;
+  }
+
+  .empty-state-content dl {
+    grid-template-columns: 1fr;
   }
 }
 </style>

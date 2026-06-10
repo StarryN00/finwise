@@ -15,6 +15,7 @@ from app.services.enterprise_service import (
     ValidationError,
     create_enterprise,
     create_monthly_work_package,
+    delete_enterprise,
     save_initial_snapshot,
 )
 
@@ -75,6 +76,11 @@ def create_monthly_work_package_endpoint(
             month=payload.period_month,
         )
     )
+
+
+@router.delete("/{enterprise_id}", status_code=status.HTTP_204_NO_CONTENT)
+def delete_enterprise_endpoint(enterprise_id: UUID, db: Session = Depends(get_db)):
+    return _handle_service_errors(lambda: delete_enterprise(db, enterprise_id=enterprise_id))
 
 
 def _handle_service_errors(action: Callable[[], object]):

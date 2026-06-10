@@ -24,4 +24,8 @@ describe('api client', () => {
     expect(source).toContain('detail: (packageId, accountCode) => apiClient.get(`/monthly-packages/${packageId}/ledgers/detail`, { params: { account_code: accountCode } })')
     expect(source).toContain('trialBalance: (packageId) => apiClient.get(`/monthly-packages/${packageId}/ledgers/trial-balance`)')
   })
+
+  it('wires enterprise delete endpoint with an explicit business id', () => {
+    expect(source).toContain('remove: (enterpriseId) => apiClient.delete(`/enterprises/${enterpriseId}`)')
+  })
 })

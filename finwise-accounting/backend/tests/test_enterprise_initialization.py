@@ -12,10 +12,36 @@ from app.api.deps import get_db
 from app.core.database import Base
 from app.core.org_context import ensure_default_organization
 from app.main import create_app
-from app.models.entities import BankTransaction, Enterprise, InitialFinancialSnapshot, MatchRecord, MonthlyWorkPackage
+from app.models.entities import (
+    AccountSubject,
+    AccountingLine,
+    AuditLog,
+    BankTransaction,
+    Enterprise,
+    HistoricalBalanceRow,
+    HistoricalImportBatch,
+    HistoricalLedgerEntry,
+    ImportBatch,
+    InitialFinancialSnapshot,
+    Invoice,
+    MatchRecord,
+    MatchingRule,
+    MonthlyStatement,
+    MonthlyWorkPackage,
+    Report,
+    TaxFilingDraft,
+    TechnologyProfile,
+    TechnologyScanJob,
+    TechnologyScanJobItem,
+    TechnologyTag,
+    Voucher,
+    VoucherEntry,
+    VoucherRule,
+)
 from app.services.enterprise_service import (
     create_enterprise as service_create_enterprise,
     create_monthly_work_package,
+    delete_enterprise,
     save_initial_snapshot,
 )
 
@@ -207,6 +233,204 @@ def test_create_enterprise_initial_snapshot_and_package(db_session):
     assert package.data_status == "PENDING_IMPORT"
 
 
+def test_delete_enterprise_removes_all_related_records(db_session):
+    enterprise = create_enterprise(db_session)
+    package = MonthlyWorkPackage(
+        organization_id=enterprise.organization_id,
+        enterprise_id=enterprise.id,
+        period_year=2026,
+        period_month=5,
+    )
+    historical_batch = HistoricalImportBatch(
+        organization_id=enterprise.organization_id,
+        enterprise_id=enterprise.id,
+        fiscal_year=2025,
+        ledger_filename="ledger.xlsx",
+        balance_filename="balance.xlsx",
+    )
+    scan_job = TechnologyScanJob(organization_id=enterprise.organization_id, provider="QICHACHA")
+    db_session.add_all([package, historical_batch, scan_job])
+    db_session.flush()
+
+    import_batch = ImportBatch(
+        organization_id=enterprise.organization_id,
+        monthly_work_package_id=package.id,
+        file_type="BANK",
+        original_filename="bank.xlsx",
+        stored_path="/tmp/bank.xlsx",
+    )
+    bank_transaction = BankTransaction(
+        organization_id=enterprise.organization_id,
+        monthly_work_package_id=package.id,
+        transaction_date=date(2026, 5, 1),
+        summary="银行流水",
+    )
+    invoice = Invoice(
+        organization_id=enterprise.organization_id,
+        monthly_work_package_id=package.id,
+        invoice_direction="INPUT",
+        invoice_number="INV-001",
+        invoice_date=date(2026, 5, 1),
+        amount=100,
+        tax_amount=13,
+        total_amount=113,
+    )
+    voucher = Voucher(
+        organization_id=enterprise.organization_id,
+        monthly_work_package_id=package.id,
+        voucher_date=date(2026, 5, 1),
+        summary="测试凭证",
+        source_key="test-source",
+    )
+    profile = TechnologyProfile(organization_id=enterprise.organization_id, enterprise_id=enterprise.id)
+    db_session.add_all([import_batch, bank_transaction, invoice, voucher, profile])
+    db_session.flush()
+
+    db_session.add_all(
+        [
+            InitialFinancialSnapshot(
+                organization_id=enterprise.organization_id,
+                enterprise_id=enterprise.id,
+                balance_sheet_data={"资产总计": 100},
+                income_statement_data={"营业收入": 100},
+            ),
+            MatchRecord(
+                organization_id=enterprise.organization_id,
+                monthly_work_package_id=package.id,
+                bank_transaction_id=bank_transaction.id,
+                invoice_id=invoice.id,
+                match_method="RULE",
+            ),
+            AccountingLine(
+                organization_id=enterprise.organization_id,
+                monthly_work_package_id=package.id,
+                source_type="BANK",
+                source_id=str(bank_transaction.id),
+                business_type="FEE",
+                direction="PAYMENT",
+                amount=100,
+                include_category="INCLUDE",
+            ),
+            VoucherEntry(
+                organization_id=enterprise.organization_id,
+                voucher_id=voucher.id,
+                line_no=1,
+                direction="DEBIT",
+                account_code="5602",
+                account_name="管理费用",
+                amount=100,
+                source_type="BANK",
+                source_id=str(bank_transaction.id),
+            ),
+            MonthlyStatement(
+                organization_id=enterprise.organization_id,
+                monthly_work_package_id=package.id,
+            ),
+            TaxFilingDraft(
+                organization_id=enterprise.organization_id,
+                monthly_work_package_id=package.id,
+            ),
+            Report(
+                organization_id=enterprise.organization_id,
+                monthly_work_package_id=package.id,
+                report_type="HEALTH",
+            ),
+            AuditLog(
+                organization_id=enterprise.organization_id,
+                monthly_work_package_id=package.id,
+                action="TEST",
+            ),
+            AccountSubject(
+                organization_id=enterprise.organization_id,
+                enterprise_id=enterprise.id,
+                code="1002",
+                name="银行存款",
+                category="ASSET",
+                normal_balance="DEBIT",
+            ),
+            HistoricalLedgerEntry(
+                organization_id=enterprise.organization_id,
+                enterprise_id=enterprise.id,
+                import_batch_id=historical_batch.id,
+                fiscal_year=2025,
+                voucher_date=date(2025, 1, 1),
+                voucher_no="记-001",
+                summary="历史凭证",
+                account_full_name="银行存款",
+                account_code="1002",
+                account_name="银行存款",
+            ),
+            HistoricalBalanceRow(
+                organization_id=enterprise.organization_id,
+                enterprise_id=enterprise.id,
+                import_batch_id=historical_batch.id,
+                fiscal_year=2025,
+                account_code="1002",
+                account_name="银行存款",
+            ),
+            VoucherRule(
+                organization_id=enterprise.organization_id,
+                enterprise_id=enterprise.id,
+                rule_name="测试规则",
+                summary_template="测试",
+                debit_account_code="5602",
+                credit_account_code="1002",
+            ),
+            MatchingRule(
+                organization_id=enterprise.organization_id,
+                enterprise_id=enterprise.id,
+                scope="ENTERPRISE",
+                suggested_business_type="FEE",
+            ),
+            TechnologyTag(
+                organization_id=enterprise.organization_id,
+                enterprise_id=enterprise.id,
+                profile_id=profile.id,
+                category="科技型企业认定",
+                name="高新技术企业",
+                source_provider="QICHACHA",
+            ),
+            TechnologyScanJobItem(
+                organization_id=enterprise.organization_id,
+                job_id=scan_job.id,
+                enterprise_id=enterprise.id,
+                enterprise_name=enterprise.name,
+            ),
+        ]
+    )
+    db_session.commit()
+
+    delete_enterprise(db_session, enterprise_id=enterprise.id)
+
+    for model in [
+        Enterprise,
+        InitialFinancialSnapshot,
+        MonthlyWorkPackage,
+        ImportBatch,
+        BankTransaction,
+        Invoice,
+        MatchRecord,
+        AccountingLine,
+        Voucher,
+        VoucherEntry,
+        MonthlyStatement,
+        TaxFilingDraft,
+        Report,
+        AuditLog,
+        AccountSubject,
+        HistoricalImportBatch,
+        HistoricalLedgerEntry,
+        HistoricalBalanceRow,
+        VoucherRule,
+        MatchingRule,
+        TechnologyProfile,
+        TechnologyTag,
+        TechnologyScanJobItem,
+    ]:
+        assert db_session.query(model).count() == 0
+    assert db_session.query(TechnologyScanJob).count() == 1
+
+
 def test_duplicate_enterprise_returns_409_through_api(db_session):
     client = create_test_client()
     payload = {
@@ -220,6 +444,23 @@ def test_duplicate_enterprise_returns_409_through_api(db_session):
     response = client.post("/api/enterprises", json=payload)
 
     assert response.status_code == 409
+
+
+def test_delete_enterprise_endpoint_returns_204_and_404_after_delete(db_session):
+    client = create_test_client()
+    enterprise_response = client.post(
+        "/api/enterprises",
+        json={
+            "name": "苏州待删除企业有限公司",
+            "unified_social_credit_code": "91320500DEL00001",
+            "taxpayer_type": "GENERAL",
+            "industry": "制造业",
+        },
+    )
+    enterprise_id = enterprise_response.json()["id"]
+
+    assert client.delete(f"/api/enterprises/{enterprise_id}").status_code == 204
+    assert client.delete(f"/api/enterprises/{enterprise_id}").status_code == 404
 
 
 def test_blank_enterprise_name_returns_400_through_api(db_session):

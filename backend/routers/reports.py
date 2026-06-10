@@ -1,10 +1,11 @@
 # Report Generation Router
 # 报告生成 API 路由
 
-from fastapi import APIRouter, HTTPException, Query
+from fastapi import APIRouter, Depends, HTTPException, Query
 from typing import Optional
 from pydantic import BaseModel
 from datetime import datetime, date
+from decimal import Decimal
 import json
 
 from backend.reports.generator import (
@@ -17,9 +18,18 @@ from backend.reports.generator import (
     generate_financing_score_report
 )
 from backend.storage.manager import (
+    enterprise_store,
+    invoice_store,
+    bank_transaction_store,
     vat_filing_store,
     health_report_store,
 )
+from backend.services.health_report_template import (
+    build_data_completeness,
+    build_financial_health_report,
+    save_financial_health_report,
+)
+from backend.routers.auth import get_current_user
 
 
 router = APIRouter(prefix="/api/reports", tags=["报告生成"])
@@ -38,6 +48,8 @@ class HealthReportRequest(BaseModel):
     """财务健康分析报告请求"""
     enterprise_id: str
     report_type: str = "FULL"  # FULL | QUICK
+    period_year: Optional[int] = None
+    period_month: Optional[int] = None
 
 
 class FinancingScoreReportRequest(BaseModel):
@@ -55,10 +67,191 @@ class ReportGenerationRequestDTO(BaseModel):
     options: Optional[dict] = None
 
 
+class MonthlyReportRequest(BaseModel):
+    enterprise_id: str
+    period_year: int
+    period_month: int
+
+
 # ============ API Routes ============
 
+
+def _to_decimal(value) -> Decimal:
+    if value in (None, ""):
+        return Decimal("0")
+    return Decimal(str(value))
+
+
+def _month_prefix(year: int, month: int) -> str:
+    return f"{year:04d}-{month:02d}"
+
+
+def _grade(score: int) -> str:
+    if score >= 90:
+        return "A_PLUS"
+    if score >= 80:
+        return "A"
+    if score >= 70:
+        return "B_PLUS"
+    if score >= 60:
+        return "B"
+    if score >= 40:
+        return "C"
+    return "D"
+
+
+def _build_monthly_report(enterprise_id: str, period_year: int, period_month: int) -> dict:
+    enterprise = enterprise_store.get_by_id(enterprise_id)
+    if not enterprise:
+        raise HTTPException(status_code=404, detail="Enterprise not found")
+
+    prefix = _month_prefix(period_year, period_month)
+    invoices = [
+        inv for inv in invoice_store.filter(enterprise_id=enterprise_id)
+        if str(inv.get("issue_date", "")).startswith(prefix)
+    ]
+    transactions = [
+        tx for tx in bank_transaction_store.filter(enterprise_id=enterprise_id)
+        if str(tx.get("transaction_date", "")).startswith(prefix)
+        and tx.get("status") != "DELETED"
+    ]
+
+    valid_invoices = [inv for inv in invoices if inv.get("invoice_status") != "VOID"]
+    output_invoices = [
+        inv for inv in valid_invoices
+        if (inv.get("direction") or inv.get("invoice_type")) in {"SALES", "OUTPUT"}
+    ]
+    input_invoices = [
+        inv for inv in valid_invoices
+        if (inv.get("direction") or inv.get("invoice_type")) in {"PURCHASE", "INPUT"}
+    ]
+    sales_amount = sum((_to_decimal(inv.get("amount")) for inv in output_invoices), Decimal("0"))
+    purchase_amount = sum((_to_decimal(inv.get("amount")) for inv in input_invoices), Decimal("0"))
+    output_tax = sum((_to_decimal(inv.get("tax_amount")) for inv in output_invoices), Decimal("0"))
+    input_tax = sum((_to_decimal(inv.get("tax_amount")) for inv in input_invoices), Decimal("0"))
+
+    cash_inflow = sum((_to_decimal(tx.get("credit_amount")) for tx in transactions), Decimal("0"))
+    cash_outflow = sum((_to_decimal(tx.get("debit_amount")) for tx in transactions), Decimal("0"))
+    net_cash_flow = cash_inflow - cash_outflow
+    ending_balances = [
+        _to_decimal(tx.get("balance"))
+        for tx in sorted(transactions, key=lambda item: item.get("transaction_date", ""))
+        if tx.get("balance") is not None
+    ]
+    ending_balance = ending_balances[-1] if ending_balances else Decimal("0")
+
+    vat_payable = max(output_tax - input_tax, Decimal("0"))
+    surcharge = (vat_payable * Decimal("0.12")).quantize(Decimal("0.01"))
+    total_tax = vat_payable + surcharge
+
+    cash_flow_score = 85 if net_cash_flow > 0 else 55 if cash_inflow else 40
+    revenue_score = min(95, 55 + int(sales_amount / Decimal("10000"))) if sales_amount else 45
+    tax_score = 75 if vat_payable >= 0 else 60
+    operation_score = min(95, 50 + len(transactions))
+    financing_score = round((cash_flow_score * 0.35) + (revenue_score * 0.3) + (operation_score * 0.2) + (tax_score * 0.15))
+    overall_score = round((cash_flow_score + revenue_score + operation_score + tax_score) / 4)
+
+    report_id = f"MR-{period_year}{period_month:02d}-{enterprise_id}"
+    report = {
+        "id": report_id,
+        "report_id": report_id,
+        "report_type": "MONTHLY_FINANCIAL",
+        "enterprise_id": enterprise_id,
+        "enterprise_name": enterprise.get("name"),
+        "period_year": period_year,
+        "period_month": period_month,
+        "analysis_date": date.today().isoformat(),
+        "invoice_count": len(invoices),
+        "transaction_count": len(transactions),
+        "sales_amount": float(sales_amount),
+        "purchase_amount": float(purchase_amount),
+        "output_tax": float(output_tax),
+        "input_tax": float(input_tax),
+        "vat_payable": float(vat_payable),
+        "surcharge_amount": float(surcharge),
+        "total_tax": float(total_tax),
+        "cash_inflow": float(cash_inflow),
+        "cash_outflow": float(cash_outflow),
+        "net_cash_flow": float(net_cash_flow),
+        "ending_balance": float(ending_balance),
+        "overall_score": overall_score,
+        "overall_grade": _grade(overall_score),
+        "financing_score": financing_score,
+        "dimensions": {
+            "cash_flow": cash_flow_score,
+            "revenue": revenue_score,
+            "operation": operation_score,
+            "tax_compliance": tax_score,
+        },
+        "risk_alerts": [
+            alert for alert in [
+                "本月经营现金流为负，需关注回款与支出节奏" if net_cash_flow < 0 else "",
+                "本月无发票数据，税务与收入分析可信度较低" if not invoices else "",
+                "本月无银行流水，现金流分析可信度较低" if not transactions else "",
+            ] if alert
+        ],
+        "suggestions": [
+            "优先核对流水与发票匹配情况",
+            "按月沉淀销项、进项和现金流趋势，用于后续融资评分",
+        ],
+        "status": "COMPLETED",
+        "created_at": datetime.utcnow().isoformat(),
+    }
+    return report
+
+
+@router.post("/monthly/generate")
+async def generate_monthly_report(
+    request: MonthlyReportRequest,
+    current_user: dict = Depends(get_current_user),
+):
+    report = _build_monthly_report(request.enterprise_id, request.period_year, request.period_month)
+    existing = health_report_store.first(
+        enterprise_id=request.enterprise_id,
+        report_type="MONTHLY_FINANCIAL",
+        period_year=request.period_year,
+        period_month=request.period_month,
+    )
+    if existing:
+        health_report_store.update(existing["id"], **report)
+    else:
+        health_report_store.create(**report)
+    return {"report_id": report["report_id"], "status": "COMPLETED", "data": report}
+
+
+@router.get("/monthly/{enterprise_id}")
+async def get_monthly_reports(
+    enterprise_id: str,
+    period_year: Optional[int] = Query(None),
+    period_month: Optional[int] = Query(None),
+    current_user: dict = Depends(get_current_user),
+):
+    reports = health_report_store.filter(enterprise_id=enterprise_id, report_type="MONTHLY_FINANCIAL")
+    if period_year is not None:
+        reports = [r for r in reports if r.get("period_year") == period_year]
+    if period_month is not None:
+        reports = [r for r in reports if r.get("period_month") == period_month]
+    reports.sort(key=lambda item: (item.get("period_year", 0), item.get("period_month", 0)), reverse=True)
+    return {"items": reports, "total": len(reports)}
+
+
+@router.get("/data-completeness/{enterprise_id}")
+async def get_report_data_completeness(
+    enterprise_id: str,
+    period_year: int = Query(..., ge=2000, le=2100),
+    period_month: int = Query(..., ge=1, le=12),
+    current_user: dict = Depends(get_current_user),
+):
+    enterprise = enterprise_store.get_by_id(enterprise_id)
+    if not enterprise:
+        raise HTTPException(status_code=404, detail="Enterprise not found")
+    return build_data_completeness(enterprise_id, period_year, period_month)
+
 @router.post("/vat/generate")
-async def generate_vat_report_handler(request: VATReportRequest):
+async def generate_vat_report_handler(
+    request: VATReportRequest,
+    current_user: dict = Depends(get_current_user),
+):
     """
     生成增值税申报报告
 
@@ -88,7 +281,8 @@ async def generate_vat_report_handler(request: VATReportRequest):
 async def get_vat_report_list(
     enterprise_id: str,
     period_year: Optional[int] = Query(None),
-    period_month: Optional[int] = Query(None)
+    period_month: Optional[int] = Query(None),
+    current_user: dict = Depends(get_current_user),
 ):
     """
     获取企业增值税申报报告列表
@@ -126,7 +320,10 @@ async def get_vat_report_list(
 
 
 @router.post("/health/generate")
-async def generate_health_report_handler(request: HealthReportRequest):
+async def generate_health_report_handler(
+    request: HealthReportRequest,
+    current_user: dict = Depends(get_current_user),
+):
     """
     生成财务健康分析报告
 
@@ -134,18 +331,23 @@ async def generate_health_report_handler(request: HealthReportRequest):
     - **report_type**: 报告类型 (FULL | QUICK)
     """
     try:
-        report_data = generate_health_report(
-            enterprise_id=request.enterprise_id,
-            report_type=request.report_type
+        today = date.today()
+        period_year = request.period_year or today.year
+        period_month = request.period_month or today.month
+        report_data = build_financial_health_report(
+            request.enterprise_id,
+            period_year,
+            period_month,
         )
+        saved = save_financial_health_report(report_data)
 
         return {
-            "report_id": report_data["report_id"],
-            "report_number": report_data["report_number"],
+            "report_id": saved["report_id"],
+            "report_number": saved["report_number"],
             "report_type": "HEALTH_ANALYSIS",
             "status": "COMPLETED",
-            "data": report_data,
-            "download_url": f"/api/reports/{report_data['report_id']}/export"
+            "data": saved,
+            "download_url": f"/api/reports/{saved['report_id']}/export"
         }
     except Exception as e:
         raise HTTPException(status_code=500, detail=str(e))
@@ -155,7 +357,8 @@ async def generate_health_report_handler(request: HealthReportRequest):
 async def get_health_report_list(
     enterprise_id: str,
     limit: int = Query(10, ge=1, le=100),
-    offset: int = Query(0, ge=0)
+    offset: int = Query(0, ge=0),
+    current_user: dict = Depends(get_current_user),
 ):
     """
     获取企业财务健康分析报告列表
@@ -204,7 +407,10 @@ async def get_health_report_list(
 
 
 @router.get("/health/{enterprise_id}/latest")
-async def get_latest_health_report(enterprise_id: str):
+async def get_latest_health_report(
+    enterprise_id: str,
+    current_user: dict = Depends(get_current_user),
+):
     """
     获取企业最新财务健康分析报告
 
@@ -251,7 +457,10 @@ async def get_latest_health_report(enterprise_id: str):
 
 
 @router.post("/financing/generate")
-async def generate_financing_score_report_handler(request: FinancingScoreReportRequest):
+async def generate_financing_score_report_handler(
+    request: FinancingScoreReportRequest,
+    current_user: dict = Depends(get_current_user),
+):
     """
     生成融资评分报告
 
@@ -277,7 +486,8 @@ async def generate_financing_score_report_handler(request: FinancingScoreReportR
 async def get_financing_score_history(
     enterprise_id: str,
     limit: int = Query(10, ge=1, le=100),
-    offset: int = Query(0, ge=0)
+    offset: int = Query(0, ge=0),
+    current_user: dict = Depends(get_current_user),
 ):
     """
     获取企业融资评分历史
@@ -323,7 +533,10 @@ async def get_financing_score_history(
 
 
 @router.post("/generate")
-async def generate_report_handler(request: ReportGenerationRequestDTO):
+async def generate_report_handler(
+    request: ReportGenerationRequestDTO,
+    current_user: dict = Depends(get_current_user),
+):
     """
     通用报告生成接口
 
@@ -365,7 +578,8 @@ async def generate_report_handler(request: ReportGenerationRequestDTO):
 @router.get("/{report_id}/export")
 async def export_report(
     report_id: str,
-    format: str = Query("JSON", pattern="^(JSON|HTML|PDF|EXCEL)$")
+    format: str = Query("JSON", pattern="^(JSON|HTML|PDF|EXCEL)$"),
+    current_user: dict = Depends(get_current_user),
 ):
     """
     导出报告为指定格式

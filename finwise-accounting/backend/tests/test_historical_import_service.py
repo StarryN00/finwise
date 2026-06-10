@@ -400,3 +400,43 @@ def test_historical_import_endpoint_accepts_two_files(db_session, tmp_path):
     assert response.json()["created_balance_rows"] == 1
     assert response.json()["period_start_month"] == 1
     assert response.json()["period_end_month"] == 12
+
+
+def test_historical_import_endpoint_lists_enterprise_import_records(db_session):
+    enterprise = make_enterprise(db_session)
+    import_historical_books(
+        db_session,
+        enterprise_id=enterprise.id,
+        fiscal_year=2025,
+        ledger_rows=[
+            {
+                "date": "2025-01-13",
+                "voucher_no": "记-008",
+                "summary": "销售收入",
+                "account_full_name": "主营业务收入",
+                "account_code": "5001",
+                "account_name": "主营业务收入",
+                "debit_amount": "",
+                "credit_amount": "235918.28",
+            }
+        ],
+        balance_rows=[],
+        ledger_filename="序时账_2025.xls",
+        balance_filename="余额表_2025.xls",
+    )
+    app = create_app(init_db_on_startup=False)
+
+    def override_get_db():
+        yield db_session
+
+    app.dependency_overrides[get_db] = override_get_db
+    client = TestClient(app)
+
+    response = client.get(f"/api/enterprises/{enterprise.id}/historical-imports")
+
+    assert response.status_code == 200
+    records = response.json()
+    assert len(records) == 1
+    assert records[0]["fiscal_year"] == 2025
+    assert records[0]["ledger_filename"] == "序时账_2025.xls"
+    assert records[0]["created_ledger_rows"] == 1

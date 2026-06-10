@@ -12,9 +12,65 @@
     <!-- Tab Nav -->
     <div class="panel" style="padding: 0;">
       <div class="tab-nav">
+        <button class="tab-btn" :class="{ active: activeTab === 'monthly' }" @click="activeTab = 'monthly'">月度报告</button>
         <button class="tab-btn" :class="{ active: activeTab === 'vat' }" @click="activeTab = 'vat'">税务申报</button>
         <button class="tab-btn" :class="{ active: activeTab === 'health' }" @click="activeTab = 'health'">财务健康</button>
         <button class="tab-btn" :class="{ active: activeTab === 'financing' }" @click="activeTab = 'financing'">融资评分</button>
+      </div>
+
+      <!-- Monthly Tab -->
+      <div v-if="activeTab === 'monthly'" class="tab-body">
+        <div class="filter-row">
+          <select v-model="monthlyEnterpriseId" class="input" style="width: 240px; cursor: pointer;" @change="monthlyReportData = null">
+            <option value="">选择企业</option>
+            <option v-for="e in enterprises" :key="e.id" :value="e.id">{{ e.name }}</option>
+          </select>
+          <input v-model="monthlyPeriod" type="month" class="input" style="width: 160px;" @change="monthlyReportData = null" />
+          <button class="btn primary" :disabled="monthlyLoading" @click="generateMonthlyReport">生成月报</button>
+          <button v-if="monthlyReportData" class="btn secondary" @click="exportMonthlyCsv">导出 CSV</button>
+        </div>
+
+        <div v-if="monthlyReportData" class="monthly-grid">
+          <div class="monthly-hero">
+            <div class="monthly-label">月度财务评分</div>
+            <div class="monthly-score">{{ monthlyReportData.overall_score }}</div>
+            <span class="pill" :class="monthlyScorePillClass">{{ monthlyReportData.overall_grade }}</span>
+          </div>
+          <div class="monthly-cards">
+            <div class="monthly-card">
+              <span>现金流入</span>
+              <strong>¥{{ Number(monthlyReportData.cash_inflow || 0).toLocaleString() }}</strong>
+            </div>
+            <div class="monthly-card">
+              <span>现金流出</span>
+              <strong>¥{{ Number(monthlyReportData.cash_outflow || 0).toLocaleString() }}</strong>
+            </div>
+            <div class="monthly-card">
+              <span>净现金流</span>
+              <strong>¥{{ Number(monthlyReportData.net_cash_flow || 0).toLocaleString() }}</strong>
+            </div>
+            <div class="monthly-card">
+              <span>预计税费</span>
+              <strong>¥{{ Number(monthlyReportData.total_tax || 0).toLocaleString() }}</strong>
+            </div>
+            <div class="monthly-card">
+              <span>流水笔数</span>
+              <strong>{{ monthlyReportData.transaction_count || 0 }}</strong>
+            </div>
+            <div class="monthly-card">
+              <span>发票张数</span>
+              <strong>{{ monthlyReportData.invoice_count || 0 }}</strong>
+            </div>
+          </div>
+        </div>
+        <div v-if="monthlyReportData && monthlyReportData.risk_alerts?.length" class="risk-list">
+          <div v-for="item in monthlyReportData.risk_alerts" :key="item" class="risk-item">{{ item }}</div>
+        </div>
+        <div v-else-if="!monthlyLoading" class="empty-state">
+          <div class="empty-icon">⊙</div>
+          <div class="empty-text">请选择企业和月份后生成月度财务报告</div>
+        </div>
+        <el-skeleton v-if="monthlyLoading" :rows="4" animated />
       </div>
 
       <!-- VAT Tab -->
@@ -45,7 +101,7 @@
             </div>
             <div class="vat-item">
               <div class="vat-item-label">增值税率</div>
-              <div class="vat-item-value">{{ Number(vatReportData.tax_rate * 100).toFixed(1) }}%</div>
+              <div class="vat-item-value">{{ vatRateLabel }}</div>
             </div>
             <div class="vat-item warn">
               <div class="vat-item-label">增值税</div>
@@ -53,15 +109,15 @@
             </div>
             <div class="vat-item">
               <div class="vat-item-label">城建税</div>
-              <div class="vat-item-value">¥{{ Number(vatReportData.urban_construction_tax || 0).toLocaleString() }}</div>
+              <div class="vat-item-value">¥{{ Number(vatReportData.surcharge_details?.urban_construction_tax || vatReportData.urban_construction_tax || 0).toLocaleString() }}</div>
             </div>
             <div class="vat-item">
               <div class="vat-item-label">教育费附加</div>
-              <div class="vat-item-value">¥{{ Number(vatReportData.education_surcharge || 0).toLocaleString() }}</div>
+              <div class="vat-item-value">¥{{ Number(vatReportData.surcharge_details?.education_surcharge || vatReportData.education_surcharge || 0).toLocaleString() }}</div>
             </div>
             <div class="vat-item">
               <div class="vat-item-label">地方教育附加</div>
-              <div class="vat-item-value">¥{{ Number(vatReportData.local_education_surcharge || 0).toLocaleString() }}</div>
+              <div class="vat-item-value">¥{{ Number(vatReportData.surcharge_details?.local_education_surcharge || vatReportData.local_education_surcharge || 0).toLocaleString() }}</div>
             </div>
           </div>
         </div>
@@ -79,11 +135,27 @@
             <option value="">选择企业</option>
             <option v-for="e in enterprises" :key="e.id" :value="e.id">{{ e.name }}</option>
           </select>
+          <input v-model="healthPeriod" type="month" class="input" style="width: 160px;" @change="healthReportData = null; dataCompleteness = null" />
+          <button class="btn secondary" :disabled="!healthEnterpriseId || !healthPeriod" @click="checkDataCompleteness">检查数据</button>
           <button class="btn primary" :loading="healthLoading" @click="generateHealthReport">生成报告</button>
           <button v-if="healthReportData" class="btn secondary" @click="exportPdf('health')">
             <svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M14 2H6a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V8z"/><polyline points="14 2 14 8 20 8"/></svg>
             导出 PDF
           </button>
+        </div>
+
+        <div v-if="dataCompleteness" class="completeness-grid">
+          <div class="completeness-card">
+            <span>数据完整度</span>
+            <strong>{{ dataCompleteness.completion_rate }}%</strong>
+          </div>
+          <div v-for="item in dataCompleteness.items" :key="item.key" class="data-check">
+            <span class="pill" :class="item.status === 'READY' ? 'pill--ok' : 'pill--warn'">{{ item.status === 'READY' ? '已就绪' : '待补充' }}</span>
+            <div>
+              <strong>{{ item.label }}</strong>
+              <p>{{ item.message }} · {{ item.count }} 条</p>
+            </div>
+          </div>
         </div>
 
         <div v-if="healthReportData" class="health-result">
@@ -111,6 +183,29 @@
               </div>
               <span class="dim-score" :style="{ color: dim.color }">{{ dim.score }}</span>
             </div>
+          </div>
+          <div class="metric-grid">
+            <div class="monthly-card">
+              <span>销项金额</span>
+              <strong>¥{{ Number(healthReportData.key_metrics?.sales_amount || 0).toLocaleString() }}</strong>
+            </div>
+            <div class="monthly-card">
+              <span>进项金额</span>
+              <strong>¥{{ Number(healthReportData.key_metrics?.purchase_amount || 0).toLocaleString() }}</strong>
+            </div>
+            <div class="monthly-card">
+              <span>净现金流</span>
+              <strong>¥{{ Number(healthReportData.key_metrics?.net_cash_flow || 0).toLocaleString() }}</strong>
+            </div>
+          </div>
+          <div v-if="healthReportData.sections?.length" class="report-sections">
+            <div v-for="section in healthReportData.sections" :key="section.title" class="report-section">
+              <h3>{{ section.title }}</h3>
+              <p>{{ section.summary }}</p>
+            </div>
+          </div>
+          <div v-if="healthReportData.missing_metrics?.length" class="risk-list">
+            <div class="risk-item">数据不足项：{{ healthReportData.missing_metrics.join('、') }}</div>
           </div>
         </div>
         <div v-else-if="!healthLoading" class="empty-state">
@@ -184,28 +279,94 @@
 
 <script setup>
 import { ref, reactive, onMounted, nextTick, computed } from 'vue'
-import { useRouter } from 'vue-router'
+import { useRouter, useRoute } from 'vue-router'
 import { ElMessage, ElMessageBox } from 'element-plus'
 import * as echarts from 'echarts'
 import api from '@/api'
 import { exportToPdf } from '@/utils/pdf-export'
 
 const router = useRouter()
-const activeTab = ref('vat')
+const route = useRoute()
+const activeTab = ref(route.query.tab || 'monthly')
 const enterprises = ref([])
+
+// Monthly
+const monthlyEnterpriseId = ref('')
+const monthlyPeriod = ref('')
+const monthlyLoading = ref(false)
+const monthlyReportData = ref(null)
+
+const monthlyScorePillClass = computed(() => {
+  const score = monthlyReportData.value?.overall_score || 0
+  return score >= 75 ? 'pill--ok' : score >= 60 ? 'pill--warn' : 'pill--alert'
+})
+
+const generateMonthlyReport = async () => {
+  if (!monthlyEnterpriseId.value || !monthlyPeriod.value) { ElMessage.warning('请选择企业和月份'); return }
+  monthlyLoading.value = true
+  try {
+    const [y, m] = monthlyPeriod.value.split('-')
+    const res = await api.post('/reports/monthly/generate', {
+      enterprise_id: monthlyEnterpriseId.value,
+      period_year: +y,
+      period_month: +m
+    })
+    monthlyReportData.value = res.data.data
+  } catch (e) {
+    ElMessage.error(e.response?.data?.detail || '生成月报失败')
+  } finally {
+    monthlyLoading.value = false
+  }
+}
+
+const exportMonthlyCsv = () => {
+  if (!monthlyReportData.value) return
+  const ent = enterprises.value.find(e => e.id === monthlyEnterpriseId.value)
+  const companyName = ent?.name || '未知企业'
+  const d = monthlyReportData.value
+  const rows = [
+    ['指标', '数值'],
+    ['现金流入', d.cash_inflow || 0],
+    ['现金流出', d.cash_outflow || 0],
+    ['净现金流', d.net_cash_flow || 0],
+    ['销项金额', d.sales_amount || 0],
+    ['进项金额', d.purchase_amount || 0],
+    ['预计税费', d.total_tax || 0],
+    ['月度评分', d.overall_score || 0],
+    ['融资评分', d.financing_score || 0],
+  ]
+  const csv = rows.map(row => row.join(',')).join('\n')
+  const blob = new Blob(['\uFEFF' + csv], { type: 'text/csv;charset=utf-8;' })
+  const url = URL.createObjectURL(blob)
+  const a = document.createElement('a')
+  a.href = url
+  a.download = `月度财务报告_${companyName}_${monthlyPeriod.value}.csv`
+  document.body.appendChild(a)
+  a.click()
+  document.body.removeChild(a)
+  URL.revokeObjectURL(url)
+  ElMessage.success('CSV 导出成功')
+}
 
 // VAT
 const vatEnterpriseId = ref('')
 const vatPeriod = ref('')
 const vatLoading = ref(false)
 const vatReportData = ref(null)
+const vatRateLabel = computed(() => {
+  const raw = vatReportData.value?.tax_rate
+  if (raw == null || raw === '') return '0.0%'
+  if (typeof raw === 'string' && raw.includes('%')) return raw
+  const num = Number(raw)
+  return `${((Number.isFinite(num) ? num : 0) * 100).toFixed(1)}%`
+})
 
 const generateVatReport = async () => {
   if (!vatEnterpriseId.value || !vatPeriod.value) { ElMessage.warning('请选择企业和申报期'); return }
   vatLoading.value = true
   try {
     const [y, m] = vatPeriod.value.split('-')
-    const res = await api.post('/api/reports/vat/generate', { enterprise_id: vatEnterpriseId.value, period_year: +y, period_month: +m })
+    const res = await api.post('/reports/vat/generate', { enterprise_id: vatEnterpriseId.value, period_year: +y, period_month: +m })
     vatReportData.value = res.data.data
   } catch (e) { ElMessage.error(e.response?.data?.detail || '生成失败') }
   finally { vatLoading.value = false }
@@ -219,11 +380,11 @@ const exportVatExcel = () => {
   const headers = ['报告项', '金额']
   const rows = [
     ['销售额（不含税）', d.sales_amount_excl_tax || 0],
-    ['增值税率', `${(d.tax_rate || 0) * 100}%`],
+    ['增值税率', vatRateLabel.value],
     ['增值税', d.tax_amount || 0],
-    ['城建税', d.urban_construction_tax || 0],
-    ['教育费附加', d.education_surcharge || 0],
-    ['地方教育附加', d.local_education_surcharge || 0],
+    ['城建税', d.surcharge_details?.urban_construction_tax || d.urban_construction_tax || 0],
+    ['教育费附加', d.surcharge_details?.education_surcharge || d.education_surcharge || 0],
+    ['地方教育附加', d.surcharge_details?.local_education_surcharge || d.local_education_surcharge || 0],
     ['应申报税额（含附加税）', d.total_tax_and_surcharge || 0],
   ]
   const csv = [headers.join(','), ...rows.map(r => `${r[0]},${r[1]}`)].join('\n')
@@ -241,8 +402,10 @@ const exportVatExcel = () => {
 
 // Health
 const healthEnterpriseId = ref('')
+const healthPeriod = ref('')
 const healthLoading = ref(false)
 const healthReportData = ref(null)
+const dataCompleteness = ref(null)
 const radarChartRef = ref(null)
 const healthDimensions = ref([])
 
@@ -255,16 +418,36 @@ const healthDimConfig = [
 ]
 
 const generateHealthReport = async () => {
-  if (!healthEnterpriseId.value) { ElMessage.warning('请选择企业'); return }
+  if (!healthEnterpriseId.value || !healthPeriod.value) { ElMessage.warning('请选择企业和月份'); return }
   healthLoading.value = true; healthReportData.value = null
   try {
-    const res = await api.post('/api/reports/health/generate', { enterprise_id: healthEnterpriseId.value, report_type: 'FULL' })
+    const [y, m] = healthPeriod.value.split('-')
+    const res = await api.post('/reports/health/generate', {
+      enterprise_id: healthEnterpriseId.value,
+      report_type: 'FULL',
+      period_year: +y,
+      period_month: +m
+    })
     healthReportData.value = res.data.data
+    dataCompleteness.value = res.data.data.data_completeness || dataCompleteness.value
     const scores = res.data.data.dimensions || {}
     healthDimensions.value = healthDimConfig.map(d => ({ name: d.name, score: Math.round(scores[d.key] || 0), color: d.color }))
     await nextTick(); renderRadarChart(res.data.data)
   } catch (e) { ElMessage.error(e.response?.data?.detail || '生成失败') }
   finally { healthLoading.value = false }
+}
+
+const checkDataCompleteness = async () => {
+  if (!healthEnterpriseId.value || !healthPeriod.value) { ElMessage.warning('请选择企业和月份'); return }
+  const [y, m] = healthPeriod.value.split('-')
+  try {
+    const res = await api.get(`/reports/data-completeness/${healthEnterpriseId.value}`, {
+      params: { period_year: +y, period_month: +m }
+    })
+    dataCompleteness.value = res.data
+  } catch (e) {
+    ElMessage.error(e.response?.data?.detail || '数据检查失败')
+  }
 }
 
 const renderRadarChart = (data) => {
@@ -318,7 +501,7 @@ const generateFinancingReport = async () => {
   if (!finEnterpriseId.value) { ElMessage.warning('请选择企业'); return }
   finLoading.value = true; finReportData.value = null
   try {
-    const res = await api.post('/api/reports/financing/generate', { enterprise_id: finEnterpriseId.value })
+    const res = await api.post('/reports/financing/generate', { enterprise_id: finEnterpriseId.value })
     finReportData.value = res.data.data
   } catch (e) { ElMessage.error(e.response?.data?.detail || '生成失败') }
   finally { finLoading.value = false }
@@ -361,8 +544,20 @@ const exportPdf = async (type) => {
 
 const fetchEnterprises = async () => {
   try {
-    const res = await api.get('/api/enterprises', { params: { page: 1, page_size: 100 } })
+    const res = await api.get('/enterprises', { params: { page: 1, page_size: 100 } })
     enterprises.value = res.data.items || []
+    if (route.query.enterprise_id) {
+      const enterpriseId = route.query.enterprise_id
+      monthlyEnterpriseId.value = enterpriseId
+      vatEnterpriseId.value = enterpriseId
+      healthEnterpriseId.value = enterpriseId
+      finEnterpriseId.value = enterpriseId
+    }
+    if (route.query.period) {
+      monthlyPeriod.value = route.query.period
+      vatPeriod.value = route.query.period
+      healthPeriod.value = route.query.period
+    }
   } catch {}
 }
 
@@ -423,6 +618,68 @@ onMounted(fetchEnterprises)
 
 .tab-body { padding: 24px; }
 
+.monthly-grid {
+  display: grid;
+  grid-template-columns: 260px 1fr;
+  gap: 18px;
+  margin-top: 18px;
+}
+.monthly-hero {
+  background: var(--panel);
+  border-radius: 8px;
+  padding: 24px;
+  min-height: 190px;
+}
+.monthly-label {
+  font-family: var(--font-mono);
+  font-size: 11px;
+  color: var(--mute);
+  letter-spacing: 0.18em;
+  text-transform: uppercase;
+  margin-bottom: 12px;
+}
+.monthly-score {
+  font-family: var(--font-mono);
+  font-size: 72px;
+  line-height: 1;
+  color: var(--ink);
+  margin-bottom: 16px;
+}
+.monthly-cards {
+  display: grid;
+  grid-template-columns: repeat(3, minmax(0, 1fr));
+  gap: 12px;
+}
+.monthly-card {
+  background: var(--bg);
+  border: 1px solid var(--line);
+  border-radius: 8px;
+  padding: 18px;
+}
+.monthly-card span {
+  display: block;
+  color: var(--mute);
+  font-size: 12px;
+  margin-bottom: 8px;
+}
+.monthly-card strong {
+  font-family: var(--font-mono);
+  color: var(--ink);
+  font-size: 22px;
+}
+.risk-list {
+  margin-top: 16px;
+  display: grid;
+  gap: 8px;
+}
+.risk-item {
+  background: var(--warn-bg);
+  color: var(--warn-fg);
+  border-radius: 8px;
+  padding: 10px 12px;
+  font-size: 13px;
+}
+
 /* Filter row */
 .filter-row {
   display: flex;
@@ -475,6 +732,64 @@ onMounted(fetchEnterprises)
 .dim-bar-wrap { flex: 1; height: 6px; background: var(--panel); border-radius: 3px; overflow: hidden; }
 .dim-bar { height: 100%; border-radius: 3px; transition: width 0.6s ease; }
 .dim-score { width: 28px; font-size: 12px; font-weight: 600; text-align: right; flex-shrink: 0; }
+.completeness-grid {
+  display: grid;
+  grid-template-columns: 180px repeat(5, minmax(0, 1fr));
+  gap: 12px;
+  margin-bottom: 20px;
+}
+.completeness-card,
+.data-check {
+  border: 1px solid var(--line);
+  border-radius: 8px;
+  background: var(--bg);
+  padding: 14px;
+}
+.completeness-card span,
+.data-check p {
+  display: block;
+  color: var(--mute);
+  font-size: 12px;
+  margin: 6px 0 0;
+}
+.completeness-card strong {
+  font-family: var(--font-mono);
+  color: var(--ink);
+  font-size: 34px;
+}
+.data-check strong {
+  display: block;
+  margin-top: 10px;
+  color: var(--ink);
+  font-size: 13px;
+}
+.metric-grid {
+  display: grid;
+  grid-template-columns: repeat(3, minmax(0, 1fr));
+  gap: 12px;
+  margin: 18px 0;
+}
+.report-sections {
+  display: grid;
+  gap: 10px;
+  margin-top: 18px;
+}
+.report-section {
+  border: 1px solid var(--line);
+  border-radius: 8px;
+  padding: 14px 16px;
+  background: var(--bg);
+}
+.report-section h3 {
+  font-size: 15px;
+  color: var(--ink);
+  margin-bottom: 6px;
+}
+.report-section p {
+  color: var(--ink-2);
+  font-size: 13px;
+  line-height: 1.6;
+}
 
 /* Financing */
 .fin-hero {
@@ -521,4 +836,16 @@ onMounted(fetchEnterprises)
 .empty-state { display: flex; flex-direction: column; align-items: center; gap: 8px; padding: 48px; color: var(--mute); }
 .empty-icon { font-size: 40px; opacity: 0.4; }
 .empty-text { font-size: 13px; }
+@media (max-width: 1100px) {
+  .monthly-grid,
+  .completeness-grid,
+  .metric-grid {
+    grid-template-columns: 1fr;
+  }
+  .health-hero,
+  .fin-hero {
+    flex-direction: column;
+    align-items: stretch;
+  }
+}
 </style>

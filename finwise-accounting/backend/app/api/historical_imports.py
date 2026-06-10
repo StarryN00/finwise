@@ -9,9 +9,12 @@ from uuid import UUID
 
 import pandas as pd
 from fastapi import APIRouter, Depends, File, Form, HTTPException, UploadFile, status
+from sqlalchemy import select
 from sqlalchemy.orm import Session
 
 from app.api.deps import get_db
+from app.core.org_context import get_current_organization_id
+from app.models import HistoricalImportBatch
 from app.schemas.historical_import import HistoricalImportBatchRead
 from app.schemas.ledger import AccountOptionRead, DetailLedgerRowRead, GeneralLedgerRowRead, JournalLedgerRowRead, TrialBalanceRead
 from app.schemas.voucher import HistoricalVoucherRead
@@ -94,6 +97,26 @@ def import_gbt24589_historical_books_endpoint(
             balance_filename=balance_file.filename or "",
             source_metadata={**ledger_upload.metadata, **balance_upload.metadata},
             file_hashes={"ledger_sha256": ledger_upload.file_hash, "balance_sha256": balance_upload.file_hash},
+        )
+    )
+
+
+@router.get("", response_model=list[HistoricalImportBatchRead])
+def list_historical_import_batches_endpoint(
+    enterprise_id: UUID,
+    limit: int = 20,
+    db: Session = Depends(get_db),
+):
+    normalized_limit = min(max(limit, 1), 100)
+    return list(
+        db.scalars(
+            select(HistoricalImportBatch)
+            .where(
+                HistoricalImportBatch.organization_id == get_current_organization_id(),
+                HistoricalImportBatch.enterprise_id == enterprise_id,
+            )
+            .order_by(HistoricalImportBatch.created_at.desc(), HistoricalImportBatch.id.desc())
+            .limit(normalized_limit)
         )
     )
 

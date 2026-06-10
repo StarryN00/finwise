@@ -12,6 +12,7 @@ export const api = {
     list: () => apiClient.get('/enterprises'),
     create: (payload) => apiClient.post('/enterprises', payload),
     initialize: (enterpriseId, payload) => apiClient.post(`/enterprises/${enterpriseId}/initial-snapshot`, payload),
+    remove: (enterpriseId) => apiClient.delete(`/enterprises/${enterpriseId}`),
   },
   accountSubjects: {
     list: (enterpriseId) => apiClient.get(`/enterprises/${enterpriseId}/account-subjects`),
@@ -40,6 +41,7 @@ export const api = {
     parse: (formData) => apiClient.post('/initial-statements/parse', formData),
   },
   historicalImports: {
+    list: (enterpriseId) => apiClient.get(`/enterprises/${enterpriseId}/historical-imports`),
     importGbt24589: (enterpriseId, formData) => apiClient.post(`/enterprises/${enterpriseId}/historical-imports/gbt24589`, formData),
     vouchers: (enterpriseId, params = {}) => apiClient.get(`/enterprises/${enterpriseId}/historical-imports/vouchers`, { params }),
     accounts: (enterpriseId, params = {}) => apiClient.get(`/enterprises/${enterpriseId}/historical-imports/ledgers/accounts`, { params }),

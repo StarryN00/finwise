@@ -8,6 +8,7 @@ BASE_DIR = Path(__file__).parent.parent.parent
 DATA_DIR = Path(os.environ.get("DATA_DIR", str(BASE_DIR / "data")))
 FILES_DIR = DATA_DIR / "files"
 FILES_DIR.mkdir(parents=True, exist_ok=True)
+DEFAULT_CHANNEL_ID = "00000000-0000-0000-0000-000000000001"
 
 
 class Settings(BaseSettings):
@@ -15,6 +16,8 @@ class Settings(BaseSettings):
     APP_NAME: str = "智税管家"
     APP_VERSION: str = "1.0.0"
     DEBUG: bool = True
+    DEFAULT_CHANNEL_ID: str = DEFAULT_CHANNEL_ID
+    IMPORT_DIRECTORY_ALLOWLIST: str = os.environ.get("IMPORT_DIRECTORY_ALLOWLIST", "/Volumes/共享文件夹/财务项目")
 
     # Database
     DATABASE_URL: str = os.environ.get(

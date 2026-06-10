@@ -111,7 +111,7 @@ const onEnterpriseChange = async (id) => {
   const ent = enterprises.value.find(e => e.id === id)
   if (ent?.financing_score != null) { currentScore.value = ent.financing_score; return }
   try {
-    const res = await api.post('/api/reports/financing/generate', { enterprise_id: id })
+    const res = await api.post('/reports/financing/generate', { enterprise_id: id })
     currentScore.value = res.data.data?.score || null
   } catch { currentScore.value = null }
 }
@@ -120,7 +120,7 @@ const applyLoan = (product) => ElMessage.success(`已提交「${product.name}」
 
 const fetchEnterprises = async () => {
   try {
-    const res = await api.get('/api/enterprises', { params: { page: 1, page_size: 100 } })
+    const res = await api.get('/enterprises', { params: { page: 1, page_size: 100 } })
     enterprises.value = res.data.items || []
   } catch {}
 }

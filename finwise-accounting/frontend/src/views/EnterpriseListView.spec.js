@@ -25,4 +25,15 @@ describe('EnterpriseListView', () => {
     expect(source).toContain('createTechnologyScanJob')
     expect(source).toContain('scanJobDrawerVisible')
   })
+
+  it('requires confirmation before deleting an enterprise and passes a business id to the API', () => {
+    expect(source).toContain('ElMessageBox.confirm')
+    expect(source).toContain('确认删除企业')
+    expect(source).toContain('不可恢复')
+    expect(source).toContain('@click.stop="confirmDeleteEnterprise(row)"')
+    expect(source).toContain('api.enterprises.remove(enterpriseId)')
+    expect(source).toContain('企业及关联数据已删除')
+    expect(source).toContain('formatEnterpriseDeleteError')
+    expect(source).toContain('企业删除失败')
+  })
 })

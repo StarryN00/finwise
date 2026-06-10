@@ -93,7 +93,7 @@ function mountView() {
         ElButton: buttonStub(),
         ElInput: inputStub(),
         ElSelect: selectStub(),
-        ElOption: true,
+        ElOption: optionStub(),
         ElTable: tableStub(),
         ElTableColumn: true,
         ElTag: { template: '<span class="el-tag"><slot /></span>' },
@@ -125,6 +125,13 @@ function selectStub() {
     props: ['modelValue', 'placeholder'],
     emits: ['update:modelValue'],
     template: '<select :aria-label="placeholder" :value="modelValue" @change="$emit(\'update:modelValue\', $event.target.value)"><slot /></select>',
+  }
+}
+
+function optionStub() {
+  return {
+    props: ['label', 'value'],
+    template: '<option :value="value">{{ label }}</option>',
   }
 }
 
@@ -188,7 +195,8 @@ describe('VoucherManagementView', () => {
     await flushPromises()
 
     expect(api.vouchers.list).toHaveBeenLastCalledWith('package-1', { status: 'CONFIRMED', keyword: '聚之利' })
-    expect(wrapper.text()).toContain('1张已确认凭证')
+    expect(wrapper.find('[data-testid="voucher-count-summary"]').text()).toContain('已确认凭证')
+    expect(wrapper.find('[data-testid="voucher-count"]').text()).toBe('1')
   })
 
   it('renders voucher entries inline with debit, credit, and total rows', async () => {
@@ -221,6 +229,92 @@ describe('VoucherManagementView', () => {
     expect(wrapper.text()).toContain('凭证字号：记-0065')
   })
 
+  it('only shows implemented toolbar actions and removes fake bulk-selection controls', async () => {
+    const wrapper = mountView()
+    const workspace = useWorkspaceStore()
+    await workspace.loadWorkspace()
+    await flushPromises()
+
+    const toolbar = wrapper.find('.voucher-toolbar')
+    expect(toolbar.exists()).toBe(true)
+    expect(toolbar.text()).toContain('刷新')
+    expect(toolbar.find('input[placeholder="可输入凭证号/摘要/科目/金额..."]').exists()).toBe(true)
+    expect(toolbar.text()).not.toContain('更多条件')
+    expect(toolbar.text()).not.toContain('新增凭证')
+    expect(toolbar.text()).not.toContain('批量操作')
+    expect(toolbar.text()).not.toContain('导入/导出')
+    expect(toolbar.text()).not.toContain('打印')
+    expect(toolbar.text()).not.toContain('电子账本')
+    expect(toolbar.text()).not.toContain('按日期编号')
+    expect(wrapper.findAll('input[type="checkbox"]')).toHaveLength(0)
+  })
+
+  it('uses a dropdown for historical fiscal year and passes a numeric year to the API', async () => {
+    const wrapper = mountView()
+    const workspace = useWorkspaceStore()
+    await workspace.loadWorkspace()
+    await flushPromises()
+
+    const historyButton = wrapper.findAll('button').find((button) => button.text() === '历史账套')
+    expect(historyButton).toBeTruthy()
+
+    await historyButton.trigger('click')
+    await flushPromises()
+
+    const yearSelect = wrapper.find('select[aria-label="会计年度"]')
+    expect(yearSelect.exists()).toBe(true)
+    expect(wrapper.find('input[placeholder="会计年度"]').exists()).toBe(false)
+
+    await yearSelect.setValue('2025')
+    await flushPromises()
+
+    expect(api.historicalImports.vouchers).toHaveBeenLastCalledWith('enterprise-1', {
+      fiscal_year: 2025,
+      period_start_month: 1,
+      period_end_month: 12,
+    })
+  })
+
+  it('shows a focused empty state instead of an empty ledger table when no confirmed vouchers exist', async () => {
+    api.vouchers.list.mockResolvedValue({ data: [] })
+
+    const wrapper = mountView()
+    const workspace = useWorkspaceStore()
+    await workspace.loadWorkspace()
+    await flushPromises()
+
+    expect(wrapper.find('[data-testid="voucher-empty-state"]').exists()).toBe(true)
+    expect(wrapper.text()).toContain('当前月份暂无已确认凭证')
+    expect(wrapper.text()).toContain('凭证管理只展示已确认凭证')
+    expect(wrapper.text()).toContain('昆山黛珂特电子科技有限公司 · 2026-04')
+    expect(wrapper.find('.voucher-ledger-table').exists()).toBe(false)
+    expect(wrapper.find('.period-rail').exists()).toBe(false)
+    expect(wrapper.find('.pagination-bar').exists()).toBe(false)
+  })
+
+  it('lets operators clear keyword from the empty search result state', async () => {
+    api.vouchers.list.mockResolvedValue({ data: [] })
+
+    const wrapper = mountView()
+    const workspace = useWorkspaceStore()
+    await workspace.loadWorkspace()
+    await flushPromises()
+
+    await wrapper.find('input[placeholder="可输入凭证号/摘要/科目/金额..."]').setValue('不存在')
+    await wrapper.find('button.icon-search-button').trigger('click')
+    await flushPromises()
+
+    expect(wrapper.text()).toContain('没有找到匹配的凭证')
+    const clearButton = wrapper.findAll('button').find((button) => button.text() === '清空搜索')
+    expect(clearButton).toBeTruthy()
+
+    await clearButton.trigger('click')
+    await flushPromises()
+
+    expect(wrapper.find('input[placeholder="可输入凭证号/摘要/科目/金额..."]').element.value).toBe('')
+    expect(api.vouchers.list).toHaveBeenLastCalledWith('package-1', { status: 'CONFIRMED' })
+  })
+
   it('paginates confirmed vouchers with 20 rows per page by default', async () => {
     api.vouchers.list.mockResolvedValue({
       data: Array.from({ length: 21 }, (_, index) => confirmedVoucherAt(index + 1)),
@@ -231,7 +325,7 @@ describe('VoucherManagementView', () => {
     await workspace.loadWorkspace()
     await flushPromises()
 
-    expect(wrapper.text()).toContain('21张已确认凭证')
+    expect(wrapper.find('[data-testid="voucher-count"]').text()).toBe('21')
     expect(wrapper.text()).toContain('已确认凭证 0020')
     expect(wrapper.text()).not.toContain('已确认凭证 0021')
     expect(wrapper.text()).toContain('每页 20 张凭证')
@@ -294,9 +388,46 @@ describe('VoucherManagementView', () => {
     await workspace.loadWorkspace()
     await flushPromises()
 
-    expect(wrapper.text()).toContain('1张已确认凭证')
+    expect(wrapper.find('[data-testid="voucher-count"]').text()).toBe('1')
     expect(wrapper.text()).toContain('销聚之利')
     expect(wrapper.text()).not.toContain('待确认凭证不应出现在凭证管理')
     expect(wrapper.text()).not.toContain('已驳回凭证不应出现在凭证管理')
+  })
+
+  it('switches monthly work packages from the period rail', async () => {
+    api.workspace.snapshot.mockResolvedValue({
+      data: {
+        selectedPackageId: 'package-1',
+        enterprises: [{ id: 'enterprise-1', name: '昆山黛珂特电子科技有限公司' }],
+        workPackages: [
+          {
+            id: 'package-1',
+            enterpriseId: 'enterprise-1',
+            company: '昆山黛珂特电子科技有限公司',
+            period: '2026-04',
+          },
+          {
+            id: 'package-2',
+            enterpriseId: 'enterprise-1',
+            company: '昆山黛珂特电子科技有限公司',
+            period: '2026-05',
+          },
+        ],
+      },
+    })
+
+    const wrapper = mountView()
+    const workspace = useWorkspaceStore()
+    await workspace.loadWorkspace()
+    await flushPromises()
+
+    const mayButton = wrapper.findAll('.period-rail button').find((button) => button.text() === '05月')
+    expect(mayButton?.exists()).toBe(true)
+
+    await mayButton.trigger('click')
+    await flushPromises()
+
+    expect(api.vouchers.list).toHaveBeenLastCalledWith('package-2', { status: 'CONFIRMED' })
+    expect(wrapper.find('.period-rail button.active').text()).toBe('05月')
   })
 })

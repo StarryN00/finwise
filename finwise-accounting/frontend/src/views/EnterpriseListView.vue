@@ -49,6 +49,18 @@
           <StatusTag :status="row.reportStatus" />
         </template>
       </el-table-column>
+      <el-table-column label="操作" width="130" fixed="right">
+        <template #default="{ row }">
+          <el-button
+            link
+            type="danger"
+            :loading="deletingEnterpriseId === row.id"
+            @click.stop="confirmDeleteEnterprise(row)"
+          >
+            删除
+          </el-button>
+        </template>
+      </el-table-column>
     </el-table>
 
     <el-drawer v-model="scanJobDrawerVisible" title="科技画像扫描任务" size="520px" @open="loadTechnologyScanJobs">
@@ -93,7 +105,7 @@
 <script setup>
 import { computed, ref } from 'vue'
 import { useRouter } from 'vue-router'
-import { ElMessage } from 'element-plus'
+import { ElMessage, ElMessageBox } from 'element-plus'
 import { api } from '../api/client'
 import DataTableShell from '../components/DataTableShell.vue'
 import StatusTag from '../components/StatusTag.vue'
@@ -107,6 +119,7 @@ const scanJobDrawerVisible = ref(false)
 const technologyScanJobs = ref([])
 const selectedScanJob = ref(null)
 const isCreatingScanJob = ref(false)
+const deletingEnterpriseId = ref('')
 
 const filteredEnterprises = computed(() => {
   const value = keyword.value.trim()
@@ -132,6 +145,40 @@ async function createTechnologyScanJob() {
     ElMessage.success('科技画像扫描任务已创建')
   } finally {
     isCreatingScanJob.value = false
+  }
+}
+
+async function confirmDeleteEnterprise(row) {
+  const enterpriseId = row?.id
+  if (!enterpriseId) return
+  try {
+    await ElMessageBox.confirm(
+      `删除后将同时删除“${row.name}”的期初数据、月度工作包、导入记录、银行流水、发票、匹配记录、凭证、账簿、报表、规则和科技画像等所有关联数据，且不可恢复。请确认是否继续？`,
+      '确认删除企业',
+      {
+        confirmButtonText: '确认删除',
+        cancelButtonText: '取消',
+        type: 'warning',
+        confirmButtonClass: 'el-button--danger',
+      }
+    )
+  } catch {
+    return
+  }
+  deletingEnterpriseId.value = enterpriseId
+  try {
+    await api.enterprises.remove(enterpriseId)
+    selectedEnterprises.value = selectedEnterprises.value.filter((enterprise) => enterprise.id !== enterpriseId)
+    const activeEnterpriseId = workspace.activePackage?.enterpriseId || workspace.activePackage?.enterprise_id
+    if (workspace.selectedPackageId && activeEnterpriseId === enterpriseId) {
+      workspace.selectedPackageId = ''
+    }
+    await workspace.loadWorkspace()
+    ElMessage.success('企业及关联数据已删除')
+  } catch (error) {
+    ElMessage.error(formatEnterpriseDeleteError(error))
+  } finally {
+    deletingEnterpriseId.value = ''
   }
 }
 
@@ -206,6 +253,14 @@ function formatFailureReason(reason) {
 function formatDateTime(value) {
   if (!value) return '-'
   return String(value).slice(0, 16).replace('T', ' ')
+}
+
+function formatEnterpriseDeleteError(error) {
+  const detail = error?.response?.data?.detail
+  if (detail) return `企业删除失败：${detail}`
+  if (error?.response?.status === 404) return '企业删除失败：删除接口不可用或企业不存在，请刷新后重试'
+  if (error?.message) return `企业删除失败：${error.message}`
+  return '企业删除失败，请刷新后重试'
 }
 </script>
 

@@ -8,6 +8,9 @@
         <p class="page-desc">管理已经接入的企业财税与融资档案。</p>
       </div>
       <div class="header-actions">
+        <button v-if="showDevImport" class="btn secondary" :disabled="importingDirectory" @click="importDirectoryData">
+          导入测试数据
+        </button>
         <button class="btn primary" @click="showAddDialog = true">
           <svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5"><line x1="12" y1="5" x2="12" y2="19"/><line x1="5" y1="12" x2="19" y2="12"/></svg>
           新增企业
@@ -144,18 +147,22 @@
         <el-button type="primary" :loading="submitting" @click="submitAdd" style="border-radius: 999px;">确定</el-button>
       </template>
     </el-dialog>
+
   </div>
 </template>
 
 <script setup>
-import { ref, reactive, onMounted } from 'vue'
+import { ref, reactive, onMounted, computed } from 'vue'
+import { useRouter } from 'vue-router'
 import { ElMessage } from 'element-plus'
 import api from '@/api'
 
+const router = useRouter()
 const enterprises = ref([])
 const loading = ref(false)
 const showAddDialog = ref(false)
 const submitting = ref(false)
+const importingDirectory = ref(false)
 const formRef = ref(null)
 const page = ref(1)
 const pageSize = ref(20)
@@ -163,6 +170,7 @@ const total = ref(0)
 const searchKeyword = ref('')
 const filterStatus = ref('')
 const filterSource = ref('')
+const showDevImport = computed(() => import.meta.env.DEV)
 
 const form = reactive({
   name: '', taxId: '', taxpayerType: '', industry: '', location: '', source: ''
@@ -187,7 +195,7 @@ const fetchEnterprises = async () => {
     if (searchKeyword.value) params.search = searchKeyword.value
     if (filterStatus.value) params.status = filterStatus.value
     if (filterSource.value) params.source = filterSource.value
-    const res = await api.get('/api/enterprises', { params })
+    const res = await api.get('/enterprises', { params })
     enterprises.value = res.data.items
     total.value = res.data.total
   } catch { ElMessage.error('加载企业列表失败') }
@@ -199,9 +207,9 @@ const submitAdd = async () => {
   if (!valid) return
   submitting.value = true
   try {
-    await api.post('/api/enterprises', {
-      name: form.name, tax_id: form.taxId, taxpayer_type: form.taxpayerType,
-      industry: form.industry || null, location: form.location || null, source: form.source
+    await api.post('/enterprises', {
+      name: form.name, tax_number: form.taxId, taxpayer_type: form.taxpayerType,
+      industry: form.industry || null, province: form.location || null, source: form.source
     })
     ElMessage.success('企业添加成功')
     showAddDialog.value = false
@@ -211,7 +219,29 @@ const submitAdd = async () => {
   finally { submitting.value = false }
 }
 
-const viewDetail = (row) => ElMessage.info(`查看企业详情：${row.name}`)
+const importDirectoryData = async () => {
+  importingDirectory.value = true
+  try {
+    const res = await api.post('/import/enterprises/from_directory', {
+      directory_path: '/Volumes/共享文件夹/财务项目/银行流水',
+      taxpayer_type: 'SMALL',
+      source: 'DIRECT',
+      import_bank_statements: true,
+      import_invoice_details: true
+    })
+    const data = res.data
+    ElMessage.success(`导入完成：新增 ${data.enterprises_created} 家，流水 ${data.transactions_imported} 笔，进销项 ${data.invoice_rows_imported || 0} 行`)
+    fetchEnterprises()
+  } catch (e) {
+    ElMessage.error(e.response?.data?.detail || '导入测试数据失败')
+  } finally {
+    importingDirectory.value = false
+  }
+}
+
+const viewDetail = async (row) => {
+  router.push({ path: `/enterprises/${row.id}` })
+}
 
 onMounted(fetchEnterprises)
 </script>
@@ -248,7 +278,7 @@ onMounted(fetchEnterprises)
   color: var(--mute);
   line-height: 1.7;
 }
-.header-actions { flex-shrink: 0; }
+.header-actions { flex-shrink: 0; display: flex; gap: 10px; }
 
 /* Filters */
 .filter-bar {
@@ -344,5 +374,224 @@ onMounted(fetchEnterprises)
 .add-form :deep(.el-form-item__label) {
   font-weight: 600;
   font-size: 13px;
+}
+
+.detail-dialog :deep(.el-dialog) {
+  border-radius: 10px;
+  background: var(--bg);
+}
+.detail-header {
+  display: flex;
+  align-items: flex-start;
+  justify-content: space-between;
+  gap: 18px;
+}
+.detail-title {
+  margin: 0;
+  color: var(--ink);
+  font-size: 28px;
+  line-height: 1.2;
+  font-weight: 600;
+}
+.detail-content {
+  display: grid;
+  gap: 18px;
+}
+.detail-meta,
+.finance-kpis {
+  display: grid;
+  grid-template-columns: repeat(4, minmax(0, 1fr));
+  gap: 12px;
+}
+.detail-meta > div,
+.finance-kpi {
+  background: var(--panel);
+  border-radius: 8px;
+  padding: 14px;
+}
+.detail-meta span,
+.finance-kpi span {
+  display: block;
+  color: var(--mute);
+  font-size: 12px;
+  margin-bottom: 6px;
+}
+.detail-meta strong,
+.finance-kpi strong {
+  color: var(--ink);
+  font-size: 14px;
+  font-weight: 600;
+  word-break: break-all;
+}
+.finance-kpi strong {
+  font-family: var(--font-mono);
+  font-size: 22px;
+}
+.detail-actions {
+  display: flex;
+  justify-content: flex-end;
+  gap: 10px;
+}
+.detail-section {
+  background: var(--panel);
+  border-radius: 8px;
+  padding: 16px;
+}
+.section-title {
+  font-size: 15px;
+  color: var(--ink);
+  font-weight: 600;
+  margin-bottom: 12px;
+}
+.compact-table {
+  background: transparent;
+}
+.compact-table th,
+.compact-table td {
+  padding: 10px 8px;
+  font-size: 12px;
+}
+.month-row.selected {
+  background: var(--bg);
+}
+.completion-cell {
+  display: grid;
+  grid-template-columns: minmax(72px, 1fr) 38px;
+  align-items: center;
+  gap: 8px;
+}
+.completion-cell strong {
+  font-family: var(--font-mono);
+  color: var(--ink);
+  font-size: 12px;
+}
+.completion-bar {
+  height: 6px;
+  border-radius: 999px;
+  background: var(--line-soft);
+  overflow: hidden;
+}
+.completion-bar span {
+  display: block;
+  height: 100%;
+  min-width: 4px;
+  border-radius: inherit;
+  background: var(--accent);
+}
+.data-tags {
+  display: flex;
+  gap: 4px;
+  flex-wrap: wrap;
+}
+.data-dot {
+  width: 22px;
+  height: 22px;
+  border-radius: 50%;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  font-size: 11px;
+  font-weight: 700;
+  border: 1px solid var(--line);
+}
+.data-dot.ready {
+  background: var(--ok-bg);
+  color: var(--ok-fg);
+  border-color: transparent;
+}
+.data-dot.missing {
+  background: var(--warn-bg);
+  color: var(--warn-fg);
+  border-color: transparent;
+}
+.detail-mini-btn {
+  height: 26px;
+  padding: 0 8px;
+  font-size: 12px;
+}
+.summary-cell {
+  max-width: 360px;
+  color: var(--ink-2);
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.month-detail-section {
+  display: grid;
+  gap: 16px;
+}
+.month-detail-head {
+  display: flex;
+  justify-content: space-between;
+  align-items: flex-start;
+  gap: 16px;
+}
+.month-detail-head p {
+  margin: -4px 0 0;
+  color: var(--mute);
+  font-size: 12.5px;
+}
+.compact-actions {
+  flex-shrink: 0;
+}
+.month-kpis,
+.detail-check-grid {
+  display: grid;
+  grid-template-columns: repeat(4, minmax(0, 1fr));
+  gap: 10px;
+}
+.month-kpis > div,
+.detail-check {
+  background: var(--bg);
+  border: 1px solid var(--line-soft);
+  border-radius: 8px;
+  padding: 12px;
+}
+.month-kpis span,
+.detail-check p {
+  display: block;
+  color: var(--mute);
+  font-size: 12px;
+}
+.month-kpis strong {
+  display: block;
+  margin-top: 6px;
+  color: var(--ink);
+  font-family: var(--font-mono);
+  font-size: 18px;
+}
+.month-subsection {
+  min-width: 0;
+}
+.subsection-title {
+  color: var(--ink);
+  font-size: 13px;
+  font-weight: 700;
+  margin-bottom: 10px;
+}
+.detail-check {
+  display: grid;
+  gap: 6px;
+}
+.detail-check strong {
+  color: var(--ink);
+  font-size: 13px;
+}
+.detail-check p {
+  margin: 0;
+  line-height: 1.5;
+}
+.detail-columns {
+  display: grid;
+  grid-template-columns: minmax(0, 1.1fr) minmax(0, 0.9fr);
+  gap: 16px;
+}
+.invoice-dir {
+  font-size: 11px;
+}
+.pos { color: var(--ok-fg); }
+.neg { color: var(--alert-fg); }
+.detail-loading {
+  padding: 20px;
 }
 </style>

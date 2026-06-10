@@ -9,11 +9,14 @@ from pathlib import Path
 from typing import List, Optional
 from decimal import Decimal
 
-from fastapi import APIRouter, HTTPException, UploadFile, File, Query
+from fastapi import APIRouter, Depends, HTTPException, UploadFile, File, Query
+from pydantic import BaseModel
 
+from backend.core.config import settings
 from backend.storage.manager import (
     enterprise_store, import_batch_store, invoice_store, bank_transaction_store
 )
+from backend.routers.auth import get_current_user
 from backend.models.schemas import (
     ImportJobResponse, InvoiceImportRequest, InvoiceResponse,
     BankStatementParseRequest, BankStatementParseResponse,
@@ -21,6 +24,13 @@ from backend.models.schemas import (
 )
 from backend.services.file_service import file_service
 from backend.services.ai_service import parse_bank_statement_with_ai
+from backend.services.statement_import import (
+    EnterpriseMetadata,
+    extract_enterprise_metadata,
+    infer_period_from_filename,
+    parse_bank_statement_file,
+)
+from backend.services.invoice_import import parse_invoice_detail_file
 
 router = APIRouter(prefix="/api/import", tags=["import"])
 
@@ -32,12 +42,357 @@ class ImportStatus:
     FAILED = "FAILED"
 
 
+class EnterpriseDirectoryImportRequest(BaseModel):
+    directory_path: str = "/Volumes/共享文件夹/财务项目/银行流水"
+    taxpayer_type: str = "SMALL"
+    source: str = "DIRECT"
+    import_bank_statements: bool = True
+    import_invoice_details: bool = True
+
+
+class EnterpriseImportSummary(BaseModel):
+    total_files: int = 0
+    enterprises_created: int = 0
+    enterprises_updated: int = 0
+    bank_files_imported: int = 0
+    transactions_imported: int = 0
+    invoice_files_imported: int = 0
+    invoice_rows_imported: int = 0
+    client_list_files_imported: int = 0
+    skipped_files: int = 0
+    errors: list[dict] = []
+
+
+def _find_or_create_enterprise(metadata, taxpayer_type: str = "SMALL", source: str = "DIRECT") -> tuple[dict, bool]:
+    name = metadata.name
+    if not name:
+        raise ValueError("Missing enterprise name")
+
+    existing = None
+    if metadata.tax_number:
+        existing = enterprise_store.first(tax_number=metadata.tax_number)
+    if not existing:
+        existing = enterprise_store.first(name=name)
+    if existing:
+        updates = {}
+        if existing.get("channel_id") != settings.DEFAULT_CHANNEL_ID:
+            updates["channel_id"] = settings.DEFAULT_CHANNEL_ID
+        if metadata.tax_number and not existing.get("tax_number"):
+            updates["tax_number"] = metadata.tax_number
+        if metadata.business_scope and not existing.get("business_scope"):
+            updates["business_scope"] = metadata.business_scope
+        if updates:
+            return enterprise_store.update(existing["id"], **updates), False
+        return existing, False
+
+    enterprise = enterprise_store.create(
+        id=str(uuid.uuid4()),
+        name=name,
+        tax_number=metadata.tax_number or f"TEMP-{uuid.uuid4().hex[:12].upper()}",
+        taxpayer_type=taxpayer_type,
+        industry=_infer_industry(metadata.business_scope or name),
+        registered_capital_range=None,
+        founded_year=None,
+        province="江苏",
+        city=_infer_city(name),
+        source=source,
+        assigned_operator_id=None,
+        status="ACTIVE",
+        channel_id=settings.DEFAULT_CHANNEL_ID,
+        business_scope=metadata.business_scope,
+    )
+    return enterprise, True
+
+
+def _infer_city(name: str) -> str:
+    if name.startswith("苏州"):
+        return "苏州"
+    if name.startswith("昆山") or name.startswith("昆山市"):
+        return "昆山"
+    return ""
+
+
+def _infer_industry(text: str) -> str:
+    if any(keyword in text for keyword in ("劳务", "服务", "企业管理")):
+        return "服务业"
+    if any(keyword in text for keyword in ("制造", "材料", "电子", "高分子", "精密")):
+        return "制造业"
+    if any(keyword in text for keyword in ("技术", "软件", "智能", "纳米", "科技")):
+        return "科技"
+    return "其他"
+
+
+def _import_bank_file_for_enterprise(path: Path, enterprise: dict) -> tuple[int, bool]:
+    existing_batch = import_batch_store.first(
+        enterprise_id=enterprise["id"],
+        import_type="BANK_STATEMENT",
+        file_name=path.name,
+    )
+    if (
+        existing_batch
+        and existing_batch.get("status") == ImportStatus.COMPLETED
+        and int(existing_batch.get("total_rows") or 0) > 0
+    ):
+        return 0, False
+
+    batch_id = existing_batch["id"] if existing_batch else str(uuid.uuid4())
+    if existing_batch:
+        for tx in bank_transaction_store.filter(import_batch_id=batch_id):
+            bank_transaction_store.delete(tx["id"])
+
+    year, month = infer_period_from_filename(path)
+    batch_payload = {
+        "enterprise_id": enterprise["id"],
+        "import_type": "BANK_STATEMENT",
+        "file_name": path.name,
+        "source_path": str(path),
+        "period_year": year,
+        "period_month": month,
+        "status": ImportStatus.PROCESSING,
+        "total_rows": 0,
+        "processed_rows": 0,
+    }
+    if existing_batch:
+        import_batch_store.update(batch_id, **batch_payload)
+    else:
+        import_batch_store.create(id=batch_id, **batch_payload)
+
+    transactions = parse_bank_statement_file(path, enterprise["id"], batch_id)
+    if not transactions:
+        import_batch_store.update(
+            batch_id,
+            total_rows=0,
+            processed_rows=0,
+            status=ImportStatus.FAILED,
+            error_message="未识别到银行流水明细",
+        )
+        raise ValueError("未识别到银行流水明细")
+
+    created_count = 0
+    for tx in transactions:
+        if _bank_transaction_exists(tx, batch_id):
+            continue
+        bank_transaction_store.create(id=str(uuid.uuid4()), **tx)
+        created_count += 1
+
+    import_batch_store.update(
+        batch_id,
+        total_rows=len(transactions),
+        processed_rows=created_count,
+        status=ImportStatus.COMPLETED,
+    )
+    return created_count, True
+
+
+def _bank_transaction_exists(tx: dict, current_batch_id: str) -> bool:
+    existing = bank_transaction_store.filter(
+        enterprise_id=tx["enterprise_id"],
+        transaction_date=tx["transaction_date"],
+        summary=tx["summary"],
+    )
+    for item in existing:
+        if item.get("import_batch_id") == current_batch_id:
+            continue
+        if (
+            item.get("debit_amount") == tx.get("debit_amount")
+            and item.get("credit_amount") == tx.get("credit_amount")
+            and item.get("balance") == tx.get("balance")
+            and item.get("status") != "DELETED"
+        ):
+            return True
+    return False
+
+
+def _is_invoice_detail_file(path: Path) -> bool:
+    return any(keyword in path.stem for keyword in ("进项", "销项"))
+
+
+def _is_client_list_file(path: Path) -> bool:
+    return "客户清单" in path.stem or "企业清单" in path.stem
+
+
+def _import_enterprises_from_client_list(path: Path, taxpayer_type: str, source: str) -> tuple[int, int]:
+    import pandas as pd
+
+    df = pd.read_excel(path, dtype=object)
+    df.columns = [str(col).strip() for col in df.columns]
+    created_count = 0
+    updated_count = 0
+    for _, row in df.iterrows():
+        name = str(row.get("企业名称", "") or "").strip()
+        if not name:
+            continue
+        metadata = EnterpriseMetadata(
+            name=name,
+            tax_number=str(row.get("纳税人识别号", "") or "").strip() or None,
+            business_scope=str(row.get("经营范围", "") or "").strip() or None,
+        )
+        _, created = _find_or_create_enterprise(metadata, taxpayer_type=taxpayer_type, source=source)
+        if created:
+            created_count += 1
+        else:
+            updated_count += 1
+    return created_count, updated_count
+
+
+def _import_invoice_file_for_enterprise(path: Path, enterprise: dict) -> tuple[int, bool]:
+    existing_batch = import_batch_store.first(
+        enterprise_id=enterprise["id"],
+        import_type="INVOICE",
+        file_name=path.name,
+    )
+    if (
+        existing_batch
+        and existing_batch.get("status") == ImportStatus.COMPLETED
+        and int(existing_batch.get("total_rows") or 0) > 0
+    ):
+        return 0, False
+
+    batch_id = existing_batch["id"] if existing_batch else str(uuid.uuid4())
+    if existing_batch:
+        for invoice in invoice_store.filter(import_batch_id=batch_id):
+            invoice_store.delete(invoice["id"])
+
+    year, month = infer_period_from_filename(path)
+    batch_payload = {
+        "enterprise_id": enterprise["id"],
+        "import_type": "INVOICE",
+        "file_name": path.name,
+        "source_path": str(path),
+        "period_year": year,
+        "period_month": month,
+        "status": ImportStatus.PROCESSING,
+        "total_rows": 0,
+        "processed_rows": 0,
+    }
+    if existing_batch:
+        import_batch_store.update(batch_id, **batch_payload)
+    else:
+        import_batch_store.create(id=batch_id, **batch_payload)
+
+    invoices = parse_invoice_detail_file(path, enterprise)
+    if not invoices:
+        import_batch_store.update(
+            batch_id,
+            total_rows=0,
+            processed_rows=0,
+            status=ImportStatus.FAILED,
+            error_message="未识别到进销项明细",
+        )
+        raise ValueError("未识别到进销项明细")
+
+    for index, item in enumerate(invoices, start=1):
+        invoice_store.create(
+            id=str(uuid.uuid4()),
+            enterprise_id=enterprise["id"],
+            invoice_number=item["invoice_number"],
+            invoice_type=item["invoice_type"],
+            direction=item.get("direction", "UNKNOWN"),
+            invoice_kind=item.get("invoice_kind", "UNKNOWN"),
+            issue_date=item["issue_date"].isoformat() if isinstance(item["issue_date"], date) else str(item["issue_date"]),
+            amount=float(item["amount"]),
+            tax_amount=float(item["tax_amount"]),
+            total_amount=float(item["total_amount"]),
+            seller_name=item["seller_name"],
+            seller_tax_number=item["seller_tax_number"],
+            buyer_name=item["buyer_name"],
+            buyer_tax_number=item["buyer_tax_number"],
+            tax_rate=item.get("tax_rate"),
+            item_name=item.get("item_name"),
+            invoice_status=item.get("invoice_status", "VALID"),
+            channel_id=settings.DEFAULT_CHANNEL_ID,
+            import_batch_id=batch_id,
+            source_row_index=index,
+            status="PENDING",
+        )
+
+    import_batch_store.update(
+        batch_id,
+        total_rows=len(invoices),
+        processed_rows=len(invoices),
+        status=ImportStatus.COMPLETED,
+    )
+    return len(invoices), True
+
+
+@router.post("/enterprises/from_directory")
+async def import_enterprises_from_directory(
+    request: EnterpriseDirectoryImportRequest,
+    current_user: dict = Depends(get_current_user),
+):
+    """
+    Import enterprise metadata and bank statements from a mounted accountant data directory.
+    Expected layout: one enterprise per folder, with Excel/CSV bank statement files inside.
+    """
+    root = Path(request.directory_path).expanduser().resolve()
+    allowed_roots = [
+        Path(item).expanduser().resolve()
+        for item in settings.IMPORT_DIRECTORY_ALLOWLIST.split(",")
+        if item.strip()
+    ]
+    if not any(root == allowed or allowed in root.parents for allowed in allowed_roots):
+        raise HTTPException(status_code=403, detail="Import directory is not allowed")
+    if not root.exists() or not root.is_dir():
+        raise HTTPException(status_code=400, detail="Directory not found")
+
+    summary = EnterpriseImportSummary()
+    files = sorted([p for p in root.rglob("*") if p.suffix.lower() in {".xls", ".xlsx", ".csv"}])
+    summary.total_files = len(files)
+
+    for path in files:
+        try:
+            if _is_client_list_file(path):
+                created_count, updated_count = _import_enterprises_from_client_list(
+                    path,
+                    taxpayer_type=request.taxpayer_type,
+                    source=request.source,
+                )
+                summary.client_list_files_imported += 1
+                summary.enterprises_created += created_count
+                summary.enterprises_updated += updated_count
+                continue
+
+            metadata = extract_enterprise_metadata(path, fallback_name=path.parent.name)
+            enterprise, created = _find_or_create_enterprise(
+                metadata,
+                taxpayer_type=request.taxpayer_type,
+                source=request.source,
+            )
+            if created:
+                summary.enterprises_created += 1
+            else:
+                summary.enterprises_updated += 1
+
+            if _is_invoice_detail_file(path):
+                if request.import_invoice_details:
+                    invoice_count, imported = _import_invoice_file_for_enterprise(path, enterprise)
+                    if imported:
+                        summary.invoice_files_imported += 1
+                        summary.invoice_rows_imported += invoice_count
+                    else:
+                        summary.skipped_files += 1
+                else:
+                    summary.skipped_files += 1
+            elif request.import_bank_statements:
+                tx_count, imported = _import_bank_file_for_enterprise(path, enterprise)
+                if imported:
+                    summary.bank_files_imported += 1
+                    summary.transactions_imported += tx_count
+                else:
+                    summary.skipped_files += 1
+        except Exception as exc:
+            summary.errors.append({"file": path.name, "error": str(exc)})
+
+    return summary.model_dump()
+
+
 # ============ File Upload & Import Jobs ============
 
 @router.post("/invoices", response_model=ImportJobResponse)
 async def import_invoices(
     enterprise_id: uuid.UUID,
     file: UploadFile = File(...),
+    current_user: dict = Depends(get_current_user),
 ):
     """
     Import invoices from Excel/CSV file.
@@ -57,10 +412,17 @@ async def import_invoices(
     # Save file
     file_id, file_url = await file_service.save_upload(file, subfolder=f"imports/{enterprise_id}")
 
-    # Create import batch
-    batch_id = str(uuid.uuid4())
-    batch = import_batch_store.create(
-        id=batch_id,
+    existing_batch = import_batch_store.first(
+        enterprise_id=str(enterprise_id),
+        import_type="INVOICE",
+        file_name=filename,
+    )
+    batch_id = existing_batch["id"] if existing_batch else str(uuid.uuid4())
+    if existing_batch:
+        for invoice in invoice_store.filter(import_batch_id=batch_id):
+            invoice_store.delete(invoice["id"])
+
+    batch_payload = dict(
         enterprise_id=str(enterprise_id),
         import_type="INVOICE",
         file_name=filename,
@@ -69,10 +431,17 @@ async def import_invoices(
         processed_rows=0,
         status=ImportStatus.PENDING,
     )
+    if existing_batch:
+        batch = import_batch_store.update(batch_id, **batch_payload)
+    else:
+        batch = import_batch_store.create(id=batch_id, **batch_payload)
 
     # Parse the file — read from the saved file on disk, not the consumed UploadFile stream
     try:
-        invoices = await _parse_invoice_file_from_disk(file_id, filename, subfolder=f"imports/{enterprise_id}")
+        file_path = _get_saved_file_path(file_id, filename, subfolder=f"imports/{enterprise_id}")
+        invoices = parse_invoice_detail_file(file_path, enterprise)
+        if not invoices:
+            raise ValueError("未识别到进销项明细")
         batch['total_rows'] = len(invoices)
         batch['processed_rows'] = 0
         batch['status'] = ImportStatus.PROCESSING
@@ -80,11 +449,19 @@ async def import_invoices(
 
         # Insert invoices
         for item in invoices:
+            existing_invoice = invoice_store.first(
+                enterprise_id=str(enterprise_id),
+                invoice_number=item["invoice_number"],
+            )
+            if existing_invoice and existing_invoice.get("import_batch_id") != batch_id:
+                invoice_store.delete(existing_invoice["id"])
             invoice_store.create(
                 id=str(uuid.uuid4()),
                 enterprise_id=str(enterprise_id),
                 invoice_number=item["invoice_number"],
                 invoice_type=item["invoice_type"],
+                direction=item.get("direction", "UNKNOWN"),
+                invoice_kind=item.get("invoice_kind", "UNKNOWN"),
                 issue_date=item["issue_date"].isoformat() if isinstance(item["issue_date"], date) else str(item["issue_date"]),
                 amount=float(item["amount"]),
                 tax_amount=float(item["tax_amount"]),
@@ -93,6 +470,10 @@ async def import_invoices(
                 seller_tax_number=item["seller_tax_number"],
                 buyer_name=item["buyer_name"],
                 buyer_tax_number=item["buyer_tax_number"],
+                tax_rate=item.get("tax_rate"),
+                item_name=item.get("item_name"),
+                invoice_status=item.get("invoice_status", "VALID"),
+                channel_id=settings.DEFAULT_CHANNEL_ID,
                 import_batch_id=batch_id,
                 status="PENDING",
             )
@@ -102,7 +483,7 @@ async def import_invoices(
         import_batch_store.update(batch_id, **batch)
 
     except Exception as e:
-        import_batch_store.update(batch_id, status=ImportStatus.FAILED, error_message=str(e))
+        batch = import_batch_store.update(batch_id, status=ImportStatus.FAILED, error_message=str(e))
 
     return ImportJobResponse(
         id=uuid.UUID(batch['id']),
@@ -121,6 +502,7 @@ async def import_invoices(
 async def import_bank_statements(
     enterprise_id: uuid.UUID,
     file: UploadFile = File(...),
+    current_user: dict = Depends(get_current_user),
 ):
     """
     Import bank statements from Excel/CSV/PDF.
@@ -142,10 +524,17 @@ async def import_bank_statements(
     # Save file
     file_id, file_url = await file_service.save_upload(file, subfolder=f"bank_statements/{enterprise_id}")
 
-    # Create import batch
-    batch_id = str(uuid.uuid4())
-    batch = import_batch_store.create(
-        id=batch_id,
+    existing_batch = import_batch_store.first(
+        enterprise_id=str(enterprise_id),
+        import_type="BANK_STATEMENT",
+        file_name=filename,
+    )
+    batch_id = existing_batch["id"] if existing_batch else str(uuid.uuid4())
+    if existing_batch:
+        for tx in bank_transaction_store.filter(import_batch_id=batch_id):
+            bank_transaction_store.delete(tx["id"])
+
+    batch_payload = dict(
         enterprise_id=str(enterprise_id),
         import_type="BANK_STATEMENT",
         file_name=filename,
@@ -154,17 +543,22 @@ async def import_bank_statements(
         total_rows=0,
         processed_rows=0,
     )
+    if existing_batch:
+        batch = import_batch_store.update(batch_id, **batch_payload)
+    else:
+        batch = import_batch_store.create(id=batch_id, **batch_payload)
 
     if ext in ("xls", "xlsx", "csv"):
         # Direct parse for Excel/CSV
         batch['status'] = ImportStatus.PROCESSING
         import_batch_store.update(batch_id, **batch)
         try:
-            raw_text = await _parse_excel_or_csv(file, filename)
-            # Store raw text for now - AI parse will happen on confirm
-            transactions = await parse_bank_statement_with_ai(
-                batch_id, enterprise_id, raw_text
-            )
+            file_path = _get_saved_file_path(file_id, filename, subfolder=f"bank_statements/{enterprise_id}")
+            transactions = parse_bank_statement_file(file_path, str(enterprise_id), batch_id)
+            if not transactions:
+                raise ValueError("未识别到银行流水明细")
+            for tx in transactions:
+                bank_transaction_store.create(id=str(uuid.uuid4()), **tx)
             batch['total_rows'] = len(transactions)
             batch['processed_rows'] = len(transactions)
             batch['status'] = ImportStatus.COMPLETED
@@ -184,7 +578,10 @@ async def import_bank_statements(
 
 
 @router.get("/jobs/{job_id}", response_model=ImportJobResponse)
-async def get_import_job(job_id: uuid.UUID):
+async def get_import_job(
+    job_id: uuid.UUID,
+    current_user: dict = Depends(get_current_user),
+):
     """Get import job status."""
     batch = import_batch_store.get_by_id(str(job_id))
     if not batch:
@@ -205,74 +602,6 @@ async def get_import_job(job_id: uuid.UUID):
 
 # ============ Helper Functions ============
 
-async def _parse_invoice_file(file: UploadFile, filename: str) -> List[dict]:
-    """
-    Parse invoice Excel/CSV file and return list of invoice dicts.
-    This is a simplified parser - in production you'd use openpyxl/pandas.
-    """
-    import pandas as pd
-    from io import BytesIO
-
-    content = await file.read()
-    if filename.endswith(".csv"):
-        df = pd.read_csv(BytesIO(content))
-    else:
-        df = pd.read_excel(BytesIO(content))
-
-    # Normalize columns
-    df.columns = df.columns.str.strip()
-
-    # Map common column names
-    column_map = {
-        "发票号码": "invoice_number",
-        "发票号": "invoice_number",
-        "发票类型": "invoice_type",
-        "开票日期": "issue_date",
-        "金额": "amount",
-        "税额": "tax_amount",
-        "价税合计": "total_amount",
-        "销售方名称": "seller_name",
-        "销售方纳税人识别号": "seller_tax_number",
-        "购买方名称": "buyer_name",
-        "购买方纳税人识别号": "buyer_tax_number",
-    }
-
-    normalized = df.rename(columns=column_map)
-
-    invoices = []
-    for _, row in normalized.iterrows():
-        # Parse date
-        issue_date = row.get("issue_date")
-        if isinstance(issue_date, str):
-            issue_date = date.fromisoformat(issue_date)
-        elif hasattr(issue_date, "date"):
-            issue_date = issue_date.date()
-        else:
-            issue_date = date.today()
-
-        # Normalize invoice type
-        inv_type = str(row.get("invoice_type", "VAT_SPECIAL")).upper()
-        if "普通" in inv_type:
-            inv_type = "VAT_NORMAL"
-        else:
-            inv_type = "VAT_SPECIAL"
-
-        invoices.append({
-            "invoice_number": str(row.get("invoice_number", "")),
-            "invoice_type": inv_type,
-            "issue_date": issue_date,
-            "amount": float(row.get("amount", 0)),
-            "tax_amount": float(row.get("tax_amount", 0)),
-            "total_amount": float(row.get("total_amount", 0)),
-            "seller_name": str(row.get("seller_name", "")),
-            "seller_tax_number": str(row.get("seller_tax_number", "")),
-            "buyer_name": str(row.get("buyer_name", "")),
-            "buyer_tax_number": str(row.get("buyer_tax_number", "")),
-        })
-
-    return invoices
-
-
 def _get_saved_file_path(file_id: uuid.UUID, filename: str, subfolder: str) -> Path:
     """Get path to a saved file by file_id, original filename, and subfolder."""
     ext = Path(filename).suffix.lower()
@@ -280,87 +609,3 @@ def _get_saved_file_path(file_id: uuid.UUID, filename: str, subfolder: str) -> P
     from backend.core.config import settings
     folder = settings.FILES_DIR / subfolder
     return folder / f"{file_id}{ext}"
-
-
-def _parse_invoice_file_from_disk(file_id: uuid.UUID, filename: str, subfolder: str) -> List[dict]:
-    """
-    Parse invoice Excel/CSV file from disk (after the UploadFile stream has been consumed).
-    Returns list of invoice dicts.
-    """
-    import pandas as pd
-
-    file_path = _get_saved_file_path(file_id, filename, subfolder)
-    ext = file_path.suffix.lower()
-
-    if ext == ".csv":
-        df = pd.read_csv(file_path, encoding="utf-8-sig")
-    else:
-        df = pd.read_excel(file_path)
-
-    # Normalize columns
-    df.columns = df.columns.str.strip()
-
-    # Map common column names (Chinese -> English)
-    column_map = {
-        "发票号码": "invoice_number",
-        "发票号": "invoice_number",
-        "发票类型": "invoice_type",
-        "开票日期": "issue_date",
-        "金额": "amount",
-        "税额": "tax_amount",
-        "价税合计": "total_amount",
-        "销售方名称": "seller_name",
-        "销售方纳税人识别号": "seller_tax_number",
-        "购买方名称": "buyer_name",
-        "购买方纳税人识别号": "buyer_tax_number",
-    }
-
-    normalized = df.rename(columns=column_map)
-
-    invoices = []
-    for _, row in normalized.iterrows():
-        # Parse date
-        issue_date = row.get("issue_date")
-        if isinstance(issue_date, str):
-            issue_date = date.fromisoformat(issue_date)
-        elif hasattr(issue_date, "date"):
-            issue_date = issue_date.date()
-        else:
-            issue_date = date.today()
-
-        # Normalize invoice type
-        inv_type = str(row.get("invoice_type", "VAT_SPECIAL")).upper()
-        if "普通" in inv_type:
-            inv_type = "VAT_NORMAL"
-        else:
-            inv_type = "VAT_SPECIAL"
-
-        invoices.append({
-            "invoice_number": str(row.get("invoice_number", "")),
-            "invoice_type": inv_type,
-            "issue_date": issue_date,
-            "amount": float(row.get("amount", 0)),
-            "tax_amount": float(row.get("tax_amount", 0)),
-            "total_amount": float(row.get("total_amount", 0)),
-            "seller_name": str(row.get("seller_name", "")),
-            "seller_tax_number": str(row.get("seller_tax_number", "")),
-            "buyer_name": str(row.get("buyer_name", "")),
-            "buyer_tax_number": str(row.get("buyer_tax_number", "")),
-        })
-
-    return invoices
-
-
-async def _parse_excel_or_csv(file: UploadFile, filename: str) -> str:
-    """Parse Excel/CSV file and return raw text for AI parsing."""
-    import pandas as pd
-    from io import BytesIO
-
-    content = await file.read()
-    if filename.endswith(".csv"):
-        df = pd.read_csv(BytesIO(content))
-    else:
-        df = pd.read_excel(BytesIO(content))
-
-    # Convert to CSV-like text for AI parsing
-    return df.to_csv(index=False, encoding="utf-8-sig")

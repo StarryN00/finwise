@@ -172,11 +172,15 @@ class InvoiceResponse(BaseModel):
     enterprise_id: uuid.UUID
     invoice_number: str
     invoice_type: str
+    direction: Optional[str] = None
+    invoice_kind: Optional[str] = None
     issue_date: date
     amount: Decimal
     tax_amount: Decimal
     total_amount: Decimal
     seller_name: str
+    item_name: Optional[str] = None
+    invoice_status: Optional[str] = None
     status: str
     matched_invoice_id: Optional[uuid.UUID] = None
     created_at: datetime

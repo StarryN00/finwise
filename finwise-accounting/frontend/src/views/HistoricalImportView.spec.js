@@ -21,6 +21,7 @@ vi.mock('../api/client', () => ({
   api: {
     historicalImports: {
       importGbt24589: vi.fn(),
+      list: vi.fn(),
     },
   },
 }))
@@ -42,6 +43,10 @@ describe('HistoricalImportView', () => {
     expect(source).toContain('余额表')
     expect(source).toContain('导入历史账套')
     expect(source).toContain('导入批次')
+    expect(source).toContain('导入记录')
+    expect(source).toContain('导入时间')
+    expect(source).toContain('数据时间范围')
+    expect(source).toContain('源文件')
     expect(source).toContain('凭证数量')
     expect(source).toContain('借贷不平凭证')
   })
@@ -60,6 +65,7 @@ describe('HistoricalImportView', () => {
     expect(source).toContain('@change="selectBalanceFile"')
     expect(source).toContain('@click="submitHistoricalImport"')
     expect(source).toContain('api.historicalImports.importGbt24589')
+    expect(source).toContain('api.historicalImports.list')
     expect(source).toContain('formData.append')
     expect(source).not.toContain('@click="api.')
   })
@@ -91,8 +97,31 @@ describe('HistoricalImportView', () => {
         },
       },
     })
+    api.historicalImports.list.mockResolvedValue({
+      data: [
+        {
+          id: 'batch-1',
+          status: 'IMPORTED',
+          fiscal_year: 2026,
+          period_start_month: 1,
+          period_end_month: 3,
+          created_ledger_rows: 4664,
+          created_balance_rows: 297,
+          ledger_filename: '序时账_2026.xls',
+          balance_filename: '余额表_2026.xls',
+          source_metadata: {
+            ledger_period_text: '2026年01月至2026年03月',
+            balance_period_text: '2026年01月至2026年03月',
+          },
+          created_at: '2026-06-10T10:00:00',
+        },
+      ],
+    })
     const wrapper = mount(HistoricalImportView, {
       global: {
+        directives: {
+          loading: {},
+        },
         stubs: {
           DataTableShell: { template: '<section><slot /></section>' },
           PackageContextBar: { template: '<div />' },
@@ -102,7 +131,10 @@ describe('HistoricalImportView', () => {
           ElInputNumber: { template: '<input />' },
           ElOption: true,
           ElSelect: { template: '<select><slot /></select>' },
-          ElTable: { props: ['data'], template: '<table><tbody><tr v-for="row in data" :key="row.label"><td>{{ row.label }}</td><td>{{ row.value }}</td></tr></tbody></table>' },
+          ElTable: {
+            props: ['data'],
+            template: '<table><tbody><tr v-for="(row, index) in data" :key="row.id || row.label || index"><td v-for="value in row" :key="String(value)">{{ value }}</td></tr></tbody></table>',
+          },
           ElTableColumn: true,
           ElTag: { template: '<span><slot /></span>' },
         },
@@ -118,11 +150,18 @@ describe('HistoricalImportView', () => {
     await flushPromises()
 
     expect(api.historicalImports.importGbt24589).toHaveBeenCalledWith('enterprise-1', expect.any(FormData))
+    expect(api.historicalImports.list).toHaveBeenCalledWith('enterprise-1')
     const formData = api.historicalImports.importGbt24589.mock.calls[0][1]
     expect(formData.get('fiscal_year')).toBe('2026')
     expect(formData.get('period_start_month')).toBe('1')
     expect(formData.get('period_end_month')).toBe('3')
     expect(wrapper.text()).toContain('2026 年 1 月至 3 月 历史账套已导入：序时账 4664 行，余额表 297 行')
+    expect(wrapper.text()).toContain('2026年01月至2026年03月')
+    expect(wrapper.text()).toContain('序时账 4664 行')
+    expect(wrapper.text()).toContain('余额表 297 行')
+    expect(wrapper.text()).toContain('序时账_2026.xls')
+    expect(wrapper.text()).toContain('余额表_2026.xls')
+    expect(wrapper.text()).toContain('已导入')
     expect(wrapper.text()).toContain('凭证数量')
     expect(wrapper.text()).toContain('1060')
   })

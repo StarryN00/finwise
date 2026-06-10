@@ -193,7 +193,7 @@ import { ref, reactive, onMounted } from 'vue'
 import { useRouter } from 'vue-router'
 import { ElMessage, ElMessageBox } from 'element-plus'
 import { useAuthStore } from '@/stores/auth'
-import api from '@/stores/auth'
+import api from '@/api'
 
 const router = useRouter()
 const authStore = useAuthStore()
@@ -266,7 +266,7 @@ const fetchEnterprises = async () => {
     if (filterStatus.value) params.status = filterStatus.value
     if (filterSource.value) params.source = filterSource.value
 
-    const response = await api.get('/api/enterprises', { params })
+    const response = await api.get('/enterprises', { params })
     enterprises.value = response.data.items
     total.value = response.data.total
   } catch (error) {
@@ -311,10 +311,10 @@ const submitForm = async () => {
   try {
     await formRef.value.validate()
     if (dialogMode.value === 'add') {
-      await api.post('/api/enterprises', form)
+      await api.post('/enterprises', form)
       ElMessage.success('添加成功')
     } else {
-      await api.put(`/api/enterprises/${editingId.value}`, form)
+      await api.put(`/enterprises/${editingId.value}`, form)
       ElMessage.success('更新成功')
     }
     dialogVisible.value = false
@@ -333,7 +333,7 @@ const deleteEnterprise = async (row) => {
     await ElMessageBox.confirm(`确定要删除企业 "${row.name}" 吗？`, '提示', {
       type: 'warning'
     })
-    await api.delete(`/api/enterprises/${row.id}`)
+    await api.delete(`/enterprises/${row.id}`)
     ElMessage.success('删除成功')
     fetchEnterprises()
   } catch (error) {

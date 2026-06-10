@@ -76,7 +76,41 @@
   </section>
 
   <DataTableShell
-    title="导入批次"
+    title="导入记录"
+    description="记录每次历史账套导入的时间、账套期间、数据时间范围、文件名称和导入结果。"
+  >
+    <div class="historical-record-scroll">
+      <el-table v-loading="isLoadingRecords" :data="importRecords" class="historical-record-table" stripe>
+        <el-table-column prop="createdAtLabel" label="导入时间" width="156" />
+        <el-table-column prop="periodLabel" label="账套期间" width="136" />
+        <el-table-column prop="dataRangeLabel" label="数据时间范围" width="190" show-overflow-tooltip />
+        <el-table-column label="结果" width="140">
+          <template #default="{ row }">
+            <el-tag :type="statusTagType(row.status)" effect="light">{{ row.statusLabel }}</el-tag>
+          </template>
+        </el-table-column>
+        <el-table-column label="数据量" width="158">
+          <template #default="{ row }">
+            <div class="record-stack">
+              <span>{{ row.ledgerRowsLabel }}</span>
+              <span>{{ row.balanceRowsLabel }}</span>
+            </div>
+          </template>
+        </el-table-column>
+        <el-table-column label="源文件" min-width="320" show-overflow-tooltip>
+          <template #default="{ row }">
+            <div class="record-stack">
+              <span>序时账：{{ row.ledgerFileName }}</span>
+              <span>余额表：{{ row.balanceFileName }}</span>
+            </div>
+          </template>
+        </el-table-column>
+      </el-table>
+    </div>
+  </DataTableShell>
+
+  <DataTableShell
+    title="导入批次校验"
     description="显示最近一次历史账套导入后的结构化行数、借贷校验和异常样例。"
   >
     <div class="historical-summary-scroll">
@@ -112,6 +146,8 @@ const balanceFile = ref(null)
 const isSubmitting = ref(false)
 const importResult = ref(null)
 const lastFeedback = ref('')
+const importRecords = ref([])
+const isLoadingRecords = ref(false)
 const monthOptions = Array.from({ length: 12 }, (_, index) => {
   const value = index + 1
   return { value, label: `${value} 月` }
@@ -127,9 +163,20 @@ watch(
   { immediate: true },
 )
 
+watch(
+  () => form.enterpriseId,
+  (enterpriseId) => {
+    if (enterpriseId) {
+      loadImportRecords(enterpriseId)
+    }
+  },
+)
+
 onMounted(() => {
   if (!workspace.enterprises.length) {
     workspace.loadWorkspace()
+  } else if (form.enterpriseId) {
+    loadImportRecords(form.enterpriseId)
   }
 })
 
@@ -191,6 +238,7 @@ async function submitHistoricalImport() {
     const response = await api.historicalImports.importGbt24589(form.enterpriseId, formData)
     importResult.value = response.data
     lastFeedback.value = `${periodLabel()} 历史账套已导入：序时账 ${response.data.created_ledger_rows} 行，余额表 ${response.data.created_balance_rows} 行`
+    await loadImportRecords(form.enterpriseId)
     ElMessage.success('历史账套已导入')
   } catch (error) {
     const detail = error?.response?.data?.detail || error?.message || '历史账套导入失败'
@@ -201,6 +249,29 @@ async function submitHistoricalImport() {
   }
 }
 
+async function loadImportRecords(enterpriseId = form.enterpriseId) {
+  if (!enterpriseId) return
+  isLoadingRecords.value = true
+  try {
+    const response = await api.historicalImports.list(enterpriseId)
+    importRecords.value = (response.data || []).map((record) => ({
+      ...record,
+      createdAtLabel: formatDateTime(record.created_at),
+      periodLabel: importPeriodLabel(record),
+      dataRangeLabel: importDataRangeLabel(record),
+      statusLabel: statusLabel(record.status),
+      ledgerRowsLabel: `序时账 ${record.created_ledger_rows} 行`,
+      balanceRowsLabel: `余额表 ${record.created_balance_rows} 行`,
+      ledgerFileName: record.ledger_filename || '-',
+      balanceFileName: record.balance_filename || '-',
+    }))
+  } catch (error) {
+    ElMessage.error(error?.response?.data?.detail || error?.message || '导入记录加载失败')
+  } finally {
+    isLoadingRecords.value = false
+  }
+}
+
 function statusLabel(status) {
   const labels = {
     IMPORTED: '已导入',
@@ -208,6 +279,49 @@ function statusLabel(status) {
     FAILED: '导入失败',
   }
   return labels[status] || '未知状态'
+}
+
+function statusTagType(status) {
+  const types = {
+    IMPORTED: 'success',
+    IMPORTED_WITH_ERRORS: 'warning',
+    FAILED: 'danger',
+  }
+  return types[status] || 'info'
+}
+
+function importPeriodLabel(record) {
+  if (record.period_start_month === 1 && record.period_end_month === 12) return `${record.fiscal_year} 年`
+  return `${record.fiscal_year} 年 ${record.period_start_month} 月至 ${record.period_end_month} 月`
+}
+
+function importDataRangeLabel(record) {
+  const metadata = record.source_metadata || {}
+  const ledgerPeriod = metadata.ledger_period_text
+  const balancePeriod = metadata.balance_period_text
+  if (ledgerPeriod && balancePeriod && ledgerPeriod !== balancePeriod) {
+    return `序时账 ${ledgerPeriod} / 余额表 ${balancePeriod}`
+  }
+  return ledgerPeriod || balancePeriod || importPeriodText(record)
+}
+
+function importPeriodText(record) {
+  const startMonth = String(record.period_start_month).padStart(2, '0')
+  const endMonth = String(record.period_end_month).padStart(2, '0')
+  return `${record.fiscal_year}年${startMonth}月至${record.fiscal_year}年${endMonth}月`
+}
+
+function formatDateTime(value) {
+  if (!value) return '-'
+  const date = new Date(value)
+  if (Number.isNaN(date.getTime())) return '-'
+  return date.toLocaleString('zh-CN', {
+    year: 'numeric',
+    month: '2-digit',
+    day: '2-digit',
+    hour: '2-digit',
+    minute: '2-digit',
+  })
 }
 
 function moneyText(value) {
@@ -305,9 +419,31 @@ function translateImportError(message) {
   overflow-x: auto;
 }
 
+.historical-record-scroll {
+  width: 100%;
+  overflow-x: auto;
+}
+
 .historical-summary-table {
   width: 100%;
   min-width: 980px;
+}
+
+.historical-record-table {
+  width: 100%;
+  min-width: 1100px;
+}
+
+.record-stack {
+  display: grid;
+  gap: 2px;
+  color: var(--fw-text);
+  font-size: 13px;
+  line-height: 1.45;
+}
+
+.record-stack span + span {
+  color: var(--fw-text-muted);
 }
 
 @media (max-width: 860px) {

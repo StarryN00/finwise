@@ -4,15 +4,15 @@
     <div class="page-header">
       <div class="header-left">
         <div class="page-eyebrow">§ 03 · INVOICE CENTER —</div>
-        <h1 class="page-title">发票管理</h1>
-        <p class="page-desc">管理企业进项与销项发票，记录银行流水并进行智能匹配。</p>
+        <h1 class="page-title">月度数据导入</h1>
+        <p class="page-desc">导入电子税务局进销项明细与银行流水，形成财务健康报告的数据底座。</p>
       </div>
     </div>
 
     <!-- Segmented Control -->
     <div class="seg-wrap">
       <div class="seg">
-        <button :class="{ on: activeTab === 'invoices' }" @click="activeTab = 'invoices'">发票管理</button>
+        <button :class="{ on: activeTab === 'invoices' }" @click="activeTab = 'invoices'">进销项明细</button>
         <button :class="{ on: activeTab === 'bank' }" @click="activeTab = 'bank'">银行流水</button>
       </div>
     </div>
@@ -40,18 +40,18 @@
           <div class="upload-actions">
             <div v-if="invoiceFileName" class="file-name">{{ invoiceFileName }}</div>
             <button class="btn primary" :disabled="!invoiceFile || !invoiceEnterpriseId" :loading="invoiceUploading" @click="submitInvoiceImport">
-              导入发票
+              导入进销项
             </button>
           </div>
         </div>
 
-        <div class="upload-meta">支持 .xls · .xlsx · .csv 格式，文件不超过 10MB</div>
+        <div class="upload-meta">支持电子税务局导出的 .xls · .xlsx · .csv 进销项明细</div>
 
         <div class="section-divider"></div>
 
         <!-- Invoice Table -->
         <div v-if="invoiceList.length > 0">
-          <div class="result-count">共 {{ invoiceList.length }} 条发票记录</div>
+          <div class="result-count">最近导入 {{ invoiceList.length }} 条进销项记录</div>
           <table class="table">
             <thead>
               <tr>
@@ -59,24 +59,24 @@
                 <th>开票日期</th>
                 <th style="text-align: right;">金额（含税）</th>
                 <th style="text-align: right;">税额</th>
-                <th>类型</th>
+                <th>方向</th>
                 <th>状态</th>
               </tr>
             </thead>
             <tbody>
-              <tr v-for="row in invoiceList" :key="row.invoiceNumber">
+              <tr v-for="row in invoiceList" :key="row.invoice_number || row.invoiceNumber">
                 <td><span class="mono" style="font-size: 12px;">{{ row.invoiceNumber }}</span></td>
                 <td><span class="mono" style="font-size: 12px; color: var(--mute);">{{ row.date }}</span></td>
                 <td style="text-align: right;"><span class="mono">¥{{ Number(row.amount).toLocaleString() }}</span></td>
                 <td style="text-align: right;"><span class="mono">¥{{ Number(row.taxAmount || 0).toLocaleString() }}</span></td>
                 <td>
                   <span class="pill" :class="row.type === 'SALES' ? 'pill--ok' : 'pill--info'">
-                    {{ row.type === 'SALES' ? '销项' : '进项' }}
+                    {{ directionLabel(row.direction || row.type) }}
                   </span>
                 </td>
                 <td>
-                  <span class="pill" :class="row.status === 'VALID' ? 'pill--ok' : 'pill--idle'">
-                    {{ row.status === 'VALID' ? '有效' : '作废' }}
+                  <span class="pill" :class="row.invoice_status === 'VALID' ? 'pill--ok' : 'pill--idle'">
+                    {{ row.invoice_status === 'VOID' ? '作废' : '有效' }}
                   </span>
                 </td>
               </tr>
@@ -85,7 +85,7 @@
         </div>
         <div v-else class="empty-state">
           <div class="empty-icon">⊙</div>
-          <div class="empty-text">暂无发票数据，请先上传导入</div>
+          <div class="empty-text">暂无进销项数据，请先上传导入</div>
         </div>
       </div>
 
@@ -107,7 +107,7 @@
             <div class="dropzone-icon">↑</div>
             <div class="dropzone-main">拖放银行流水 Excel 文件</div>
             <div class="dropzone-sub">或点击选择文件</div>
-            <input type="file" accept=".xls,.xlsx,.csv" class="file-input" @change="onBankFileChange" />
+            <input type="file" accept=".xls,.xlsx,.csv,.pdf" class="file-input" @change="onBankFileChange" />
           </div>
           <div class="upload-actions">
             <div v-if="bankFileName" class="file-name">{{ bankFileName }}</div>
@@ -192,9 +192,11 @@
 
 <script setup>
 import { ref, reactive, onMounted, computed } from 'vue'
+import { useRoute } from 'vue-router'
 import { ElMessage } from 'element-plus'
 import api from '@/api'
 
+const route = useRoute()
 const activeTab = ref('invoices')
 const isDragging = ref(false)
 const isBankDragging = ref(false)
@@ -209,6 +211,7 @@ const invoiceFile = ref(null)
 const invoiceFileName = ref('')
 const invoiceUploading = ref(false)
 const invoiceList = ref([])
+const invoiceBatch = ref(null)
 
 const onInvoiceFileChange = (e) => {
   const f = e.target.files[0]
@@ -222,15 +225,33 @@ const submitInvoiceImport = async () => {
   try {
     const formData = new FormData()
     formData.append('file', invoiceFile.value)
-    const res = await api.post(`/api/import/invoices?enterprise_id=${invoiceEnterpriseId.value}`, formData, {
+    const res = await api.post(`/import/invoices?enterprise_id=${invoiceEnterpriseId.value}`, formData, {
       headers: { 'Content-Type': 'multipart/form-data' }
     })
-    ElMessage.success(`发票导入成功，共 ${res.data.total_rows} 条`)
-    invoiceList.value = res.data.invoices || []
+    invoiceBatch.value = res.data
+    if (res.data.status === 'FAILED') {
+      ElMessage.error(res.data.error_message || '进销项导入失败')
+    } else {
+      ElMessage.success(`进销项导入完成，共 ${res.data.total_rows} 条`)
+      invoiceList.value = await loadImportedInvoices(invoiceEnterpriseId.value)
+    }
     invoiceFile.value = null
     invoiceFileName.value = ''
   } catch (e) { ElMessage.error(e.response?.data?.detail || '发票导入失败') }
   finally { invoiceUploading.value = false }
+}
+
+const loadImportedInvoices = async (enterpriseId) => {
+  const res = await api.get(`/enterprises/${enterpriseId}/financials`, { params: { limit: 100 } })
+  return (res.data.recent_invoices || []).map(row => ({
+    ...row,
+    invoiceNumber: row.invoice_number,
+    date: row.issue_date,
+    amount: row.total_amount,
+    taxAmount: row.tax_amount,
+    type: row.direction || row.invoice_type,
+    status: row.status
+  }))
 }
 
 // Bank import
@@ -258,14 +279,19 @@ const submitBankImport = async () => {
   try {
     const formData = new FormData()
     formData.append('file', bankFile.value)
-    const res = await api.post(`/api/import/bank_statements?enterprise_id=${bankEnterpriseId.value}`, formData, {
+    const res = await api.post(`/import/bank_statements?enterprise_id=${bankEnterpriseId.value}`, formData, {
       headers: { 'Content-Type': 'multipart/form-data' }
     })
-    importBatchId.value = res.data.batch_id
-    parseStatus.value = 'PENDING'
+    importBatchId.value = res.data.job_id
+    parseStatus.value = res.data.status || 'COMPLETED'
     parsedTransactions.value = []
     matchResults.value = []
-    ElMessage.success('银行流水上传成功，可点击"开始 AI 解析"')
+    if (parseStatus.value === 'COMPLETED') {
+      await loadBankPreview()
+      ElMessage.success('银行流水导入并解析完成')
+    } else {
+      ElMessage.success('银行流水上传成功，可点击"开始 AI 解析"')
+    }
     bankFile.value = null
     bankFileName.value = ''
   } catch (e) { ElMessage.error(e.response?.data?.detail || '上传失败') }
@@ -280,7 +306,8 @@ const parseStatusClass = computed(() => ({
 const parseStatusText = computed(() => ({
   PENDING: '等待解析',
   PROCESSING: 'AI 解析中...',
-  COMPLETED: '解析完成'
+  COMPLETED: '解析完成',
+  FAILED: '解析失败'
 }[parseStatus.value]))
 
 const runAiParse = async () => {
@@ -288,13 +315,8 @@ const runAiParse = async () => {
   parseLoading.value = true
   parseStatus.value = 'PROCESSING'
   try {
-    await api.post('/api/parse/bank_statement', { enterprise_id: bankEnterpriseId.value, file_id: importBatchId.value })
-    try {
-      const previewRes = await api.get(`/api/parse/bank_statement/preview/${importBatchId.value}`, {
-        params: { enterprise_id: bankEnterpriseId.value }
-      })
-      parsedTransactions.value = previewRes.data.transactions || []
-    } catch { parsedTransactions.value = [] }
+    await api.post('/parse/bank_statement', { enterprise_id: bankEnterpriseId.value, file_id: importBatchId.value })
+    await loadBankPreview()
     parseStatus.value = 'COMPLETED'
   } catch (e) {
     parseStatus.value = 'PENDING'
@@ -302,11 +324,27 @@ const runAiParse = async () => {
   } finally { parseLoading.value = false }
 }
 
+const loadBankPreview = async () => {
+  try {
+    const previewRes = await api.get(`/parse/bank_statement/preview/${importBatchId.value}`, {
+      params: { enterprise_id: bankEnterpriseId.value }
+    })
+    parsedTransactions.value = (previewRes.data.transactions || []).map(tx => ({
+      ...tx,
+      date: tx.transaction_date,
+      description: tx.summary,
+      amount: tx.credit_amount || tx.debit_amount || 0
+    }))
+  } catch {
+    parsedTransactions.value = []
+  }
+}
+
 const runMatch = async () => {
   if (!bankEnterpriseId.value) return
   matchLoading.value = true
   try {
-    const res = await api.post('/api/parse/match', { enterprise_id: bankEnterpriseId.value })
+    const res = await api.post('/parse/match', { enterprise_id: bankEnterpriseId.value })
     matchResults.value = (res.data.candidates || []).map(c => ({
       invoiceNumber: c.invoice_number || `INV-${c.invoice_index}`,
       amount: c.invoice_total_amount || (c.transaction_debit_amount || c.transaction_credit_amount || 0),
@@ -322,11 +360,16 @@ const runMatch = async () => {
 }
 
 const confidencePillClass = (c) => c >= 0.9 ? 'pill--ok' : c >= 0.7 ? 'pill--warn' : 'pill--alert'
+const directionLabel = (value) => ({ SALES: '销项', PURCHASE: '进项', OUTPUT: '销项', INPUT: '进项' }[value] || '待确认')
 
 const fetchEnterprises = async () => {
   try {
-    const res = await api.get('/api/enterprises', { params: { page: 1, page_size: 100 } })
+    const res = await api.get('/enterprises', { params: { page: 1, page_size: 100 } })
     enterprises.value = res.data.items || []
+    if (route.query.enterprise_id) {
+      invoiceEnterpriseId.value = route.query.enterprise_id
+      bankEnterpriseId.value = route.query.enterprise_id
+    }
   } catch (e) { ElMessage.error('加载企业列表失败') }
 }
 

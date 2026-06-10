@@ -22,6 +22,7 @@ from backend.tax.calculator import (
     TaxCalculationInput,
     TaxpayerType,
 )
+from backend.services.health_report_template import build_financial_health_report, save_financial_health_report
 
 
 class ReportType(str, Enum):
@@ -161,9 +162,15 @@ def _aggregate_invoice_data(enterprise_id: str, period_year: int, period_month: 
             except ValueError:
                 continue
 
-    # Separate sales (销项, invoice_type contains SPECIAL) and purchases (进项)
-    sales_invoices = [inv for inv in period_invoices if 'SPECIAL' in inv.get('invoice_type', '')]
-    purchase_invoices = [inv for inv in period_invoices if 'SPECIAL' not in inv.get('invoice_type', '')]
+    valid_invoices = [inv for inv in period_invoices if inv.get('invoice_status') != 'VOID']
+    sales_invoices = [
+        inv for inv in valid_invoices
+        if (inv.get('direction') or inv.get('invoice_type')) in {'SALES', 'OUTPUT'}
+    ]
+    purchase_invoices = [
+        inv for inv in valid_invoices
+        if (inv.get('direction') or inv.get('invoice_type')) in {'PURCHASE', 'INPUT'}
+    ]
 
     def sum_invoices(invoices: List[dict]) -> tuple:
         total_excl_tax = Decimal('0')
@@ -620,10 +627,12 @@ class ReportGenerator:
                 period_month=request.period_month or datetime.now().month
             )
         elif request.report_type == ReportType.HEALTH_ANALYSIS:
-            return self.generate_health_report(
-                enterprise_id=request.enterprise_id,
-                report_type=request.options.get("report_type", "FULL") if request.options else "FULL"
+            report = build_financial_health_report(
+                request.enterprise_id,
+                request.period_year or datetime.now().year,
+                request.period_month or datetime.now().month,
             )
+            return save_financial_health_report(report)
         elif request.report_type == ReportType.FINANCING_SCORE:
             return self.generate_financing_score_report(
                 enterprise_id=request.enterprise_id

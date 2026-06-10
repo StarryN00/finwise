@@ -13,7 +13,8 @@ const sourceMode = ref('monthly')
 const selectedEnterpriseId = ref('')
 const selectedPeriodPackageId = ref('')
 const selectedAccountCode = ref('')
-const historicalFiscalYear = ref(new Date().getFullYear())
+const currentFiscalYear = new Date().getFullYear()
+const historicalFiscalYear = ref(currentFiscalYear)
 const historicalStartMonth = ref(1)
 const historicalEndMonth = ref(12)
 const activeTab = ref('journal')
@@ -56,6 +57,10 @@ const monthOptions = Array.from({ length: 12 }, (_, index) => {
   const value = index + 1
   return { value, label: `${value} 月` }
 })
+const yearOptions = Array.from({ length: 10 }, (_, index) => currentFiscalYear + 1 - index).map((year) => ({
+  value: year,
+  label: `${year}`,
+}))
 const historicalParams = computed(() => ({
   fiscal_year: Number(historicalFiscalYear.value),
   period_start_month: Number(historicalStartMonth.value),
@@ -234,7 +239,7 @@ function restoreContext() {
     selectedEnterpriseId.value = parsed.enterpriseId || ''
     selectedPeriodPackageId.value = parsed.packageId || ''
     sourceMode.value = parsed.sourceMode === 'historical' ? 'historical' : 'monthly'
-    historicalFiscalYear.value = parsed.historicalFiscalYear || historicalFiscalYear.value
+    historicalFiscalYear.value = Number(parsed.historicalFiscalYear) || historicalFiscalYear.value
     historicalStartMonth.value = parsed.historicalStartMonth || 1
     historicalEndMonth.value = parsed.historicalEndMonth || 12
   } catch {
@@ -444,7 +449,9 @@ function goToPage(page) {
         </label>
         <label v-if="sourceMode === 'historical'" class="field">
           <span>会计年度</span>
-          <el-input v-model="historicalFiscalYear" placeholder="会计年度" />
+          <el-select v-model="historicalFiscalYear" placeholder="会计年度">
+            <el-option v-for="year in yearOptions" :key="year.value" :label="year.label" :value="year.value" />
+          </el-select>
         </label>
         <label v-if="sourceMode === 'historical'" class="field">
           <span>起始月份</span>

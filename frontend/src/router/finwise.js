@@ -31,6 +31,11 @@ export const finwiseRouter = {
             component: () => import('@/views/enterprises/index.vue')
           },
           {
+            path: 'enterprises/:id',
+            name: 'EnterpriseDetail',
+            component: () => import('@/views/enterprises/detail.vue')
+          },
+          {
             path: 'invoices',
             name: 'Invoices',
             component: () => import('@/views/invoices/index.vue')

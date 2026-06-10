@@ -1,0 +1,814 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>智税管家 - 智能凭证功能确认稿</title>
+  <style>
+    :root {
+      --ink: #172033;
+      --muted: #5f6b7a;
+      --line: #d9e2ef;
+      --soft: #f5f8fc;
+      --brand: #2563eb;
+      --brand-soft: #e8f0ff;
+      --ok: #0f766e;
+      --warn: #b45309;
+      --danger: #b91c1c;
+      --paper: #ffffff;
+    }
+
+    * {
+      box-sizing: border-box;
+    }
+
+    body {
+      margin: 0;
+      background: #eef3f9;
+      color: var(--ink);
+      font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", "PingFang SC", "Microsoft YaHei", sans-serif;
+      line-height: 1.65;
+    }
+
+    .page {
+      max-width: 1120px;
+      margin: 0 auto;
+      padding: 32px 24px 56px;
+    }
+
+    .document {
+      overflow: hidden;
+      border: 1px solid var(--line);
+      border-radius: 8px;
+      background: var(--paper);
+      box-shadow: 0 18px 48px rgba(23, 32, 51, 0.08);
+    }
+
+    header {
+      padding: 32px 40px 26px;
+      border-bottom: 1px solid var(--line);
+      background: linear-gradient(180deg, #ffffff 0%, #f8fbff 100%);
+    }
+
+    .eyebrow {
+      margin: 0 0 8px;
+      color: var(--brand);
+      font-size: 14px;
+      font-weight: 700;
+    }
+
+    h1 {
+      margin: 0;
+      font-size: 30px;
+      line-height: 1.25;
+      letter-spacing: 0;
+    }
+
+    .summary {
+      max-width: 840px;
+      margin: 14px 0 0;
+      color: var(--muted);
+      font-size: 16px;
+    }
+
+    .meta {
+      display: flex;
+      flex-wrap: wrap;
+      gap: 10px;
+      margin-top: 20px;
+    }
+
+    .tag {
+      display: inline-flex;
+      align-items: center;
+      min-height: 28px;
+      padding: 4px 10px;
+      border: 1px solid var(--line);
+      border-radius: 999px;
+      background: #fff;
+      color: var(--muted);
+      font-size: 13px;
+      white-space: nowrap;
+    }
+
+    main {
+      padding: 0 40px 40px;
+    }
+
+    section {
+      padding: 30px 0;
+      border-bottom: 1px solid var(--line);
+    }
+
+    section:last-child {
+      border-bottom: 0;
+    }
+
+    h2 {
+      margin: 0 0 14px;
+      font-size: 22px;
+      line-height: 1.35;
+      letter-spacing: 0;
+    }
+
+    h3 {
+      margin: 0 0 8px;
+      font-size: 17px;
+      letter-spacing: 0;
+    }
+
+    p {
+      margin: 0 0 12px;
+    }
+
+    ul,
+    ol {
+      margin: 10px 0 0;
+      padding-left: 22px;
+    }
+
+    li + li {
+      margin-top: 6px;
+    }
+
+    .grid {
+      display: grid;
+      grid-template-columns: repeat(3, minmax(0, 1fr));
+      gap: 14px;
+      margin-top: 16px;
+    }
+
+    .panel {
+      min-width: 0;
+      padding: 16px;
+      border: 1px solid var(--line);
+      border-radius: 8px;
+      background: #fff;
+    }
+
+    .panel.soft {
+      background: var(--soft);
+    }
+
+    .panel strong {
+      display: block;
+      margin-bottom: 6px;
+      color: var(--ink);
+    }
+
+    .panel p {
+      margin: 0;
+      color: var(--muted);
+      font-size: 14px;
+    }
+
+    .flow {
+      display: grid;
+      grid-template-columns: repeat(6, minmax(0, 1fr));
+      gap: 10px;
+      margin-top: 16px;
+    }
+
+    .step {
+      position: relative;
+      min-height: 112px;
+      padding: 14px 12px;
+      border: 1px solid var(--line);
+      border-radius: 8px;
+      background: #fff;
+    }
+
+    .step b {
+      display: block;
+      color: var(--brand);
+      font-size: 13px;
+    }
+
+    .step span {
+      display: block;
+      margin-top: 6px;
+      font-weight: 700;
+    }
+
+    .step small {
+      display: block;
+      margin-top: 6px;
+      color: var(--muted);
+      font-size: 12px;
+      line-height: 1.5;
+    }
+
+    .table-wrap {
+      overflow-x: auto;
+      margin-top: 14px;
+      border: 1px solid var(--line);
+      border-radius: 8px;
+    }
+
+    table {
+      width: 100%;
+      min-width: 760px;
+      border-collapse: collapse;
+      background: #fff;
+    }
+
+    th,
+    td {
+      padding: 11px 12px;
+      border-bottom: 1px solid var(--line);
+      text-align: left;
+      vertical-align: top;
+      font-size: 14px;
+    }
+
+    th {
+      background: var(--soft);
+      color: var(--ink);
+      font-weight: 700;
+    }
+
+    tr:last-child td {
+      border-bottom: 0;
+    }
+
+    code {
+      padding: 2px 5px;
+      border-radius: 4px;
+      background: var(--brand-soft);
+      color: #1d4ed8;
+      font-family: "SFMono-Regular", Consolas, monospace;
+      font-size: 0.92em;
+    }
+
+    .voucher {
+      margin-top: 14px;
+      overflow: hidden;
+      border: 1px solid var(--line);
+      border-radius: 8px;
+    }
+
+    .voucher-title {
+      display: flex;
+      justify-content: space-between;
+      gap: 12px;
+      padding: 12px 14px;
+      border-bottom: 1px solid var(--line);
+      background: var(--soft);
+      font-weight: 700;
+    }
+
+    .entry {
+      display: grid;
+      grid-template-columns: 80px minmax(180px, 1fr) 150px;
+      gap: 12px;
+      padding: 10px 14px;
+      border-bottom: 1px solid var(--line);
+      font-size: 14px;
+    }
+
+    .entry:last-child {
+      border-bottom: 0;
+    }
+
+    .debit {
+      color: var(--ok);
+      font-weight: 700;
+    }
+
+    .credit {
+      color: var(--warn);
+      font-weight: 700;
+    }
+
+    .amount {
+      text-align: right;
+      font-variant-numeric: tabular-nums;
+    }
+
+    .notice {
+      margin-top: 16px;
+      padding: 14px 16px;
+      border-left: 4px solid var(--brand);
+      border-radius: 6px;
+      background: var(--brand-soft);
+      color: #1e3a8a;
+    }
+
+    .confirm-box {
+      display: grid;
+      gap: 10px;
+      margin-top: 16px;
+    }
+
+    .confirm-item {
+      display: grid;
+      grid-template-columns: 22px minmax(0, 1fr);
+      gap: 10px;
+      align-items: start;
+      padding: 12px 14px;
+      border: 1px solid var(--line);
+      border-radius: 8px;
+      background: #fff;
+    }
+
+    .checkbox {
+      width: 18px;
+      height: 18px;
+      margin-top: 3px;
+      border: 2px solid var(--brand);
+      border-radius: 4px;
+      background: #fff;
+    }
+
+    .confirm-item strong {
+      display: block;
+      margin-bottom: 2px;
+    }
+
+    .confirm-item span {
+      color: var(--muted);
+      font-size: 14px;
+    }
+
+    .status {
+      display: inline-flex;
+      align-items: center;
+      padding: 2px 8px;
+      border-radius: 999px;
+      font-size: 12px;
+      font-weight: 700;
+      white-space: nowrap;
+    }
+
+    .status.required {
+      background: #fee2e2;
+      color: var(--danger);
+    }
+
+    .status.ai {
+      background: var(--brand-soft);
+      color: #1d4ed8;
+    }
+
+    .status.manual {
+      background: #fef3c7;
+      color: var(--warn);
+    }
+
+    footer {
+      padding: 22px 40px;
+      border-top: 1px solid var(--line);
+      background: var(--soft);
+      color: var(--muted);
+      font-size: 13px;
+    }
+
+    @media (max-width: 900px) {
+      .page {
+        padding: 18px 12px 36px;
+      }
+
+      header,
+      main,
+      footer {
+        padding-left: 20px;
+        padding-right: 20px;
+      }
+
+      h1 {
+        font-size: 24px;
+      }
+
+      .grid,
+      .flow {
+        grid-template-columns: 1fr;
+      }
+
+      .step {
+        min-height: auto;
+      }
+
+      .entry {
+        grid-template-columns: 70px minmax(0, 1fr);
+      }
+
+      .entry .amount {
+        grid-column: 2;
+        text-align: left;
+      }
+    }
+
+    @media print {
+      body {
+        background: #fff;
+      }
+
+      .page {
+        max-width: none;
+        padding: 0;
+      }
+
+      .document {
+        border: 0;
+        border-radius: 0;
+        box-shadow: none;
+      }
+
+      section {
+        break-inside: avoid;
+      }
+    }
+  </style>
+</head>
+<body>
+  <div class="page">
+    <article class="document">
+      <header>
+        <p class="eyebrow">智税管家功能确认稿</p>
+        <h1>智能凭证工作台</h1>
+        <p class="summary">
+          本功能用于把银行流水、进项发票、销项发票和匹配结果，自动整理为会计凭证草稿。系统先给出凭证建议，工作人员确认后再形成正式凭证。
+        </p>
+        <div class="meta">
+          <span class="tag">适用对象：代账公司工作人员</span>
+          <span class="tag">会计准则：小企业会计准则</span>
+          <span class="tag">版本范围：第一版</span>
+          <span class="tag">确认重点：输入、步骤、输出、人工复核</span>
+        </div>
+      </header>
+
+      <main>
+        <section>
+          <h2>一、功能定位</h2>
+          <p>
+            第一版不做完整财务软件替代，而是先做一个可落地的凭证生成和确认工具。
+          </p>
+          <div class="grid">
+            <div class="panel soft">
+              <strong>系统负责</strong>
+              <p>根据流水、发票、匹配关系和历史规则，生成凭证草稿并推荐会计科目。</p>
+            </div>
+            <div class="panel soft">
+              <strong>AI 负责</strong>
+              <p>识别业务类型，推荐摘要、借贷科目、税额科目和金额拆分，并说明原因。</p>
+            </div>
+            <div class="panel soft">
+              <strong>人员负责</strong>
+              <p>审核凭证是否正确，必要时调整科目和金额，确认后形成正式凭证。</p>
+            </div>
+          </div>
+        </section>
+
+        <section>
+          <h2>二、会计科目设置</h2>
+          <p>
+            凭证必须使用会计科目。系统为每个企业自动生成一套小企业会计准则科目表，工作人员只需要做轻量维护。
+          </p>
+          <div class="table-wrap">
+            <table>
+              <thead>
+                <tr>
+                  <th>科目示例</th>
+                  <th>用途</th>
+                  <th>第一版处理方式</th>
+                </tr>
+              </thead>
+              <tbody>
+                <tr>
+                  <td><code>1002 银行存款</code></td>
+                  <td>记录银行收付款</td>
+                  <td>自动启用，可增加银行账户明细</td>
+                </tr>
+                <tr>
+                  <td><code>1122 应收账款</code></td>
+                  <td>记录已开票未收款</td>
+                  <td>用于只有销项发票、没有收款流水的场景</td>
+                </tr>
+                <tr>
+                  <td><code>2202 应付账款</code></td>
+                  <td>记录已收票未付款</td>
+                  <td>用于只有进项发票、没有付款流水的场景</td>
+                </tr>
+                <tr>
+                  <td><code>2221 应交税费</code></td>
+                  <td>记录进项税额、销项税额</td>
+                  <td>系统根据发票税额自动拆分</td>
+                </tr>
+                <tr>
+                  <td><code>5001 主营业务收入</code></td>
+                  <td>记录销售收入</td>
+                  <td>销项发票或收款场景自动推荐</td>
+                </tr>
+                <tr>
+                  <td><code>5602 管理费用</code></td>
+                  <td>记录办公费、差旅费、服务费等</td>
+                  <td>可新增明细科目，AI 根据业务内容推荐</td>
+                </tr>
+              </tbody>
+            </table>
+          </div>
+          <div class="notice">
+            第一版支持查看科目、启用/停用科目、新增明细科目、设置常用科目和业务类型映射；暂不做复杂辅助核算、多币种、多账套。
+          </div>
+        </section>
+
+        <section>
+          <h2>三、输入数据</h2>
+          <div class="grid">
+            <div class="panel">
+              <strong>银行流水</strong>
+              <p>交易日期、摘要、对方户名、借方金额、贷方金额、银行账号、余额。</p>
+            </div>
+            <div class="panel">
+              <strong>进项/销项发票</strong>
+              <p>发票方向、发票号码、开票日期、购买方、销售方、不含税金额、税额、价税合计。</p>
+            </div>
+            <div class="panel">
+              <strong>匹配和规则</strong>
+              <p>流水发票匹配结果、人工确认的业务类型、企业科目表、历史凭证规则。</p>
+            </div>
+          </div>
+        </section>
+
+        <section>
+          <h2>四、生成步骤</h2>
+          <div class="flow">
+            <div class="step">
+              <b>步骤 1</b>
+              <span>准备科目表</span>
+              <small>系统自动生成标准科目，工作人员补充常用明细科目。</small>
+            </div>
+            <div class="step">
+              <b>步骤 2</b>
+              <span>导入数据</span>
+              <small>导入银行流水、进项发票、销项发票。</small>
+            </div>
+            <div class="step">
+              <b>步骤 3</b>
+              <span>完成匹配</span>
+              <small>系统匹配流水和发票，无法确认的进入待处理。</small>
+            </div>
+            <div class="step">
+              <b>步骤 4</b>
+              <span>生成草稿</span>
+              <small>按匹配结果和规则生成凭证草稿。</small>
+            </div>
+            <div class="step">
+              <b>步骤 5</b>
+              <span>AI 推荐</span>
+              <small>AI 推荐业务类型、摘要、借贷科目和解释。</small>
+            </div>
+            <div class="step">
+              <b>步骤 6</b>
+              <span>人工确认</span>
+              <small>工作人员检查、修改、确认，形成正式凭证。</small>
+            </div>
+          </div>
+        </section>
+
+        <section>
+          <h2>五、典型凭证规则</h2>
+          <div class="table-wrap">
+            <table>
+              <thead>
+                <tr>
+                  <th>业务场景</th>
+                  <th>系统生成逻辑</th>
+                  <th>是否需要人工确认</th>
+                </tr>
+              </thead>
+              <tbody>
+                <tr>
+                  <td>销项发票 + 收款流水已匹配</td>
+                  <td>借：银行存款；贷：主营业务收入；贷：应交税费-销项税额</td>
+                  <td><span class="status ai">高置信度可快速确认</span></td>
+                </tr>
+                <tr>
+                  <td>进项发票 + 付款流水已匹配</td>
+                  <td>借：费用/成本科目；借：应交税费-进项税额；贷：银行存款</td>
+                  <td><span class="status manual">费用科目需复核</span></td>
+                </tr>
+                <tr>
+                  <td>只有销项发票，没有收款流水</td>
+                  <td>借：应收账款；贷：主营业务收入；贷：应交税费-销项税额</td>
+                  <td><span class="status manual">需确认是否挂应收</span></td>
+                </tr>
+                <tr>
+                  <td>只有进项发票，没有付款流水</td>
+                  <td>借：费用/成本科目；借：应交税费-进项税额；贷：应付账款</td>
+                  <td><span class="status manual">需确认费用科目</span></td>
+                </tr>
+                <tr>
+                  <td>只有流水，没有发票</td>
+                  <td>根据摘要、对方户名、金额方向推荐科目</td>
+                  <td><span class="status required">必须人工确认</span></td>
+                </tr>
+              </tbody>
+            </table>
+          </div>
+        </section>
+
+        <section>
+          <h2>六、凭证示例</h2>
+          <p>场景：支付办公用品费用，进项发票价税合计 1,130 元，其中不含税金额 1,000 元，税额 130 元。</p>
+          <div class="voucher">
+            <div class="voucher-title">
+              <span>记账凭证草稿</span>
+              <span>摘要：支付办公用品费用</span>
+            </div>
+            <div class="entry">
+              <span class="debit">借</span>
+              <span>560201 管理费用-办公费</span>
+              <span class="amount">1,000.00</span>
+            </div>
+            <div class="entry">
+              <span class="debit">借</span>
+              <span>22210101 应交税费-进项税额</span>
+              <span class="amount">130.00</span>
+            </div>
+            <div class="entry">
+              <span class="credit">贷</span>
+              <span>1002 银行存款</span>
+              <span class="amount">1,130.00</span>
+            </div>
+          </div>
+        </section>
+
+        <section>
+          <h2>七、AI 推荐内容</h2>
+          <p>
+            AI 只给建议，不直接生成正式凭证。正式凭证必须经过系统校验，低置信度或异常凭证必须人工确认。
+          </p>
+          <div class="table-wrap">
+            <table>
+              <thead>
+                <tr>
+                  <th>AI 输出</th>
+                  <th>说明</th>
+                </tr>
+              </thead>
+              <tbody>
+                <tr>
+                  <td>业务类型</td>
+                  <td>例如：办公用品采购、销售收入、银行手续费、服务费支出。</td>
+                </tr>
+                <tr>
+                  <td>凭证摘要</td>
+                  <td>根据流水摘要、发票信息生成简洁摘要。</td>
+                </tr>
+                <tr>
+                  <td>借方科目 / 贷方科目</td>
+                  <td>只能从企业已启用的会计科目中选择。</td>
+                </tr>
+                <tr>
+                  <td>金额拆分</td>
+                  <td>根据发票不含税金额、税额、价税合计拆分。</td>
+                </tr>
+                <tr>
+                  <td>置信度和原因</td>
+                  <td>说明为什么这样推荐，便于工作人员判断。</td>
+                </tr>
+              </tbody>
+            </table>
+          </div>
+        </section>
+
+        <section>
+          <h2>八、人工确认和校验</h2>
+          <p>工作人员确认凭证前，系统必须做以下校验。</p>
+          <div class="confirm-box">
+            <div class="confirm-item">
+              <span class="checkbox"></span>
+              <div>
+                <strong>借贷金额相等</strong>
+                <span>借方合计必须等于贷方合计。</span>
+              </div>
+            </div>
+            <div class="confirm-item">
+              <span class="checkbox"></span>
+              <div>
+                <strong>科目可用</strong>
+                <span>分录必须使用已启用的末级科目。</span>
+              </div>
+            </div>
+            <div class="confirm-item">
+              <span class="checkbox"></span>
+              <div>
+                <strong>金额有效</strong>
+                <span>金额不能为 0，税额和发票税额差异较大时要提示。</span>
+              </div>
+            </div>
+            <div class="confirm-item">
+              <span class="checkbox"></span>
+              <div>
+                <strong>期间正确</strong>
+                <span>凭证日期必须在当前会计期间内。</span>
+              </div>
+            </div>
+            <div class="confirm-item">
+              <span class="checkbox"></span>
+              <div>
+                <strong>来源可追溯</strong>
+                <span>凭证要能查看对应流水、发票和匹配记录。</span>
+              </div>
+            </div>
+          </div>
+        </section>
+
+        <section>
+          <h2>九、输出结果</h2>
+          <div class="grid">
+            <div class="panel">
+              <strong>凭证草稿</strong>
+              <p>包含摘要、分录、来源数据、AI 置信度、待确认状态。</p>
+            </div>
+            <div class="panel">
+              <strong>正式凭证</strong>
+              <p>确认后生成凭证号、制单人、确认时间和完整分录。</p>
+            </div>
+            <div class="panel">
+              <strong>账表基础数据</strong>
+              <p>为序时账、科目发生额、科目余额和后续报表取数提供基础。</p>
+            </div>
+          </div>
+        </section>
+
+        <section>
+          <h2>十、第一版范围</h2>
+          <div class="table-wrap">
+            <table>
+              <thead>
+                <tr>
+                  <th>第一版要做</th>
+                  <th>第一版暂不做</th>
+                </tr>
+              </thead>
+              <tbody>
+                <tr>
+                  <td>小企业会计准则科目表</td>
+                  <td>完整结账、反结账、过账流程</td>
+                </tr>
+                <tr>
+                  <td>企业级科目配置</td>
+                  <td>凭证审核流和打印模板</td>
+                </tr>
+                <tr>
+                  <td>凭证草稿生成</td>
+                  <td>固定资产折旧自动凭证</td>
+                </tr>
+                <tr>
+                  <td>AI 科目推荐</td>
+                  <td>工资社保完整计提</td>
+                </tr>
+                <tr>
+                  <td>人工确认和规则沉淀</td>
+                  <td>辅助核算、多账套、多币种</td>
+                </tr>
+              </tbody>
+            </table>
+          </div>
+        </section>
+
+        <section>
+          <h2>十一、请代账工作人员确认</h2>
+          <p>请重点确认以下问题，确认后再进入开发。</p>
+          <div class="confirm-box">
+            <div class="confirm-item">
+              <span class="checkbox"></span>
+              <div>
+                <strong>科目表</strong>
+                <span>第一版使用“小企业会计准则科目表”是否满足大多数客户企业？</span>
+              </div>
+            </div>
+            <div class="confirm-item">
+              <span class="checkbox"></span>
+              <div>
+                <strong>凭证生成逻辑</strong>
+                <span>销项、进项、只有流水、只有发票这几类场景是否覆盖日常主要工作？</span>
+              </div>
+            </div>
+            <div class="confirm-item">
+              <span class="checkbox"></span>
+              <div>
+                <strong>人工确认方式</strong>
+                <span>先生成草稿，再由工作人员批量确认，这种流程是否符合实际操作习惯？</span>
+              </div>
+            </div>
+            <div class="confirm-item">
+              <span class="checkbox"></span>
+              <div>
+                <strong>后续补充</strong>
+                <span>是否还有必须第一版加入的凭证类型，例如工资、社保、公积金、折旧、结转？</span>
+              </div>
+            </div>
+          </div>
+        </section>
+      </main>
+
+      <footer>
+        本文件为功能确认稿，用于收集代账公司工作人员意见。确认后再进入详细开发设计和实施。
+      </footer>
+    </article>
+  </div>
+</body>
+</html>

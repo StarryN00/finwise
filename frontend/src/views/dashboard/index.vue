@@ -229,7 +229,7 @@ onMounted(async () => {
 
   // Fetch dashboard summary from API; keep mock data as fallback on failure
   try {
-    const res = await api.get('/api/dashboard/summary')
+    const res = await api.get('/dashboard/summary')
     const d = res.data
     // Update KPI cards
     kpis.value[0].value = d.total_enterprises?.toLocaleString?.() ?? String(d.total_enterprises ?? 0)
