@@ -184,18 +184,30 @@ describe('VoucherManagementView', () => {
     await workspace.loadWorkspace()
     await flushPromises()
 
-    expect(wrapper.text()).toContain('月度工作包')
-    expect(wrapper.text()).toContain('历史账套')
+    expect(wrapper.text()).not.toContain('月度工作包')
+    expect(wrapper.text()).not.toContain('历史账套')
     expect(wrapper.text()).toContain('企业主体')
     expect(wrapper.text()).toContain('工作期间')
+    expect(wrapper.find('select[aria-label="凭证来源"]').exists()).toBe(true)
     expect(api.vouchers.list).toHaveBeenCalledWith('package-1', { status: 'CONFIRMED' })
+    expect(api.historicalImports.vouchers).toHaveBeenCalledWith('enterprise-1', {
+      fiscal_year: 2026,
+      period_start_month: 4,
+      period_end_month: 4,
+    })
 
     await wrapper.find('input[placeholder="可输入凭证号/摘要/科目/金额..."]').setValue('聚之利')
     await wrapper.find('button.icon-search-button').trigger('click')
     await flushPromises()
 
     expect(api.vouchers.list).toHaveBeenLastCalledWith('package-1', { status: 'CONFIRMED', keyword: '聚之利' })
-    expect(wrapper.find('[data-testid="voucher-count-summary"]').text()).toContain('已确认凭证')
+    expect(api.historicalImports.vouchers).toHaveBeenLastCalledWith('enterprise-1', {
+      fiscal_year: 2026,
+      period_start_month: 4,
+      period_end_month: 4,
+      keyword: '聚之利',
+    })
+    expect(wrapper.find('[data-testid="voucher-count-summary"]').text()).toContain('凭证')
     expect(wrapper.find('[data-testid="voucher-count"]').text()).toBe('1')
   })
 
@@ -249,16 +261,15 @@ describe('VoucherManagementView', () => {
     expect(wrapper.findAll('input[type="checkbox"]')).toHaveLength(0)
   })
 
-  it('uses a dropdown for historical fiscal year and passes a numeric year to the API', async () => {
+  it('filters to historical vouchers with dropdown fiscal year and numeric API params', async () => {
     const wrapper = mountView()
     const workspace = useWorkspaceStore()
     await workspace.loadWorkspace()
     await flushPromises()
 
-    const historyButton = wrapper.findAll('button').find((button) => button.text() === '历史账套')
-    expect(historyButton).toBeTruthy()
-
-    await historyButton.trigger('click')
+    const sourceSelect = wrapper.find('select[aria-label="凭证来源"]')
+    expect(sourceSelect.exists()).toBe(true)
+    await sourceSelect.setValue('historical')
     await flushPromises()
 
     const yearSelect = wrapper.find('select[aria-label="会计年度"]')
@@ -270,8 +281,8 @@ describe('VoucherManagementView', () => {
 
     expect(api.historicalImports.vouchers).toHaveBeenLastCalledWith('enterprise-1', {
       fiscal_year: 2025,
-      period_start_month: 1,
-      period_end_month: 12,
+      period_start_month: 4,
+      period_end_month: 4,
     })
   })
 
@@ -284,8 +295,8 @@ describe('VoucherManagementView', () => {
     await flushPromises()
 
     expect(wrapper.find('[data-testid="voucher-empty-state"]').exists()).toBe(true)
-    expect(wrapper.text()).toContain('当前月份暂无已确认凭证')
-    expect(wrapper.text()).toContain('凭证管理只展示已确认凭证')
+    expect(wrapper.text()).toContain('当前期间暂无可展示凭证')
+    expect(wrapper.text()).toContain('请确认该企业和期间已经完成凭证确认')
     expect(wrapper.text()).toContain('昆山黛珂特电子科技有限公司 · 2026-04')
     expect(wrapper.find('.voucher-ledger-table').exists()).toBe(false)
     expect(wrapper.find('.period-rail').exists()).toBe(false)
@@ -313,6 +324,11 @@ describe('VoucherManagementView', () => {
 
     expect(wrapper.find('input[placeholder="可输入凭证号/摘要/科目/金额..."]').element.value).toBe('')
     expect(api.vouchers.list).toHaveBeenLastCalledWith('package-1', { status: 'CONFIRMED' })
+    expect(api.historicalImports.vouchers).toHaveBeenLastCalledWith('enterprise-1', {
+      fiscal_year: 2026,
+      period_start_month: 4,
+      period_end_month: 4,
+    })
   })
 
   it('paginates confirmed vouchers with 20 rows per page by default', async () => {
@@ -394,7 +410,7 @@ describe('VoucherManagementView', () => {
     expect(wrapper.text()).not.toContain('已驳回凭证不应出现在凭证管理')
   })
 
-  it('switches monthly work packages from the period rail', async () => {
+  it('switches periods from the period rail without a source-mode tab', async () => {
     api.workspace.snapshot.mockResolvedValue({
       data: {
         selectedPackageId: 'package-1',
@@ -428,6 +444,11 @@ describe('VoucherManagementView', () => {
     await flushPromises()
 
     expect(api.vouchers.list).toHaveBeenLastCalledWith('package-2', { status: 'CONFIRMED' })
+    expect(api.historicalImports.vouchers).toHaveBeenLastCalledWith('enterprise-1', {
+      fiscal_year: 2026,
+      period_start_month: 5,
+      period_end_month: 5,
+    })
     expect(wrapper.find('.period-rail button.active').text()).toBe('05月')
   })
 })

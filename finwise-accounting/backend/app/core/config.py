@@ -22,6 +22,12 @@ class Settings(BaseSettings):
     moonshot_report_model: str = "moonshot-v1-8k"
     moonshot_timeout_seconds: int = 240
     ai_match_confidence_threshold: int = 90
+    finwise_auth_enabled: bool = False
+    finwise_admin_username: str = "admin"
+    finwise_admin_password_hash: str = ""
+    finwise_password_hash_file: str = ""
+    finwise_jwt_secret: str = ""
+    finwise_token_expire_hours: int = 12
 
 
 @lru_cache

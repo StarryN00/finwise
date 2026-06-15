@@ -1,4 +1,5 @@
 import axios from 'axios'
+import { clearAuthSession, getAuthToken } from '../auth/session'
 
 const AI_REQUEST_TIMEOUT_MS = 300000
 
@@ -7,7 +8,38 @@ export const apiClient = axios.create({
   timeout: 20000,
 })
 
+apiClient.interceptors.request.use((config) => {
+  const token = getAuthToken()
+  if (token) {
+    config.headers = config.headers || {}
+    config.headers.Authorization = `Bearer ${token}`
+  }
+  return config
+})
+
+apiClient.interceptors.response.use(
+  (response) => response,
+  (error) => {
+    if (error?.response?.status === 401) {
+      const requestUrl = error.config?.url || ''
+      const isAuthRequest = requestUrl.includes('/auth/login') || requestUrl.includes('/auth/status')
+      if (!isAuthRequest && typeof window !== 'undefined' && window.location.pathname !== '/login') {
+        clearAuthSession()
+        const redirect = `${window.location.pathname}${window.location.search}`
+        window.location.href = `/login?redirect=${encodeURIComponent(redirect)}`
+      }
+    }
+    return Promise.reject(error)
+  },
+)
+
 export const api = {
+  auth: {
+    status: () => apiClient.get('/auth/status'),
+    login: (payload) => apiClient.post('/auth/login', payload),
+    me: () => apiClient.get('/auth/me'),
+    changePassword: (payload) => apiClient.post('/auth/change-password', payload),
+  },
   enterprises: {
     list: () => apiClient.get('/enterprises'),
     create: (payload) => apiClient.post('/enterprises', payload),

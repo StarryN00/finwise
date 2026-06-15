@@ -10,14 +10,25 @@ env/
 # Node
 node_modules/
 frontend/node_modules/
+dist/
+finwise-accounting/frontend/dist/
 *.log
 
 # Data
 data/
 files/
 *.json
+*.db
 finwise-accounting/backend/finwise_accounting.db
 finwise-accounting/backend/storage/
+finwise_accounting.db
+
+# Local-only runtime and sensitive deployment files
+server/
+.playwright-cli/
+.superpowers/
+pics/
+ui/
 
 # Env
 .env

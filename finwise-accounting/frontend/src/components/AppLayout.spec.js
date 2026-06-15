@@ -41,4 +41,16 @@ describe('AppLayout navigation', () => {
     expect(routerSource).toMatch(routePattern('/voucher-management'))
     expect(routerSource).toMatch(routePattern('/ledgers'))
   })
+
+  it('exposes authenticated password change with a real API call and forced re-login', () => {
+    expect(source).toContain("import { api } from '../api/client'")
+    expect(source).toContain('修改密码')
+    expect(source).toContain('openPasswordDialog')
+    expect(source).toContain('submitPasswordChange')
+    expect(source).toContain('api.auth.changePassword')
+    expect(source).toContain('old_password: passwordForm.oldPassword')
+    expect(source).toContain('new_password: passwordForm.newPassword')
+    expect(source).toContain('clearAuthSession()')
+    expect(source).toContain("router.replace('/login')")
+  })
 })

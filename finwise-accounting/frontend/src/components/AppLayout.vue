@@ -1,11 +1,14 @@
 <script setup>
-import { Plus } from '@element-plus/icons-vue'
+import { Lock, Plus, SwitchButton } from '@element-plus/icons-vue'
 import { ElMessage } from 'element-plus'
 import { computed, reactive, ref, watch } from 'vue'
-import { useRoute } from 'vue-router'
+import { useRoute, useRouter } from 'vue-router'
+import { api } from '../api/client'
+import { clearAuthSession, getAuthUser, isAuthenticated } from '../auth/session'
 import { useWorkspaceStore } from '../stores/workspace'
 
 const route = useRoute()
+const router = useRouter()
 const workspace = useWorkspaceStore()
 const navItems = [
   { label: '工作台', path: '/' },
@@ -26,12 +29,47 @@ const navItems = [
 const isActive = computed(() => (item) => item.path === route.path)
 const createDialogVisible = ref(false)
 const isSubmitting = ref(false)
+const passwordDialogVisible = ref(false)
+const isPasswordSubmitting = ref(false)
+const passwordFormRef = ref()
 const now = new Date()
+const yearOptions = computed(() => {
+  const currentYear = now.getFullYear()
+  return Array.from({ length: 8 }, (_, index) => currentYear - 3 + index)
+})
+const monthOptions = Array.from({ length: 12 }, (_, index) => index + 1)
+const showLogout = computed(() => isAuthenticated())
+const currentUser = computed(() => getAuthUser() || 'operator')
 const packageForm = reactive({
   enterpriseId: '',
   periodYear: now.getFullYear(),
   periodMonth: now.getMonth() + 1,
 })
+const passwordForm = reactive({
+  oldPassword: '',
+  newPassword: '',
+  confirmPassword: '',
+})
+const passwordRules = {
+  oldPassword: [{ required: true, message: '请输入当前密码', trigger: 'blur' }],
+  newPassword: [
+    { required: true, message: '请输入新密码', trigger: 'blur' },
+    { min: 8, message: '新密码至少需要 8 位', trigger: 'blur' },
+  ],
+  confirmPassword: [
+    { required: true, message: '请再次输入新密码', trigger: 'blur' },
+    {
+      validator: (_rule, value, callback) => {
+        if (value !== passwordForm.newPassword) {
+          callback(new Error('两次输入的新密码不一致'))
+          return
+        }
+        callback()
+      },
+      trigger: 'blur',
+    },
+  ],
+}
 
 watch(
   () => workspace.enterprises,
@@ -57,6 +95,40 @@ async function createPackage() {
     ElMessage.error(error?.response?.data?.detail || error?.message || '创建工作包失败')
   } finally {
     isSubmitting.value = false
+  }
+}
+
+function logout() {
+  clearAuthSession()
+  router.replace('/login')
+}
+
+function openPasswordDialog() {
+  passwordForm.oldPassword = ''
+  passwordForm.newPassword = ''
+  passwordForm.confirmPassword = ''
+  passwordDialogVisible.value = true
+}
+
+async function submitPasswordChange() {
+  if (!passwordFormRef.value) return
+  const isValid = await passwordFormRef.value.validate().catch(() => false)
+  if (!isValid) return
+
+  isPasswordSubmitting.value = true
+  try {
+    await api.auth.changePassword({
+      old_password: passwordForm.oldPassword,
+      new_password: passwordForm.newPassword,
+    })
+    passwordDialogVisible.value = false
+    clearAuthSession()
+    ElMessage.success('密码已修改，请使用新密码重新登录')
+    router.replace('/login')
+  } catch (error) {
+    ElMessage.error(error?.response?.data?.detail || error?.message || '修改密码失败')
+  } finally {
+    isPasswordSubmitting.value = false
   }
 }
 </script>
@@ -91,7 +163,12 @@ async function createPackage() {
           <p class="caption">苏州代账公司 · Phase 1</p>
           <h1 class="page-title">月度记账与申报工作台</h1>
         </div>
-        <el-button type="primary" :icon="Plus" @click="createDialogVisible = true">创建本月工作包</el-button>
+        <div class="topbar-actions">
+          <span v-if="showLogout" class="current-user">当前用户：{{ currentUser }}</span>
+          <el-button v-if="showLogout" :icon="Lock" plain @click="openPasswordDialog">修改密码</el-button>
+          <el-button v-if="showLogout" :icon="SwitchButton" plain @click="logout">退出登录</el-button>
+          <el-button type="primary" :icon="Plus" @click="createDialogVisible = true">创建本月工作包</el-button>
+        </div>
       </header>
       <main class="app-content">
         <slot />
@@ -111,14 +188,40 @@ async function createPackage() {
         </el-form-item>
         <el-form-item label="会计期间">
           <div class="period-row">
-            <el-input-number v-model="packageForm.periodYear" :min="2020" :max="2100" controls-position="right" />
-            <el-input-number v-model="packageForm.periodMonth" :min="1" :max="12" controls-position="right" />
+            <el-select v-model="packageForm.periodYear" placeholder="选择年份">
+              <el-option v-for="year in yearOptions" :key="year" :label="`${year}年`" :value="year" />
+            </el-select>
+            <el-select v-model="packageForm.periodMonth" placeholder="选择月份">
+              <el-option
+                v-for="month in monthOptions"
+                :key="month"
+                :label="`${String(month).padStart(2, '0')}月`"
+                :value="month"
+              />
+            </el-select>
           </div>
         </el-form-item>
       </el-form>
       <template #footer>
         <el-button @click="createDialogVisible = false">取消</el-button>
         <el-button type="primary" :loading="isSubmitting" @click="createPackage">创建</el-button>
+      </template>
+    </el-dialog>
+    <el-dialog v-model="passwordDialogVisible" title="修改登录密码" width="420px">
+      <el-form ref="passwordFormRef" :model="passwordForm" :rules="passwordRules" label-width="92px">
+        <el-form-item label="当前密码" prop="oldPassword">
+          <el-input v-model="passwordForm.oldPassword" type="password" show-password autocomplete="current-password" />
+        </el-form-item>
+        <el-form-item label="新密码" prop="newPassword">
+          <el-input v-model="passwordForm.newPassword" type="password" show-password autocomplete="new-password" />
+        </el-form-item>
+        <el-form-item label="确认密码" prop="confirmPassword">
+          <el-input v-model="passwordForm.confirmPassword" type="password" show-password autocomplete="new-password" />
+        </el-form-item>
+      </el-form>
+      <template #footer>
+        <el-button @click="passwordDialogVisible = false">取消</el-button>
+        <el-button type="primary" :loading="isPasswordSubmitting" @click="submitPasswordChange">确认修改</el-button>
       </template>
     </el-dialog>
   </div>
@@ -226,6 +329,19 @@ async function createPackage() {
 
 .app-topbar .caption {
   margin: 0 0 4px;
+}
+
+.topbar-actions {
+  display: flex;
+  align-items: center;
+  justify-content: flex-end;
+  gap: 10px;
+  flex-wrap: wrap;
+}
+
+.current-user {
+  color: var(--fw-muted);
+  font-size: 12px;
 }
 
 .period-row {

@@ -63,10 +63,33 @@ MOONSHOT_REPORT_MODEL=moonshot-v1-8k
 AI_MATCH_CONFIDENCE_THRESHOLD=90
 ```
 
+生产环境建议开启登录鉴权：
+
+```bash
+FINWISE_AUTH_ENABLED=true
+FINWISE_ADMIN_USERNAME=operator
+FINWISE_ADMIN_PASSWORD_HASH=替换为生成后的密码哈希
+FINWISE_JWT_SECRET=替换为足够长的随机密钥
+FINWISE_TOKEN_EXPIRE_HOURS=12
+```
+
+生成密码哈希：
+
+```bash
+cd /path/to/finwise/finwise-accounting/backend
+source .venv/bin/activate
+python - <<'PY'
+from app.core.auth import hash_password
+print(hash_password("替换成你的登录密码"))
+PY
+```
+
 说明：
 
 - 不配置 `DATABASE_URL` 时，默认使用本地 SQLite：`backend/finwise_accounting.db`。
 - 不配置 `MOONSHOT_API_KEY` 时，AI 相关功能会失败或进入非 AI 兜底逻辑。
+- 本地开发默认不启用登录鉴权；生产环境设置 `FINWISE_AUTH_ENABLED=true` 后，除健康检查和登录接口外，所有 `/api/*` 都需要登录。
+- 开启鉴权后，后端 `/docs`、`/redoc`、`/openapi.json` 会关闭，避免生产环境暴露接口文档。
 - `.env` 不要提交到 git。
 
 启动后端：

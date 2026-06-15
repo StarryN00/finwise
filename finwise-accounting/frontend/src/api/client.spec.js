@@ -28,4 +28,16 @@ describe('api client', () => {
   it('wires enterprise delete endpoint with an explicit business id', () => {
     expect(source).toContain('remove: (enterpriseId) => apiClient.delete(`/enterprises/${enterpriseId}`)')
   })
+
+  it('wires login endpoints and bearer token handling', () => {
+    expect(source).toContain("import { clearAuthSession, getAuthToken } from '../auth/session'")
+    expect(source).toContain('apiClient.interceptors.request.use')
+    expect(source).toContain('config.headers.Authorization = `Bearer ${token}`')
+    expect(source).toContain('apiClient.interceptors.response.use')
+    expect(source).toContain('clearAuthSession()')
+    expect(source).toContain("status: () => apiClient.get('/auth/status')")
+    expect(source).toContain("login: (payload) => apiClient.post('/auth/login', payload)")
+    expect(source).toContain("me: () => apiClient.get('/auth/me')")
+    expect(source).toContain("changePassword: (payload) => apiClient.post('/auth/change-password', payload)")
+  })
 })

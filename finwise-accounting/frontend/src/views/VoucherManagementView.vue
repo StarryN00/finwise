@@ -6,9 +6,14 @@ import { useWorkspaceStore } from '../stores/workspace'
 import { formatAmount } from '../components/source-ledgers/ledgerFormatters'
 
 const CONTEXT_STORAGE_KEY = 'finwise:voucher-management:context'
+const SOURCE_FILTER_OPTIONS = [
+  { value: 'all', label: '全部凭证' },
+  { value: 'monthly', label: '月度凭证' },
+  { value: 'historical', label: '历史凭证' },
+]
 
 const workspace = useWorkspaceStore()
-const sourceMode = ref('monthly')
+const sourceFilter = ref('all')
 const selectedEnterpriseId = ref('')
 const selectedPeriodPackageId = ref('')
 const currentFiscalYear = new Date().getFullYear()
@@ -45,25 +50,18 @@ const historicalParams = computed(() => ({
   period_end_month: Number(historicalEndMonth.value),
 }))
 const selectedContextLabel = computed(() => {
-  if (sourceMode.value === 'historical') {
-    if (Number(historicalStartMonth.value) === 1 && Number(historicalEndMonth.value) === 12) return `${historicalFiscalYear.value} 年`
-    return `${historicalFiscalYear.value} 年 ${historicalStartMonth.value} 月至 ${historicalEndMonth.value} 月`
-  }
-  return activePackage.value?.period || '-'
+  const startMonth = Number(historicalStartMonth.value)
+  const endMonth = Number(historicalEndMonth.value)
+  if (startMonth === endMonth) return `${historicalFiscalYear.value}-${String(startMonth).padStart(2, '0')}`
+  return `${historicalFiscalYear.value} 年 ${startMonth} 月至 ${endMonth} 月`
 })
-const voucherCountLabel = computed(() => (sourceMode.value === 'historical' ? '历史凭证' : '已确认凭证'))
+const voucherCountLabel = computed(() => '凭证')
 const selectedEnterpriseName = computed(() => {
   return enterpriseOptions.value.find((enterprise) => enterprise.id === selectedEnterpriseId.value)?.name || '当前企业'
 })
 const selectedPeriodParts = computed(() => parsePeriod(activePackage.value?.period))
-const railYear = computed(() => {
-  if (sourceMode.value === 'historical') return Number(historicalFiscalYear.value) || new Date().getFullYear()
-  return selectedPeriodParts.value.year || new Date().getFullYear()
-})
-const activeRailMonth = computed(() => {
-  if (sourceMode.value === 'historical') return Number(historicalStartMonth.value)
-  return selectedPeriodParts.value.month
-})
+const railYear = computed(() => Number(historicalFiscalYear.value) || selectedPeriodParts.value.year || new Date().getFullYear())
+const activeRailMonth = computed(() => Number(historicalStartMonth.value))
 const availableMonthlyPeriodMonths = computed(() => {
   return new Set(
     periodOptions.value
@@ -72,15 +70,16 @@ const availableMonthlyPeriodMonths = computed(() => {
       .map((period) => period.month),
   )
 })
-const selectedVoucher = computed(() => vouchers.value.find((item) => item.id === selectedVoucherId.value) || null)
+const selectedVoucher = computed(() => vouchers.value.find((item) => voucherRowId(item) === selectedVoucherId.value) || null)
 const voucherRows = computed(() =>
   vouchers.value.map((voucher) => ({
     ...voucher,
+    rowId: voucherRowId(voucher),
     counterparty: voucherCounterparty(voucher),
     debitTotal: entryTotal(voucher, 'DEBIT'),
     creditTotal: entryTotal(voucher, 'CREDIT'),
     sourceType: sourceTypeLabel(voucher),
-    maker: voucher.confirmed_by || (sourceMode.value === 'historical' ? '历史导入' : '-'),
+    maker: voucher.confirmed_by || (voucher.__source === 'historical' ? '历史导入' : '-'),
   })),
 )
 const pageCount = computed(() => Math.max(1, Math.ceil(voucherRows.value.length / pageSize)))
@@ -91,12 +90,11 @@ const paginatedVoucherRows = computed(() => {
 const hasVoucherRows = computed(() => voucherRows.value.length > 0)
 const emptyStateTitle = computed(() => {
   if (keyword.value.trim()) return '没有找到匹配的凭证'
-  return sourceMode.value === 'historical' ? '当前历史期间暂无凭证' : '当前月份暂无已确认凭证'
+  return '当前期间暂无可展示凭证'
 })
 const emptyStateDescription = computed(() => {
   if (keyword.value.trim()) return '请调整搜索关键词，或清空搜索后查看当前期间的全部凭证。'
-  if (sourceMode.value === 'historical') return '当前企业在所选历史账套期间内没有可展示凭证。请切换年度、月份范围，或先导入历史账套。'
-  return '凭证管理只展示已确认凭证。请先在凭证生成页完成凭证确认，或切换到已有已确认凭证的月份。'
+  return '请确认该企业和期间已经完成凭证确认，或切换企业、年度、月份范围后重新查看。'
 })
 
 onMounted(async () => {
@@ -114,34 +112,26 @@ watch(
 )
 
 watch(selectedEnterpriseId, () => {
-  if (sourceMode.value === 'historical') {
-    loadConfirmedVouchers()
-    return
-  }
   const current = activePackage.value
-  if (current && packageEnterpriseId(current) === selectedEnterpriseId.value) return
-  selectedPeriodPackageId.value = periodOptions.value[0]?.id || ''
+  if (!current || packageEnterpriseId(current) !== selectedEnterpriseId.value) {
+    selectedPeriodPackageId.value = periodOptions.value[0]?.id || ''
+    syncHistoricalPeriodFromPackage(selectedPeriodPackageId.value)
+  }
+  loadConfirmedVouchers()
 })
 
 watch(selectedPeriodPackageId, async (packageId) => {
+  syncHistoricalPeriodFromPackage(packageId)
   persistContext()
-  if (sourceMode.value === 'monthly' && packageId) {
+  if (packageId || selectedEnterpriseId.value) {
     await loadConfirmedVouchers()
-  } else {
-    vouchers.value = []
   }
 })
 
-watch([sourceMode, historicalFiscalYear, historicalStartMonth, historicalEndMonth], async () => {
+watch([sourceFilter, historicalFiscalYear, historicalStartMonth, historicalEndMonth], async () => {
   persistContext()
-  if (sourceMode.value === 'historical' && selectedEnterpriseId.value) {
+  if (selectedEnterpriseId.value) {
     await loadConfirmedVouchers()
-  }
-  if (sourceMode.value === 'monthly') {
-    ensureSelection()
-    if (selectedPeriodPackageId.value) {
-      await loadConfirmedVouchers()
-    }
   }
 })
 
@@ -155,6 +145,15 @@ function parsePeriod(period) {
   return { year: Number(matched[1]), month: Number(matched[2]) }
 }
 
+function syncHistoricalPeriodFromPackage(packageId) {
+  if (!packageId) return
+  const period = parsePeriod((workspace.workPackages || []).find((item) => item.id === packageId)?.period)
+  if (!period.year || !period.month) return
+  historicalFiscalYear.value = period.year
+  historicalStartMonth.value = period.month
+  historicalEndMonth.value = period.month
+}
+
 function ensureSelection() {
   if (!selectedEnterpriseId.value && enterpriseOptions.value.length) {
     selectedEnterpriseId.value = enterpriseOptions.value[0].id
@@ -162,6 +161,7 @@ function ensureSelection() {
   const storedPackage = (workspace.workPackages || []).find((item) => item.id === selectedPeriodPackageId.value)
   if (storedPackage) {
     selectedEnterpriseId.value = packageEnterpriseId(storedPackage) || selectedEnterpriseId.value
+    syncHistoricalPeriodFromPackage(storedPackage.id)
     return
   }
   const preferred = workspace.selectedPackageId
@@ -171,6 +171,7 @@ function ensureSelection() {
   if (next) {
     selectedEnterpriseId.value = packageEnterpriseId(next) || selectedEnterpriseId.value
     selectedPeriodPackageId.value = next.id
+    syncHistoricalPeriodFromPackage(next.id)
   }
 }
 
@@ -179,14 +180,14 @@ function restoreContext() {
     const parsed = JSON.parse(window.localStorage?.getItem(CONTEXT_STORAGE_KEY) || '{}')
     selectedEnterpriseId.value = parsed.enterpriseId || ''
     selectedPeriodPackageId.value = parsed.packageId || ''
-    sourceMode.value = parsed.sourceMode === 'historical' ? 'historical' : 'monthly'
+    sourceFilter.value = ['all', 'monthly', 'historical'].includes(parsed.sourceFilter) ? parsed.sourceFilter : 'all'
     historicalFiscalYear.value = Number(parsed.historicalFiscalYear) || historicalFiscalYear.value
     historicalStartMonth.value = parsed.historicalStartMonth || 1
     historicalEndMonth.value = parsed.historicalEndMonth || 12
   } catch {
     selectedEnterpriseId.value = ''
     selectedPeriodPackageId.value = ''
-    sourceMode.value = 'monthly'
+    sourceFilter.value = 'all'
   }
 }
 
@@ -196,7 +197,7 @@ function persistContext() {
     JSON.stringify({
       enterpriseId: selectedEnterpriseId.value,
       packageId: selectedPeriodPackageId.value,
-      sourceMode: sourceMode.value,
+      sourceFilter: sourceFilter.value,
       historicalFiscalYear: historicalFiscalYear.value,
       historicalStartMonth: historicalStartMonth.value,
       historicalEndMonth: historicalEndMonth.value,
@@ -205,40 +206,47 @@ function persistContext() {
 }
 
 async function loadConfirmedVouchers() {
-  if (sourceMode.value === 'monthly' && !selectedPeriodPackageId.value) return
-  if (sourceMode.value === 'historical' && !selectedEnterpriseId.value) return
-  if (sourceMode.value === 'historical' && Number(historicalStartMonth.value) > Number(historicalEndMonth.value)) {
+  if (!selectedEnterpriseId.value) return
+  if (Number(historicalStartMonth.value) > Number(historicalEndMonth.value)) {
     ElMessage.warning('起始月份不能晚于截止月份')
     return
   }
   isLoading.value = true
   try {
-    const params = { status: 'CONFIRMED' }
     const searchText = keyword.value.trim()
-    if (searchText) params.keyword = searchText
-    const response =
-      sourceMode.value === 'historical'
-        ? await api.historicalImports.vouchers(selectedEnterpriseId.value, {
-            ...historicalParams.value,
-            keyword: searchText || undefined,
-          })
-        : await api.vouchers.list(selectedPeriodPackageId.value, params)
-    vouchers.value =
-      sourceMode.value === 'historical'
-        ? response.data || []
-        : (response.data || []).filter((voucher) => voucher.status === 'CONFIRMED')
-    if (selectedVoucherId.value && !vouchers.value.some((voucher) => voucher.id === selectedVoucherId.value)) {
+    const results = await Promise.all([loadMonthlyConfirmedVouchers(searchText), loadHistoricalConfirmedVouchers(searchText)])
+    vouchers.value = results.flat()
+    if (selectedVoucherId.value && !vouchers.value.some((voucher) => voucherRowId(voucher) === selectedVoucherId.value)) {
       selectedVoucherId.value = ''
     }
     currentPage.value = 1
     if (!selectedVoucherId.value && vouchers.value.length) {
-      selectedVoucherId.value = vouchers.value[0].id
+      selectedVoucherId.value = voucherRowId(vouchers.value[0])
     }
   } catch (error) {
     ElMessage.error(error?.response?.data?.detail || error?.message || '已确认凭证加载失败')
   } finally {
     isLoading.value = false
   }
+}
+
+async function loadMonthlyConfirmedVouchers(searchText) {
+  if (sourceFilter.value === 'historical' || !selectedPeriodPackageId.value) return []
+  const params = { status: 'CONFIRMED' }
+  if (searchText) params.keyword = searchText
+  const response = await api.vouchers.list(selectedPeriodPackageId.value, params)
+  return (response.data || [])
+    .filter((voucher) => voucher.status === 'CONFIRMED')
+    .map((voucher) => ({ ...voucher, __source: 'monthly' }))
+}
+
+async function loadHistoricalConfirmedVouchers(searchText) {
+  if (sourceFilter.value === 'monthly') return []
+  const response = await api.historicalImports.vouchers(selectedEnterpriseId.value, {
+    ...historicalParams.value,
+    keyword: searchText || undefined,
+  })
+  return (response.data || []).map((voucher) => ({ ...voucher, __source: 'historical' }))
 }
 
 function searchVouchers() {
@@ -251,7 +259,7 @@ function clearKeywordAndReload() {
 }
 
 function openVoucherDetail(voucher) {
-  selectedVoucherId.value = voucher.id
+  selectedVoucherId.value = voucherRowId(voucher)
 }
 
 function goToPage(page) {
@@ -276,7 +284,7 @@ function voucherCounterparty(voucher) {
 }
 
 function sourceTypeLabel(voucher) {
-  if (sourceMode.value === 'historical' || voucher?.source_data?.source_type === 'HISTORICAL_LEDGER') return '历史账套'
+  if (voucher?.__source === 'historical' || voucher?.source_data?.source_type === 'HISTORICAL_LEDGER') return '历史凭证'
   const source = voucher?.source_data || voucher?.sourceData || {}
   const hasBank = Boolean(source.bank_transaction || source.bank_transactions?.length || source.bankTransaction || source.bankTransactions?.length)
   const hasInvoice = Boolean(source.invoice || source.invoices?.length)
@@ -304,35 +312,33 @@ function voucherNumberText(voucher) {
 }
 
 function entryKey(voucher, entry, index) {
-  return entry.id || `${voucher.id}:${entry.line_no || index}`
+  return entry.id || `${voucherRowId(voucher)}:${entry.line_no || index}`
 }
 
 function selectRailMonth(month) {
-  if (sourceMode.value === 'monthly') {
-    const target = periodOptions.value.find((item) => {
-      const period = parsePeriod(item.period)
-      return period.year === railYear.value && period.month === Number(month)
-    })
-    if (!target) {
-      ElMessage.warning('当前企业没有该月份工作包')
-      return
-    }
+  const target = periodOptions.value.find((item) => {
+    const period = parsePeriod(item.period)
+    return period.year === railYear.value && period.month === Number(month)
+  })
+  if (target) {
     selectedPeriodPackageId.value = target.id
-    return
   }
   historicalStartMonth.value = month
   historicalEndMonth.value = month
 }
 
 function hasMonthlyPackage(month) {
-  if (sourceMode.value !== 'monthly') return true
   return availableMonthlyPeriodMonths.value.has(Number(month))
 }
 
 function monthButtonTitle(month) {
   const label = `${railYear.value}-${String(month).padStart(2, '0')}`
-  if (sourceMode.value === 'monthly' && !hasMonthlyPackage(month)) return `${label} 暂无工作包`
+  if (!hasMonthlyPackage(month)) return `${label} 暂无当前期间数据，仍可查看历史凭证`
   return label
+}
+
+function voucherRowId(voucher) {
+  return `${voucher?.__source || 'monthly'}:${voucher?.id || ''}`
 }
 </script>
 
@@ -347,36 +353,38 @@ function monthButtonTitle(month) {
       <button class="text-action" type="button" :disabled="isLoading" @click="loadConfirmedVouchers">刷新</button>
     </header>
 
-    <section class="voucher-filter-strip" :class="{ historical: sourceMode === 'historical' }">
-      <div class="mode-toggle" aria-label="凭证来源">
-        <button type="button" :class="{ active: sourceMode === 'monthly' }" @click="sourceMode = 'monthly'">月度工作包</button>
-        <button type="button" :class="{ active: sourceMode === 'historical' }" @click="sourceMode = 'historical'">历史账套</button>
-      </div>
+    <section class="voucher-filter-strip">
       <label>
         <span>企业主体</span>
         <el-select v-model="selectedEnterpriseId" placeholder="企业主体" filterable>
           <el-option v-for="enterprise in enterpriseOptions" :key="enterprise.id" :label="enterprise.name" :value="enterprise.id" />
         </el-select>
       </label>
-      <label v-if="sourceMode === 'monthly'">
+      <label>
         <span>工作期间</span>
         <el-select v-model="selectedPeriodPackageId" placeholder="工作期间">
           <el-option v-for="item in periodOptions" :key="item.id" :label="item.period" :value="item.id" />
         </el-select>
       </label>
-      <label v-if="sourceMode === 'historical'">
+      <label>
+        <span>凭证来源</span>
+        <el-select v-model="sourceFilter" placeholder="凭证来源">
+          <el-option v-for="item in SOURCE_FILTER_OPTIONS" :key="item.value" :label="item.label" :value="item.value" />
+        </el-select>
+      </label>
+      <label>
         <span>会计年度</span>
         <el-select v-model="historicalFiscalYear" placeholder="会计年度">
           <el-option v-for="year in yearOptions" :key="year.value" :label="year.label" :value="year.value" />
         </el-select>
       </label>
-      <label v-if="sourceMode === 'historical'">
+      <label>
         <span>起始月份</span>
         <el-select v-model="historicalStartMonth" placeholder="起始月份">
           <el-option v-for="month in monthOptions" :key="month.value" :label="month.label" :value="month.value" />
         </el-select>
       </label>
-      <label v-if="sourceMode === 'historical'">
+      <label>
         <span>截止月份</span>
         <el-select v-model="historicalEndMonth" placeholder="截止月份">
           <el-option v-for="month in monthOptions" :key="month.value" :label="month.label" :value="month.value" />
@@ -396,10 +404,6 @@ function monthButtonTitle(month) {
         <h2>{{ emptyStateTitle }}</h2>
         <p>{{ emptyStateDescription }}</p>
         <dl>
-          <div>
-            <dt>当前来源</dt>
-            <dd>{{ sourceMode === 'historical' ? '历史账套' : '月度工作包' }}</dd>
-          </div>
           <div>
             <dt>当前筛选</dt>
             <dd>{{ keyword.trim() || '未输入关键词' }}</dd>
@@ -428,8 +432,8 @@ function monthButtonTitle(month) {
             </tr>
           </thead>
           <tbody>
-            <template v-for="voucher in paginatedVoucherRows" :key="voucher.id">
-              <tr class="voucher-meta-row" :class="{ selected: selectedVoucherId === voucher.id }">
+            <template v-for="voucher in paginatedVoucherRows" :key="voucher.rowId">
+              <tr class="voucher-meta-row" :class="{ selected: selectedVoucherId === voucher.rowId }">
                 <td colspan="4">
                   <button class="voucher-number-link" type="button" @click="openVoucherDetail(voucher)">
                     日期：{{ voucher.voucher_date }}
@@ -463,14 +467,13 @@ function monthButtonTitle(month) {
 
       <aside class="period-rail" aria-label="期间选择">
         <strong>期间选择</strong>
-        <span>{{ sourceMode === 'monthly' ? '工作包月份' : selectedContextLabel }}</span>
+        <span>{{ selectedContextLabel }}</span>
         <div class="rail-year">{{ railYear }}</div>
         <button
           v-for="month in monthOptions"
           :key="month.value"
           type="button"
-          :class="{ active: activeRailMonth === month.value, unavailable: sourceMode === 'monthly' && !hasMonthlyPackage(month.value) }"
-          :disabled="sourceMode === 'monthly' && !hasMonthlyPackage(month.value)"
+          :class="{ active: activeRailMonth === month.value, unavailable: !hasMonthlyPackage(month.value) }"
           :title="monthButtonTitle(month.value)"
           @click="selectRailMonth(month.value)"
         >
@@ -548,17 +551,20 @@ function monthButtonTitle(month) {
 
 .voucher-filter-strip {
   display: grid;
-  grid-template-columns: max-content minmax(320px, 1fr) minmax(150px, 180px) minmax(230px, auto);
+  grid-template-columns:
+    minmax(260px, 1.6fr)
+    minmax(130px, 0.6fr)
+    minmax(120px, 0.5fr)
+    minmax(110px, 0.5fr)
+    minmax(110px, 0.5fr)
+    minmax(110px, 0.5fr)
+    minmax(220px, auto);
   gap: 12px;
   align-items: end;
   padding: 10px 12px;
   border: 1px solid #e1e7f0;
   border-radius: 6px;
   background: #fff;
-}
-
-.voucher-filter-strip.historical {
-  grid-template-columns: max-content minmax(260px, 1fr) repeat(3, minmax(118px, 140px)) minmax(230px, auto);
 }
 
 .voucher-filter-strip label {
@@ -595,30 +601,6 @@ function monthButtonTitle(month) {
 .list-summary strong {
   color: #1f2d3d;
   font-size: 18px;
-}
-
-.mode-toggle {
-  display: inline-flex;
-  padding: 3px;
-  border: 1px solid #dce3ef;
-  border-radius: 4px;
-  background: #f6f9fc;
-}
-
-.mode-toggle button {
-  min-width: 88px;
-  height: 28px;
-  border: 0;
-  border-radius: 3px;
-  background: transparent;
-  color: #617089;
-  cursor: pointer;
-}
-
-.mode-toggle button.active {
-  background: #fff;
-  color: #5946e8;
-  box-shadow: 0 1px 3px rgb(15 23 42 / 12%);
 }
 
 .voucher-ledger-layout {

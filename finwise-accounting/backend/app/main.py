@@ -5,6 +5,7 @@ from fastapi import FastAPI
 from sqlalchemy import text
 
 from app import models  # noqa: F401
+from app.api.auth import router as auth_router
 from app.api.enterprises import router as enterprises_router
 from app.api.historical_imports import router as historical_imports_router
 from app.api.initial_statements import router as initial_statements_router
@@ -17,6 +18,8 @@ from app.api.tax import router as tax_router
 from app.api.technology_profiles import router as technology_profiles_router
 from app.api.vouchers import router as vouchers_router
 from app.api.workspace import router as workspace_router
+from app.core.auth_middleware import install_auth_middleware
+from app.core.config import get_settings
 from app.core.database import Base, SessionLocal, engine
 from app.core.org_context import ensure_default_organization
 
@@ -72,10 +75,14 @@ async def lifespan(app: FastAPI) -> AsyncGenerator[None, None]:
 
 def create_app(*, init_db_on_startup: bool = True) -> FastAPI:
     app_kwargs = {"title": "FinWise Accounting API"}
+    settings = get_settings()
+    if settings.finwise_auth_enabled:
+        app_kwargs.update({"docs_url": None, "redoc_url": None, "openapi_url": None})
     if init_db_on_startup:
         app_kwargs["lifespan"] = lifespan
 
     app = FastAPI(**app_kwargs)
+    app.include_router(auth_router)
     app.include_router(enterprises_router)
     app.include_router(historical_imports_router)
     app.include_router(initial_statements_router)
@@ -93,6 +100,7 @@ def create_app(*, init_db_on_startup: bool = True) -> FastAPI:
     def health() -> dict[str, str]:
         return {"status": "ok"}
 
+    install_auth_middleware(app)
     return app
 
 

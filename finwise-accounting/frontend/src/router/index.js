@@ -1,6 +1,14 @@
 import { createRouter, createWebHistory } from 'vue-router'
+import { api } from '../api/client'
+import { getAuthToken } from '../auth/session'
 
 const routes = [
+  {
+    path: '/login',
+    name: 'login',
+    component: () => import('../views/LoginView.vue'),
+    meta: { public: true, publicLayout: true },
+  },
   {
     path: '/',
     name: 'workspace',
@@ -81,4 +89,38 @@ const routes = [
 export const router = createRouter({
   history: createWebHistory(),
   routes,
+})
+
+let authStatusPromise = null
+
+async function getAuthEnabled() {
+  if (!authStatusPromise) {
+    authStatusPromise = api.auth.status()
+      .then((response) => Boolean(response.data?.enabled))
+      .catch(() => true)
+  }
+  return authStatusPromise
+}
+
+router.beforeEach(async (to) => {
+  const authEnabled = await getAuthEnabled()
+  if (!authEnabled) {
+    if (to.path === '/login') {
+      return { path: '/' }
+    }
+    return true
+  }
+
+  if (to.meta.public) {
+    if (to.path === '/login' && getAuthToken()) {
+      return typeof to.query.redirect === 'string' ? to.query.redirect : '/'
+    }
+    return true
+  }
+
+  if (!getAuthToken()) {
+    return { path: '/login', query: { redirect: to.fullPath } }
+  }
+
+  return true
 })
