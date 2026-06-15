@@ -10,20 +10,44 @@ import { useWorkspaceStore } from '../stores/workspace'
 const route = useRoute()
 const router = useRouter()
 const workspace = useWorkspaceStore()
-const navItems = [
-  { label: '工作台', path: '/' },
-  { label: '企业名册', path: '/enterprises' },
-  { label: '月度工作包', path: '/monthly-workspace' },
-  { label: '账目明细', path: '/account-details' },
-  { label: '资金流水', path: '/bank-ledger' },
-  { label: '发票台账', path: '/invoice-ledger' },
-  { label: '科目设置', path: '/account-subjects' },
-  { label: '历史账套导入', path: '/historical-import' },
-  { label: '凭证生成', path: '/vouchers' },
-  { label: '凭证管理', path: '/voucher-management' },
-  { label: '账簿', path: '/ledgers' },
-  { label: '输出中心', path: '/output-center' },
-  { label: '规则设置', path: '/rules' },
+const navGroups = [
+  {
+    label: '核心工作',
+    children: [{ label: '工作台', path: '/' }],
+  },
+  {
+    label: '客户管理',
+    children: [{ label: '企业名册', path: '/enterprises' }],
+  },
+  {
+    label: '月度作业',
+    children: [
+      { label: '月度工作包', path: '/monthly-workspace' },
+      { label: '账目明细', path: '/account-details' },
+      { label: '资金流水', path: '/bank-ledger' },
+      { label: '发票台账', path: '/invoice-ledger' },
+    ],
+  },
+  {
+    label: '凭证与账簿',
+    children: [
+      { label: '凭证生成', path: '/vouchers' },
+      { label: '凭证管理', path: '/voucher-management' },
+      { label: '账簿', path: '/ledgers' },
+      { label: '历史账套导入', path: '/historical-import' },
+    ],
+  },
+  {
+    label: '申报与报告',
+    children: [{ label: '输出中心', path: '/output-center' }],
+  },
+  {
+    label: '基础设置',
+    children: [
+      { label: '科目设置', path: '/account-subjects' },
+      { label: '规则设置', path: '/rules' },
+    ],
+  },
 ]
 
 const isActive = computed(() => (item) => item.path === route.path)
@@ -144,16 +168,19 @@ async function submitPasswordChange() {
         </div>
       </div>
       <nav class="app-nav" aria-label="主导航">
-        <router-link
-          v-for="item in navItems"
-          :key="item.label"
-          :to="item.path"
-          class="app-nav__item"
-          :class="{ active: isActive(item) }"
-        >
-          <span class="app-nav__dot" />
-          <span>{{ item.label }}</span>
-        </router-link>
+        <section v-for="group in navGroups" :key="group.label" class="app-nav__group">
+          <p class="app-nav__group-title">{{ group.label }}</p>
+          <router-link
+            v-for="item in group.children"
+            :key="item.label"
+            :to="item.path"
+            class="app-nav__item"
+            :class="{ active: isActive(item) }"
+          >
+            <span class="app-nav__dot" />
+            <span>{{ item.label }}</span>
+          </router-link>
+        </section>
       </nav>
     </aside>
 
@@ -279,16 +306,28 @@ async function submitPasswordChange() {
 
 .app-nav {
   display: grid;
-  gap: 4px;
+  gap: 14px;
   margin-top: 18px;
+}
+
+.app-nav__group {
+  display: grid;
+  gap: 4px;
+}
+
+.app-nav__group-title {
+  margin: 0 8px 3px;
+  color: #6f88af;
+  font-size: 11px;
+  font-weight: 700;
 }
 
 .app-nav__item {
   display: flex;
   align-items: center;
   gap: 10px;
-  min-height: 38px;
-  padding: 8px 10px;
+  min-height: 34px;
+  padding: 7px 10px;
   border-radius: var(--fw-radius-sm);
   color: #b9cae2;
   font-size: 13px;
