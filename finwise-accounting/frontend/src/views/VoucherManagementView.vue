@@ -6,14 +6,8 @@ import { useWorkspaceStore } from '../stores/workspace'
 import { formatAmount } from '../components/source-ledgers/ledgerFormatters'
 
 const CONTEXT_STORAGE_KEY = 'finwise:voucher-management:context'
-const SOURCE_FILTER_OPTIONS = [
-  { value: 'all', label: '全部凭证' },
-  { value: 'monthly', label: '月度凭证' },
-  { value: 'historical', label: '历史凭证' },
-]
 
 const workspace = useWorkspaceStore()
-const sourceFilter = ref('all')
 const selectedEnterpriseId = ref('')
 const selectedPeriodPackageId = ref('')
 const currentFiscalYear = new Date().getFullYear()
@@ -128,7 +122,7 @@ watch(selectedPeriodPackageId, async (packageId) => {
   }
 })
 
-watch([sourceFilter, historicalFiscalYear, historicalStartMonth, historicalEndMonth], async () => {
+watch([historicalFiscalYear, historicalStartMonth, historicalEndMonth], async () => {
   persistContext()
   if (selectedEnterpriseId.value) {
     await loadConfirmedVouchers()
@@ -180,14 +174,12 @@ function restoreContext() {
     const parsed = JSON.parse(window.localStorage?.getItem(CONTEXT_STORAGE_KEY) || '{}')
     selectedEnterpriseId.value = parsed.enterpriseId || ''
     selectedPeriodPackageId.value = parsed.packageId || ''
-    sourceFilter.value = ['all', 'monthly', 'historical'].includes(parsed.sourceFilter) ? parsed.sourceFilter : 'all'
     historicalFiscalYear.value = Number(parsed.historicalFiscalYear) || historicalFiscalYear.value
     historicalStartMonth.value = parsed.historicalStartMonth || 1
     historicalEndMonth.value = parsed.historicalEndMonth || 12
   } catch {
     selectedEnterpriseId.value = ''
     selectedPeriodPackageId.value = ''
-    sourceFilter.value = 'all'
   }
 }
 
@@ -197,7 +189,6 @@ function persistContext() {
     JSON.stringify({
       enterpriseId: selectedEnterpriseId.value,
       packageId: selectedPeriodPackageId.value,
-      sourceFilter: sourceFilter.value,
       historicalFiscalYear: historicalFiscalYear.value,
       historicalStartMonth: historicalStartMonth.value,
       historicalEndMonth: historicalEndMonth.value,
@@ -231,7 +222,7 @@ async function loadConfirmedVouchers() {
 }
 
 async function loadMonthlyConfirmedVouchers(searchText) {
-  if (sourceFilter.value === 'historical' || !selectedPeriodPackageId.value) return []
+  if (!selectedPeriodPackageId.value) return []
   const params = { status: 'CONFIRMED' }
   if (searchText) params.keyword = searchText
   const response = await api.vouchers.list(selectedPeriodPackageId.value, params)
@@ -241,7 +232,6 @@ async function loadMonthlyConfirmedVouchers(searchText) {
 }
 
 async function loadHistoricalConfirmedVouchers(searchText) {
-  if (sourceFilter.value === 'monthly') return []
   const response = await api.historicalImports.vouchers(selectedEnterpriseId.value, {
     ...historicalParams.value,
     keyword: searchText || undefined,
@@ -284,7 +274,7 @@ function voucherCounterparty(voucher) {
 }
 
 function sourceTypeLabel(voucher) {
-  if (voucher?.__source === 'historical' || voucher?.source_data?.source_type === 'HISTORICAL_LEDGER') return '历史凭证'
+  if (voucher?.__source === 'historical' || voucher?.source_data?.source_type === 'HISTORICAL_LEDGER') return '历史导入'
   const source = voucher?.source_data || voucher?.sourceData || {}
   const hasBank = Boolean(source.bank_transaction || source.bank_transactions?.length || source.bankTransaction || source.bankTransactions?.length)
   const hasInvoice = Boolean(source.invoice || source.invoices?.length)
@@ -333,7 +323,7 @@ function hasMonthlyPackage(month) {
 
 function monthButtonTitle(month) {
   const label = `${railYear.value}-${String(month).padStart(2, '0')}`
-  if (!hasMonthlyPackage(month)) return `${label} 暂无当前期间数据，仍可查看历史凭证`
+  if (!hasMonthlyPackage(month)) return `${label} 暂无当前期间工作包，可查看已导入账套数据`
   return label
 }
 
@@ -364,12 +354,6 @@ function voucherRowId(voucher) {
         <span>工作期间</span>
         <el-select v-model="selectedPeriodPackageId" placeholder="工作期间">
           <el-option v-for="item in periodOptions" :key="item.id" :label="item.period" :value="item.id" />
-        </el-select>
-      </label>
-      <label>
-        <span>凭证来源</span>
-        <el-select v-model="sourceFilter" placeholder="凭证来源">
-          <el-option v-for="item in SOURCE_FILTER_OPTIONS" :key="item.value" :label="item.label" :value="item.value" />
         </el-select>
       </label>
       <label>
@@ -552,9 +536,8 @@ function voucherRowId(voucher) {
 .voucher-filter-strip {
   display: grid;
   grid-template-columns:
-    minmax(260px, 1.6fr)
+    minmax(280px, 1.7fr)
     minmax(130px, 0.6fr)
-    minmax(120px, 0.5fr)
     minmax(110px, 0.5fr)
     minmax(110px, 0.5fr)
     minmax(110px, 0.5fr)

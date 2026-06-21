@@ -184,11 +184,16 @@ describe('VoucherManagementView', () => {
     await workspace.loadWorkspace()
     await flushPromises()
 
-    expect(wrapper.text()).not.toContain('月度工作包')
-    expect(wrapper.text()).not.toContain('历史账套')
-    expect(wrapper.text()).toContain('企业主体')
-    expect(wrapper.text()).toContain('工作期间')
-    expect(wrapper.find('select[aria-label="凭证来源"]').exists()).toBe(true)
+    const filterStrip = wrapper.find('.voucher-filter-strip')
+    expect(filterStrip.exists()).toBe(true)
+    expect(filterStrip.text()).not.toContain('凭证来源')
+    expect(filterStrip.text()).not.toContain('月度凭证')
+    expect(filterStrip.text()).not.toContain('历史凭证')
+    expect(filterStrip.text()).not.toContain('月度工作包')
+    expect(filterStrip.text()).not.toContain('历史账套')
+    expect(filterStrip.text()).toContain('企业主体')
+    expect(filterStrip.text()).toContain('工作期间')
+    expect(wrapper.find('select[aria-label="凭证来源"]').exists()).toBe(false)
     expect(api.vouchers.list).toHaveBeenCalledWith('package-1', { status: 'CONFIRMED' })
     expect(api.historicalImports.vouchers).toHaveBeenCalledWith('enterprise-1', {
       fiscal_year: 2026,
@@ -261,16 +266,13 @@ describe('VoucherManagementView', () => {
     expect(wrapper.findAll('input[type="checkbox"]')).toHaveLength(0)
   })
 
-  it('filters to historical vouchers with dropdown fiscal year and numeric API params', async () => {
+  it('uses a dropdown fiscal year while keeping monthly and imported vouchers in one list', async () => {
     const wrapper = mountView()
     const workspace = useWorkspaceStore()
     await workspace.loadWorkspace()
     await flushPromises()
 
-    const sourceSelect = wrapper.find('select[aria-label="凭证来源"]')
-    expect(sourceSelect.exists()).toBe(true)
-    await sourceSelect.setValue('historical')
-    await flushPromises()
+    expect(wrapper.find('select[aria-label="凭证来源"]').exists()).toBe(false)
 
     const yearSelect = wrapper.find('select[aria-label="会计年度"]')
     expect(yearSelect.exists()).toBe(true)
@@ -284,6 +286,7 @@ describe('VoucherManagementView', () => {
       period_start_month: 4,
       period_end_month: 4,
     })
+    expect(api.vouchers.list).toHaveBeenLastCalledWith('package-1', { status: 'CONFIRMED' })
   })
 
   it('shows a focused empty state instead of an empty ledger table when no confirmed vouchers exist', async () => {
