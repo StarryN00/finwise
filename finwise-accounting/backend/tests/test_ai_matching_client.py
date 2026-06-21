@@ -11,7 +11,12 @@ def test_moonshot_ai_matching_client_converts_timeout_to_domain_error(monkeypatc
         raise TimeoutError("timed out")
 
     monkeypatch.setattr("app.services.ai_matching_service.request.urlopen", fake_urlopen)
-    client = MoonshotAiMatchingClient(api_key="test-key", base_url="https://example.test", model="kimi")
+    client = MoonshotAiMatchingClient(
+        api_key="test-key",
+        base_url="https://example.test",
+        model="kimi",
+        timeout_seconds=45,
+    )
 
     try:
         client.propose_matches({"bank_transactions": [], "invoices": []})
