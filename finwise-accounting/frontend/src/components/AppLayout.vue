@@ -16,33 +16,31 @@ const navGroups = [
     children: [{ label: '工作台', path: '/' }],
   },
   {
-    label: '客户管理',
-    children: [{ label: '企业名册', path: '/enterprises' }],
+    label: '客户资料',
+    children: [
+      { label: '企业名册', path: '/enterprises' },
+      { label: '历史账套导入', path: '/historical-import' },
+    ],
   },
   {
     label: '月度作业',
     children: [
       { label: '月度工作包', path: '/monthly-workspace' },
-      { label: '账目明细', path: '/account-details' },
       { label: '资金流水', path: '/bank-ledger' },
       { label: '发票台账', path: '/invoice-ledger' },
+      { label: '凭证生成', path: '/vouchers' },
     ],
   },
   {
-    label: '凭证与账簿',
+    label: '账务输出',
     children: [
-      { label: '凭证生成', path: '/vouchers' },
       { label: '凭证管理', path: '/voucher-management' },
       { label: '账簿', path: '/ledgers' },
-      { label: '历史账套导入', path: '/historical-import' },
+      { label: '输出中心', path: '/output-center' },
     ],
   },
   {
-    label: '申报与报告',
-    children: [{ label: '输出中心', path: '/output-center' }],
-  },
-  {
-    label: '基础设置',
+    label: '系统设置',
     children: [
       { label: '科目设置', path: '/account-subjects' },
       { label: '规则设置', path: '/rules' },
@@ -122,6 +120,15 @@ async function createPackage() {
   }
 }
 
+function openCreatePackageDialog() {
+  if (!workspace.enterprises.length) {
+    ElMessage.warning('请先创建企业档案')
+    router.push('/enterprises/init')
+    return
+  }
+  createDialogVisible.value = true
+}
+
 function logout() {
   clearAuthSession()
   router.replace('/login')
@@ -194,7 +201,7 @@ async function submitPasswordChange() {
           <span v-if="showLogout" class="current-user">当前用户：{{ currentUser }}</span>
           <el-button v-if="showLogout" :icon="Lock" plain @click="openPasswordDialog">修改密码</el-button>
           <el-button v-if="showLogout" :icon="SwitchButton" plain @click="logout">退出登录</el-button>
-          <el-button type="primary" :icon="Plus" @click="createDialogVisible = true">创建本月工作包</el-button>
+          <el-button type="primary" :icon="Plus" @click="openCreatePackageDialog">创建本月工作包</el-button>
         </div>
       </header>
       <main class="app-content">

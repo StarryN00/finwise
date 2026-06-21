@@ -29,29 +29,32 @@ function routePattern(path) {
 
 describe('AppLayout navigation', () => {
   it('groups sidebar navigation by operator workflow', () => {
-    expect(source).toMatch(navGroupPattern('客户管理'))
+    expect(source).toMatch(navGroupPattern('客户资料'))
     expect(source).toMatch(navGroupPattern('月度作业'))
-    expect(source).toMatch(navGroupPattern('凭证与账簿'))
-    expect(source).toMatch(navGroupPattern('申报与报告'))
-    expect(source).toMatch(navGroupPattern('基础设置'))
+    expect(source).toMatch(navGroupPattern('账务输出'))
+    expect(source).toMatch(navGroupPattern('系统设置'))
     expect(source).toMatch(/<section[\s\S]*v-for="group in navGroups"[\s\S]*class="app-nav__group"/)
     expect(source).toMatch(/<router-link[\s\S]*v-for="item in group\.children"[\s\S]*:to="item\.path"[\s\S]*>/)
   })
 
-  it('keeps all business routes reachable from grouped navigation', () => {
+  it('keeps primary business routes reachable from grouped navigation', () => {
     expect(source).toMatch(navEntryPattern('工作台', '/'))
     expect(source).toMatch(navEntryPattern('企业名册', '/enterprises'))
+    expect(source).toMatch(navEntryPattern('历史账套导入', '/historical-import'))
     expect(source).toMatch(navEntryPattern('月度工作包', '/monthly-workspace'))
-    expect(source).toMatch(navEntryPattern('账目明细', '/account-details'))
     expect(source).toMatch(navEntryPattern('资金流水', '/bank-ledger'))
     expect(source).toMatch(navEntryPattern('发票台账', '/invoice-ledger'))
     expect(source).toMatch(navEntryPattern('凭证生成', '/vouchers'))
     expect(source).toMatch(navEntryPattern('凭证管理', '/voucher-management'))
     expect(source).toMatch(navEntryPattern('账簿', '/ledgers'))
-    expect(source).toMatch(navEntryPattern('历史账套导入', '/historical-import'))
     expect(source).toMatch(navEntryPattern('输出中心', '/output-center'))
     expect(source).toMatch(navEntryPattern('科目设置', '/account-subjects'))
     expect(source).toMatch(navEntryPattern('规则设置', '/rules'))
+  })
+
+  it('hides the legacy account details entry while preserving its route', () => {
+    expect(countNavEntries(source, '账目明细')).toBe(0)
+    expect(routerSource).toMatch(routePattern('/account-details'))
   })
 
   it('renders each accounting workspace nav label once', () => {
@@ -66,6 +69,13 @@ describe('AppLayout navigation', () => {
     expect(routerSource).toMatch(routePattern('/vouchers'))
     expect(routerSource).toMatch(routePattern('/voucher-management'))
     expect(routerSource).toMatch(routePattern('/ledgers'))
+  })
+
+  it('guards monthly package creation when no enterprise exists', () => {
+    expect(source).toContain('openCreatePackageDialog')
+    expect(source).toContain('@click="openCreatePackageDialog"')
+    expect(source).toContain('请先创建企业档案')
+    expect(source).toContain("router.push('/enterprises/init')")
   })
 
   it('exposes authenticated password change with a real API call and forced re-login', () => {
