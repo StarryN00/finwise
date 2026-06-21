@@ -30,3 +30,7 @@ test = [
 [tool.pytest.ini_options]
 testpaths = ["tests"]
 pythonpath = ["."]
+
+[tool.setuptools.packages.find]
+include = ["app*", "finreport*"]
+exclude = ["storage*", "tests*", "scripts*"]
