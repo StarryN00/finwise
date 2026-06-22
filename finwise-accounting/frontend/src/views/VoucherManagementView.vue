@@ -53,15 +53,16 @@ const voucherCountLabel = computed(() => '凭证')
 const selectedEnterpriseName = computed(() => {
   return enterpriseOptions.value.find((enterprise) => enterprise.id === selectedEnterpriseId.value)?.name || '当前企业'
 })
-const selectedPeriodParts = computed(() => parsePeriod(activePackage.value?.period))
-const railYear = computed(() => Number(historicalFiscalYear.value) || selectedPeriodParts.value.year || new Date().getFullYear())
-const activeRailMonth = computed(() => Number(historicalStartMonth.value))
-const availableMonthlyPeriodMonths = computed(() => {
-  return new Set(
-    periodOptions.value
-      .map((item) => parsePeriod(item.period))
-      .filter((period) => period.year === railYear.value && period.month)
-      .map((period) => period.month),
+const selectedMonthlyPackage = computed(() => {
+  const fiscalYear = Number(historicalFiscalYear.value)
+  const startMonth = Number(historicalStartMonth.value)
+  const endMonth = Number(historicalEndMonth.value)
+  if (!fiscalYear || startMonth !== endMonth) return null
+  return (
+    periodOptions.value.find((item) => {
+      const period = parsePeriod(item.period)
+      return period.year === fiscalYear && period.month === startMonth
+    }) || null
   )
 })
 const selectedVoucher = computed(() => vouchers.value.find((item) => voucherRowId(item) === selectedVoucherId.value) || null)
@@ -114,15 +115,8 @@ watch(selectedEnterpriseId, () => {
   loadConfirmedVouchers()
 })
 
-watch(selectedPeriodPackageId, async (packageId) => {
-  syncHistoricalPeriodFromPackage(packageId)
-  persistContext()
-  if (packageId || selectedEnterpriseId.value) {
-    await loadConfirmedVouchers()
-  }
-})
-
 watch([historicalFiscalYear, historicalStartMonth, historicalEndMonth], async () => {
+  selectedPeriodPackageId.value = selectedMonthlyPackage.value?.id || ''
   persistContext()
   if (selectedEnterpriseId.value) {
     await loadConfirmedVouchers()
@@ -222,10 +216,11 @@ async function loadConfirmedVouchers() {
 }
 
 async function loadMonthlyConfirmedVouchers(searchText) {
-  if (!selectedPeriodPackageId.value) return []
+  const monthlyPackageId = selectedMonthlyPackage.value?.id
+  if (!monthlyPackageId) return []
   const params = { status: 'CONFIRMED' }
   if (searchText) params.keyword = searchText
-  const response = await api.vouchers.list(selectedPeriodPackageId.value, params)
+  const response = await api.vouchers.list(monthlyPackageId, params)
   return (response.data || [])
     .filter((voucher) => voucher.status === 'CONFIRMED')
     .map((voucher) => ({ ...voucher, __source: 'monthly' }))
@@ -305,28 +300,6 @@ function entryKey(voucher, entry, index) {
   return entry.id || `${voucherRowId(voucher)}:${entry.line_no || index}`
 }
 
-function selectRailMonth(month) {
-  const target = periodOptions.value.find((item) => {
-    const period = parsePeriod(item.period)
-    return period.year === railYear.value && period.month === Number(month)
-  })
-  if (target) {
-    selectedPeriodPackageId.value = target.id
-  }
-  historicalStartMonth.value = month
-  historicalEndMonth.value = month
-}
-
-function hasMonthlyPackage(month) {
-  return availableMonthlyPeriodMonths.value.has(Number(month))
-}
-
-function monthButtonTitle(month) {
-  const label = `${railYear.value}-${String(month).padStart(2, '0')}`
-  if (!hasMonthlyPackage(month)) return `${label} 暂无当前期间工作包，可查看已导入账套数据`
-  return label
-}
-
 function voucherRowId(voucher) {
   return `${voucher?.__source || 'monthly'}:${voucher?.id || ''}`
 }
@@ -348,12 +321,6 @@ function voucherRowId(voucher) {
         <span>企业主体</span>
         <el-select v-model="selectedEnterpriseId" placeholder="企业主体" filterable>
           <el-option v-for="enterprise in enterpriseOptions" :key="enterprise.id" :label="enterprise.name" :value="enterprise.id" />
-        </el-select>
-      </label>
-      <label>
-        <span>工作期间</span>
-        <el-select v-model="selectedPeriodPackageId" placeholder="工作期间">
-          <el-option v-for="item in periodOptions" :key="item.id" :label="item.period" :value="item.id" />
         </el-select>
       </label>
       <label>
@@ -449,21 +416,6 @@ function voucherRowId(voucher) {
         </table>
       </div>
 
-      <aside class="period-rail" aria-label="期间选择">
-        <strong>期间选择</strong>
-        <span>{{ selectedContextLabel }}</span>
-        <div class="rail-year">{{ railYear }}</div>
-        <button
-          v-for="month in monthOptions"
-          :key="month.value"
-          type="button"
-          :class="{ active: activeRailMonth === month.value, unavailable: !hasMonthlyPackage(month.value) }"
-          :title="monthButtonTitle(month.value)"
-          @click="selectRailMonth(month.value)"
-        >
-          {{ month.label }}
-        </button>
-      </aside>
     </div>
 
     <div v-if="hasVoucherRows" class="pagination-bar" aria-label="凭证分页">
@@ -588,7 +540,7 @@ function voucherRowId(voucher) {
 
 .voucher-ledger-layout {
   display: grid;
-  grid-template-columns: minmax(0, 1fr) 74px;
+  grid-template-columns: minmax(0, 1fr);
   gap: 10px;
   min-height: 0;
 }
@@ -807,62 +759,6 @@ function voucherRowId(voucher) {
   font-size: 12px;
 }
 
-.period-rail {
-  display: grid;
-  align-content: start;
-  gap: 8px;
-  padding: 10px 8px;
-  border: 1px solid #dbe2ec;
-  border-radius: 4px;
-  background: #fff;
-  color: #2f3a4c;
-  text-align: center;
-  box-shadow: 0 2px 8px rgb(20 31 52 / 10%);
-}
-
-.period-rail strong {
-  font-size: 12px;
-}
-
-.period-rail span {
-  color: #66758c;
-  font-size: 11px;
-  line-height: 1.3;
-}
-
-.rail-year {
-  width: max-content;
-  margin: 4px auto 0;
-  padding: 1px 5px;
-  border-radius: 8px;
-  background: #8b5cf6;
-  color: #fff;
-  font-size: 12px;
-}
-
-.period-rail button {
-  height: 24px;
-  border: 1px solid transparent;
-  border-radius: 12px;
-  background: transparent;
-  color: #2f3a4c;
-  font-weight: 700;
-  cursor: pointer;
-}
-
-.period-rail button.active {
-  border-color: #2f7af7;
-  background: #2f7af7;
-  color: #fff;
-}
-
-.period-rail button.unavailable,
-.period-rail button:disabled {
-  background: #f3f6fa;
-  color: #a5afbf;
-  cursor: not-allowed;
-}
-
 .pager-button {
   min-width: 68px;
   height: 30px;
@@ -904,17 +800,6 @@ function voucherRowId(voucher) {
   .voucher-filter-strip,
   .voucher-ledger-layout {
     grid-template-columns: 1fr;
-  }
-
-  .period-rail {
-    grid-template-columns: repeat(6, 1fr);
-    text-align: center;
-  }
-
-  .period-rail strong,
-  .period-rail span,
-  .rail-year {
-    grid-column: 1 / -1;
   }
 
   .voucher-empty-state {

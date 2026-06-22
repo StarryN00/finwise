@@ -192,8 +192,12 @@ describe('VoucherManagementView', () => {
     expect(filterStrip.text()).not.toContain('月度工作包')
     expect(filterStrip.text()).not.toContain('历史账套')
     expect(filterStrip.text()).toContain('企业主体')
-    expect(filterStrip.text()).toContain('工作期间')
+    expect(filterStrip.text()).toContain('会计年度')
+    expect(filterStrip.text()).toContain('起始月份')
+    expect(filterStrip.text()).toContain('截止月份')
+    expect(filterStrip.text()).not.toContain('工作期间')
     expect(wrapper.find('select[aria-label="凭证来源"]').exists()).toBe(false)
+    expect(wrapper.find('select[aria-label="工作期间"]').exists()).toBe(false)
     expect(api.vouchers.list).toHaveBeenCalledWith('package-1', { status: 'CONFIRMED' })
     expect(api.historicalImports.vouchers).toHaveBeenCalledWith('enterprise-1', {
       fiscal_year: 2026,
@@ -278,6 +282,9 @@ describe('VoucherManagementView', () => {
     expect(yearSelect.exists()).toBe(true)
     expect(wrapper.find('input[placeholder="会计年度"]').exists()).toBe(false)
 
+    api.vouchers.list.mockClear()
+    api.historicalImports.vouchers.mockClear()
+
     await yearSelect.setValue('2025')
     await flushPromises()
 
@@ -286,7 +293,7 @@ describe('VoucherManagementView', () => {
       period_start_month: 4,
       period_end_month: 4,
     })
-    expect(api.vouchers.list).toHaveBeenLastCalledWith('package-1', { status: 'CONFIRMED' })
+    expect(api.vouchers.list).not.toHaveBeenCalled()
   })
 
   it('shows a focused empty state instead of an empty ledger table when no confirmed vouchers exist', async () => {
@@ -413,7 +420,7 @@ describe('VoucherManagementView', () => {
     expect(wrapper.text()).not.toContain('已驳回凭证不应出现在凭证管理')
   })
 
-  it('switches periods from the period rail without a source-mode tab', async () => {
+  it('switches months from accounting period selectors without source tabs or period rails', async () => {
     api.workspace.snapshot.mockResolvedValue({
       data: {
         selectedPackageId: 'package-1',
@@ -440,10 +447,18 @@ describe('VoucherManagementView', () => {
     await workspace.loadWorkspace()
     await flushPromises()
 
-    const mayButton = wrapper.findAll('.period-rail button').find((button) => button.text() === '05月')
-    expect(mayButton?.exists()).toBe(true)
+    expect(wrapper.find('.period-rail').exists()).toBe(false)
+    expect(wrapper.find('select[aria-label="工作期间"]').exists()).toBe(false)
+    expect(wrapper.text()).not.toContain('月度工作包')
+    expect(wrapper.text()).not.toContain('历史账套')
 
-    await mayButton.trigger('click')
+    const startMonth = wrapper.find('select[aria-label="起始月份"]')
+    const endMonth = wrapper.find('select[aria-label="截止月份"]')
+    await endMonth.setValue('5')
+    await flushPromises()
+    api.vouchers.list.mockClear()
+    api.historicalImports.vouchers.mockClear()
+    await startMonth.setValue('5')
     await flushPromises()
 
     expect(api.vouchers.list).toHaveBeenLastCalledWith('package-2', { status: 'CONFIRMED' })
@@ -452,6 +467,5 @@ describe('VoucherManagementView', () => {
       period_start_month: 5,
       period_end_month: 5,
     })
-    expect(wrapper.find('.period-rail button.active').text()).toBe('05月')
   })
 })
