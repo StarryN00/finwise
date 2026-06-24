@@ -64,13 +64,13 @@ def create_enterprise(
     city: str = "苏州市",
 ) -> Enterprise:
     organization_id = _ensure_current_organization(db)
-    name = _required_text(name, "Enterprise name is required.")
+    name = _required_text(name, "请填写企业名称。")
     unified_social_credit_code = _required_text(
         unified_social_credit_code,
-        "Unified social credit code is required.",
+        "请填写统一社会信用代码。",
     )
-    taxpayer_type = _required_text(taxpayer_type, "Taxpayer type is required.")
-    industry = _required_text(industry, "Industry is required.")
+    taxpayer_type = _required_text(taxpayer_type, "请选择纳税人类型。")
+    industry = _required_text(industry, "请选择所属行业。")
     existing = db.scalar(
         select(Enterprise).where(
             Enterprise.organization_id == organization_id,
@@ -78,7 +78,7 @@ def create_enterprise(
         )
     )
     if existing is not None:
-        raise ConflictError("Enterprise unified social credit code already exists in this organization.")
+        raise ConflictError("该统一社会信用代码已存在，请检查是否已保存过该企业。")
 
     enterprise = Enterprise(
         channel_id=DEFAULT_CHANNEL_ID,
@@ -95,7 +95,7 @@ def create_enterprise(
         db.commit()
     except IntegrityError as exc:
         db.rollback()
-        raise ConflictError("Enterprise unified social credit code already exists in this organization.") from exc
+        raise ConflictError("该统一社会信用代码已存在，请检查是否已保存过该企业。") from exc
     db.refresh(enterprise)
     return enterprise
 
@@ -124,7 +124,7 @@ def save_initial_snapshot(
         )
     )
     if existing_snapshot is not None:
-        raise ConflictError("Initial financial snapshot already exists for this enterprise.")
+        raise ConflictError("该企业的期初数据已保存，请勿重复提交。")
 
     snapshot = InitialFinancialSnapshot(
         channel_id=DEFAULT_CHANNEL_ID,
@@ -139,7 +139,7 @@ def save_initial_snapshot(
         db.commit()
     except IntegrityError as exc:
         db.rollback()
-        raise ConflictError("Initial financial snapshot could not be saved.") from exc
+        raise ConflictError("期初数据保存失败，请刷新后重试。") from exc
     db.refresh(snapshot)
     return snapshot
 
@@ -163,7 +163,7 @@ def create_monthly_work_package(
         )
     )
     if existing_package is not None:
-        raise ConflictError("Monthly work package already exists for this enterprise and period.")
+        raise ConflictError("该企业当前期间的工作包已存在，请勿重复创建。")
 
     package = MonthlyWorkPackage(
         channel_id=DEFAULT_CHANNEL_ID,
@@ -177,7 +177,7 @@ def create_monthly_work_package(
         db.commit()
     except IntegrityError as exc:
         db.rollback()
-        raise ConflictError("Monthly work package already exists for this enterprise and period.") from exc
+        raise ConflictError("该企业当前期间的工作包已存在，请勿重复创建。") from exc
     db.refresh(package)
     return package
 
@@ -259,7 +259,7 @@ def delete_enterprise(db: Session, *, enterprise_id: UUID) -> None:
         db.commit()
     except IntegrityError as exc:
         db.rollback()
-        raise ConflictError("Enterprise could not be deleted because related data still exists.") from exc
+        raise ConflictError("企业已有相关业务数据，无法直接删除。") from exc
 
 
 def _is_balance_sheet_balanced(data: dict[str, Any]) -> bool:
@@ -285,7 +285,7 @@ def _get_enterprise_in_current_organization(
 ) -> Enterprise:
     enterprise = db.get(Enterprise, enterprise_id)
     if enterprise is None or enterprise.organization_id != organization_id:
-        raise NotFoundError("Enterprise not found in current organization.")
+        raise NotFoundError("当前机构下未找到该企业。")
     return enterprise
 
 
@@ -296,7 +296,7 @@ def _statement_decimal(data: dict[str, Any], field_name: str) -> Decimal:
     try:
         decimal_value = Decimal(str(value))
     except (InvalidOperation, ValueError) as exc:
-        raise ValidationError(f"Financial statement field '{field_name}' must be numeric.") from exc
+        raise ValidationError(f"财务报表字段“{field_name}”必须是数字。") from exc
     if not decimal_value.is_finite():
-        raise ValidationError(f"Financial statement field '{field_name}' must be a finite number.")
+        raise ValidationError(f"财务报表字段“{field_name}”必须是有效数字。")
     return decimal_value

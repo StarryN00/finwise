@@ -302,10 +302,28 @@ async function submitEnterprise() {
     ElMessage.success('企业和期初数据已保存')
     router.push('/enterprises')
   } catch (error) {
-    ElMessage.error(error?.response?.data?.detail || error?.message || '保存失败')
+    ElMessage.error(formatEnterpriseSaveError(error))
   } finally {
     isSubmitting.value = false
   }
+}
+
+function formatEnterpriseSaveError(error) {
+  const detail = error?.response?.data?.detail || error?.message || ''
+  if (
+    error?.response?.status === 409 ||
+    detail.includes('unified social credit code already exists') ||
+    detail.includes('统一社会信用代码已存在')
+  ) {
+    return '该统一社会信用代码已存在，请检查是否已保存过该企业。企业档案可能已经创建成功，请返回企业名册确认后再继续。'
+  }
+  if (detail.includes('Initial financial snapshot') || detail.includes('期初数据已保存')) {
+    return '该企业的期初数据已保存，请勿重复提交。'
+  }
+  if (detail.includes('required') || detail.includes('请填写') || detail.includes('请选择')) {
+    return detail
+  }
+  return detail || '保存失败，请稍后重试'
 }
 
 function toNumber(value) {

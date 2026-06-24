@@ -23,4 +23,10 @@ describe('EnterpriseInitView', () => {
     expect(source).toContain("form.assetsTotal = data.data['资产总计']")
     expect(source).toContain("form.revenue = data.data['营业收入']")
   })
+
+  it('shows Chinese save conflict guidance instead of raw backend English', () => {
+    expect(source).toContain('formatEnterpriseSaveError(error)')
+    expect(source).toContain('该统一社会信用代码已存在，请检查是否已保存过该企业。')
+    expect(source).toContain('企业档案可能已经创建成功')
+  })
 })

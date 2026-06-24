@@ -444,6 +444,7 @@ def test_duplicate_enterprise_returns_409_through_api(db_session):
     response = client.post("/api/enterprises", json=payload)
 
     assert response.status_code == 409
+    assert response.json()["detail"] == "该统一社会信用代码已存在，请检查是否已保存过该企业。"
 
 
 def test_delete_enterprise_endpoint_returns_204_and_404_after_delete(db_session):
@@ -477,7 +478,7 @@ def test_blank_enterprise_name_returns_400_through_api(db_session):
     )
 
     assert response.status_code == 400
-    assert "Enterprise name is required" in response.json()["detail"]
+    assert response.json()["detail"] == "请填写企业名称。"
 
 
 def test_blank_unified_social_credit_code_returns_400_through_api(db_session):
@@ -494,7 +495,7 @@ def test_blank_unified_social_credit_code_returns_400_through_api(db_session):
     )
 
     assert response.status_code == 400
-    assert "Unified social credit code is required" in response.json()["detail"]
+    assert response.json()["detail"] == "请填写统一社会信用代码。"
 
 
 def test_missing_enterprise_snapshot_returns_404_through_api(db_session):
@@ -529,6 +530,7 @@ def test_duplicate_monthly_package_returns_409_through_api(db_session):
     response = client.post(f"/api/enterprises/{enterprise_id}/monthly-packages", json=payload)
 
     assert response.status_code == 409
+    assert response.json()["detail"] == "该企业当前期间的工作包已存在，请勿重复创建。"
 
 
 def test_invalid_balance_sheet_value_returns_client_error_through_api(db_session):
@@ -600,6 +602,7 @@ def test_duplicate_initial_snapshot_returns_409_through_api(db_session):
     response = client.post(f"/api/enterprises/{enterprise_id}/initial-snapshot", json=payload)
 
     assert response.status_code == 409
+    assert response.json()["detail"] == "该企业的期初数据已保存，请勿重复提交。"
 
 
 def test_initial_snapshot_rejects_duplicate_enterprise_at_database_level(db_session):
