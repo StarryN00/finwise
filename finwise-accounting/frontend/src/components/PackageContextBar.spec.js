@@ -17,4 +17,12 @@ describe('PackageContextBar', () => {
     expect(source).not.toContain('搜索企业或期间')
     expect(source).not.toContain('`${item.company} · ${item.period}`')
   })
+
+  it('builds enterprise selector options from initialized enterprises before monthly packages exist', () => {
+    expect(source).toContain('for (const item of workspace.enterprises)')
+    expect(source).toContain("options.push({ enterpriseId: item.id, company: item.name })")
+    expect(source.indexOf('for (const item of workspace.enterprises)')).toBeLessThan(
+      source.indexOf('for (const item of workspace.workPackages)'),
+    )
+  })
 })

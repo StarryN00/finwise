@@ -68,6 +68,11 @@ const statusValue = computed(() => props.statusValue)
 const enterpriseOptions = computed(() => {
   const seen = new Set()
   const options = []
+  for (const item of workspace.enterprises) {
+    if (!item.id || seen.has(item.id)) continue
+    seen.add(item.id)
+    options.push({ enterpriseId: item.id, company: item.name })
+  }
   for (const item of workspace.workPackages) {
     if (!item.enterpriseId || seen.has(item.enterpriseId)) continue
     seen.add(item.enterpriseId)
@@ -80,10 +85,14 @@ const periodOptions = computed(() =>
 )
 
 watch(
-  activePackage,
+  [activePackage, enterpriseOptions],
   (value) => {
-    selectedEnterpriseId.value = value?.enterpriseId || ''
-    selectedPeriodPackageId.value = value?.id || ''
+    const packageValue = value[0]
+    const options = value[1]
+    const hasSelectedEnterprise = options.some((item) => item.enterpriseId === selectedEnterpriseId.value)
+    selectedEnterpriseId.value =
+      packageValue?.enterpriseId || (hasSelectedEnterprise ? selectedEnterpriseId.value : options[0]?.enterpriseId || '')
+    selectedPeriodPackageId.value = packageValue?.id || ''
   },
   { immediate: true },
 )
