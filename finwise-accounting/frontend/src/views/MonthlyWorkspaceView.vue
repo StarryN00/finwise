@@ -144,7 +144,7 @@ const currentStep = computed(() => workflowSteps.value.find((step) => step.statu
 
 const nextActionHint = computed(() => {
   const { hasAllSourceData, hasParsedRows, hasConfirmed, hasTaxDraft, hasHealthReport } = workflowFlags.value
-  if (!activePackage.value) return '先创建本月工作包，再导入银行流水、进项和销项明细。'
+  if (!activePackage.value) return '先创建对应月份的工作包，再导入银行流水、进项和销项明细。'
   if (!hasAllSourceData) return '请先补齐缺失资料。资料齐全后系统才能继续解析和匹配。'
   if (!hasParsedRows) return '资料已经齐全，下一步运行匹配，生成待确认账目明细。'
   if (!hasConfirmed) return '还有待确认明细，请进入账目明细处理未匹配流水、发票和分类。'

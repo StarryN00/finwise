@@ -115,7 +115,7 @@ const primaryGuidance = computed(() => {
   if (!hasPackages.value) {
     return {
       title: '完成开账准备',
-      description: '先导入期初报表或历史账套，再创建本月工作包。',
+      description: '先导入期初报表或历史账套，再创建对应月份的工作包。',
       primaryAction: '导入期初/历史账套',
       primaryPath: '/historical-import',
       secondaryAction: '创建月度工作包',

@@ -201,7 +201,7 @@ async function submitPasswordChange() {
           <span v-if="showLogout" class="current-user">当前用户：{{ currentUser }}</span>
           <el-button v-if="showLogout" :icon="Lock" plain @click="openPasswordDialog">修改密码</el-button>
           <el-button v-if="showLogout" :icon="SwitchButton" plain @click="logout">退出登录</el-button>
-          <el-button type="primary" :icon="Plus" @click="openCreatePackageDialog">创建本月工作包</el-button>
+          <el-button type="primary" :icon="Plus" @click="openCreatePackageDialog">创建月度工作包</el-button>
         </div>
       </header>
       <main class="app-content">

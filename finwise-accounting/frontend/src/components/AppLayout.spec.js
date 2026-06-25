@@ -74,6 +74,8 @@ describe('AppLayout navigation', () => {
   it('guards monthly package creation when no enterprise exists', () => {
     expect(source).toContain('openCreatePackageDialog')
     expect(source).toContain('@click="openCreatePackageDialog"')
+    expect(source).toContain('创建月度工作包')
+    expect(source).not.toContain('创建本月工作包')
     expect(source).toContain('请先创建企业档案')
     expect(source).toContain("router.push('/enterprises/init')")
   })
