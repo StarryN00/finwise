@@ -91,7 +91,7 @@ def list_enterprise_subjects(db: Session, *, enterprise_id: UUID) -> list[Accoun
     ).all()
 
 
-def generate_voucher_drafts(db: Session, *, monthly_work_package_id: UUID) -> dict:
+def generate_voucher_drafts(db: Session, *, monthly_work_package_id: UUID, commit: bool = True) -> dict:
     organization_id = get_current_organization_id()
     package = db.get(MonthlyWorkPackage, monthly_work_package_id)
     if package is None or package.organization_id != organization_id:
@@ -151,14 +151,17 @@ def generate_voucher_drafts(db: Session, *, monthly_work_package_id: UUID) -> di
     for voucher in created:
         voucher.validation_errors = validate_voucher(db, voucher)
 
-    try:
-        db.commit()
-    except IntegrityError as exc:
-        db.rollback()
-        raise VoucherDomainError("Voucher drafts could not be generated.") from exc
+    if commit:
+        try:
+            db.commit()
+        except IntegrityError as exc:
+            db.rollback()
+            raise VoucherDomainError("Voucher drafts could not be generated.") from exc
 
-    for voucher in created:
-        db.refresh(voucher)
+        for voucher in created:
+            db.refresh(voucher)
+    else:
+        db.flush()
 
     return {"created_vouchers": len(created), "vouchers": created}
 

@@ -22,6 +22,8 @@ from app.models import (
     MatchRecord,
     MonthlyWorkPackage,
     Voucher,
+    VoucherAiPreprocessBatch,
+    VoucherAiPreprocessJob,
     VoucherEntry,
     VoucherRule,
 )
@@ -529,6 +531,124 @@ def test_voucher_preprocess_endpoint_calls_kimi_client_and_records_audit(monkeyp
     assert audit.after_data["ai_status"] == "SUCCESS"
     assert audit.after_data["used_kimi"] is True
     assert audit.after_data["model"]
+
+
+def test_voucher_preprocess_job_splits_large_input_and_reuses_active_job():
+    client, db_session = make_context()
+    _enterprise, package = make_package(db_session)
+    for index in range(81):
+        db_session.add(
+            BankTransaction(
+                organization_id=ORG,
+                monthly_work_package_id=package.id,
+                transaction_date=date(2026, 5, 1),
+                summary="日常收款",
+                debit_amount=Decimal("0.00"),
+                credit_amount=Decimal("100.00"),
+                counterparty_name=f"客户{index:03d}",
+            )
+        )
+    db_session.commit()
+
+    first_response = client.post(f"/api/monthly-packages/{package.id}/voucher-preprocess-jobs")
+    second_response = client.post(f"/api/monthly-packages/{package.id}/voucher-preprocess-jobs")
+
+    assert first_response.status_code == 202
+    assert first_response.json()["total_batches"] == 2
+    assert second_response.status_code == 202
+    assert second_response.json()["id"] == first_response.json()["id"]
+    assert db_session.query(VoucherAiPreprocessJob).count() == 1
+
+
+def test_voucher_preprocess_worker_finalizes_all_batches_into_vouchers():
+    from app.services.voucher_preprocess_job_service import process_next_voucher_preprocess_batch
+
+    client, db_session = make_context()
+    _enterprise, package = make_package(db_session)
+    add_output_match(db_session, package)
+    created = client.post(f"/api/monthly-packages/{package.id}/voucher-preprocess-jobs")
+    assert created.status_code == 202
+    stub = StubVoucherPreprocessClient(
+        response={
+            "analysis_summary": "已完成核对",
+            "task_suggestions": [
+                {
+                    "source_key": "output-receipt:T001:I001",
+                    "task_type": "FULL_MATCH",
+                    "confidence": 96,
+                    "reason": "金额一致、日期一致、方向一致",
+                    "summary": "确认销售收入并收款",
+                    "bank_refs": ["T001"],
+                    "invoice_refs": ["I001"],
+                    "entries": [],
+                }
+            ],
+        }
+    )
+
+    assert process_next_voucher_preprocess_batch(db_session, ai_client=stub) is True
+    job_response = client.get(f"/api/voucher-preprocess-jobs/{created.json()['id']}")
+
+    assert job_response.status_code == 200
+    assert job_response.json()["status"] == "SUCCEEDED"
+    assert job_response.json()["created_vouchers"] >= 1
+    assert stub.payloads
+
+
+def test_voucher_preprocess_worker_splits_length_limited_batch():
+    from app.services.voucher_ai_preprocess_service import VoucherAiPreprocessUnavailableError
+    from app.services.voucher_preprocess_job_service import process_next_voucher_preprocess_batch
+
+    client, db_session = make_context()
+    _enterprise, package = make_package(db_session)
+    for index in range(3):
+        db_session.add(
+            BankTransaction(
+                organization_id=ORG,
+                monthly_work_package_id=package.id,
+                transaction_date=date(2026, 5, index + 1),
+                summary="收款",
+                debit_amount=Decimal("0.00"),
+                credit_amount=Decimal("100.00"),
+                counterparty_name="同一客户有限公司",
+            )
+        )
+    db_session.commit()
+    created = client.post(f"/api/monthly-packages/{package.id}/voucher-preprocess-jobs")
+    assert created.status_code == 202
+    stub = StubVoucherPreprocessClient(error=VoucherAiPreprocessUnavailableError("AI 输出过长被截断，请缩小数据范围后重试"))
+
+    assert process_next_voucher_preprocess_batch(db_session, ai_client=stub) is True
+    job = db_session.get(VoucherAiPreprocessJob, UUID(created.json()["id"]))
+    batches = db_session.query(VoucherAiPreprocessBatch).filter(VoucherAiPreprocessBatch.job_id == job.id).all()
+
+    assert job.total_batches == 3
+    assert any(batch.status == "SPLIT" for batch in batches)
+    assert sum(1 for batch in batches if batch.status == "QUEUED") == 3
+
+
+def test_voucher_preprocess_job_can_be_cancelled_before_worker_claims_it():
+    client, db_session = make_context()
+    _enterprise, package = make_package(db_session)
+    db_session.add(
+        BankTransaction(
+            organization_id=ORG,
+            monthly_work_package_id=package.id,
+            transaction_date=date(2026, 5, 1),
+            summary="收款",
+            debit_amount=Decimal("0.00"),
+            credit_amount=Decimal("100.00"),
+            counterparty_name="客户有限公司",
+        )
+    )
+    db_session.commit()
+    created = client.post(f"/api/monthly-packages/{package.id}/voucher-preprocess-jobs")
+
+    response = client.post(f"/api/voucher-preprocess-jobs/{created.json()['id']}/cancel")
+
+    assert response.status_code == 200
+    assert response.json()["status"] == "CANCELLED"
+    assert {item["status"] for item in response.json()["batches"]} == {"CANCELLED"}
 
 
 def test_voucher_preprocess_creates_ai_match_records_before_vouchers(monkeypatch):

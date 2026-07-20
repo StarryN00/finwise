@@ -22,7 +22,7 @@
             :disabled="!activePackage"
             @click="preprocessVouchers"
           >
-            {{ isGenerating ? 'AI 预处理中...' : 'AI 预处理' }}
+            {{ isGenerating ? `AI 预处理中 ${preprocessJob?.completed_batches || 0}/${preprocessJob?.total_batches || 0}` : 'AI 预处理' }}
           </el-button>
         </div>
       </div>
@@ -121,6 +121,40 @@
           <small>{{ pendingVoucherCount ? `待人工确认 ${pendingVoucherCount} 张` : '确认后生成正式凭证号' }}</small>
         </div>
       </div>
+
+      <el-alert
+        v-if="preprocessJob"
+        class="preprocess-alert"
+        :type="preprocessJobAlertType"
+        :closable="false"
+        show-icon
+      >
+        <template #title>
+          {{ preprocessJobTitle }}
+        </template>
+        <template #default>
+          模型：{{ preprocessJob.model }}；流水 {{ preprocessJob.input_bank_count }} 条；发票 {{ preprocessJob.input_invoice_count }} 张；
+          已完成 {{ preprocessJob.completed_batches }}/{{ preprocessJob.total_batches }} 批
+          <span v-if="preprocessJob.error_summary">；{{ preprocessJob.error_summary }}</span>
+          <el-button
+            v-if="preprocessJob.status === 'PARTIAL_FAILED'"
+            size="small"
+            type="warning"
+            :loading="isRetryingPreprocess"
+            @click="retryPreprocessJob"
+          >
+            重试失败批次
+          </el-button>
+          <el-button
+            v-if="isPreprocessJobActive(preprocessJob)"
+            size="small"
+            :loading="isCancellingPreprocess"
+            @click="cancelPreprocessJob"
+          >
+            取消任务
+          </el-button>
+        </template>
+      </el-alert>
 
       <el-alert
         v-if="preprocessAudit"
@@ -823,7 +857,7 @@
 </template>
 
 <script setup>
-import { computed, ref, watch } from 'vue'
+import { computed, onBeforeUnmount, ref, watch } from 'vue'
 import { useRoute, useRouter } from 'vue-router'
 import { ElMessage } from 'element-plus'
 import { api } from '../api/client'
@@ -858,8 +892,11 @@ const invoiceDirectionFilter = ref('all')
 const invoiceSourceStatusFilter = ref('all')
 const invoiceVoucherStatusFilter = ref('all')
 const preprocessAudit = ref(null)
+const preprocessJob = ref(null)
 const isLoading = ref(false)
 const isGenerating = ref(false)
+const isRetryingPreprocess = ref(false)
+const isCancellingPreprocess = ref(false)
 const isConfirming = ref(false)
 const isRejecting = ref(false)
 const isReopening = ref(false)
@@ -888,7 +925,7 @@ const treatmentForm = ref({
   note: '',
 })
 let voucherLoadRequestId = 0
-let preprocessRequestId = 0
+let preprocessPollTimer = null
 
 const rematchModeOptions = [
   { label: '保留流水重选发票', value: 'replace-invoice' },
@@ -935,6 +972,20 @@ const treatmentTypeOptions = [
 
 const activePackage = computed(() => workspace.activePackage)
 const activePackageId = computed(() => activePackage.value?.id || '')
+const preprocessJobAlertType = computed(() => {
+  if (preprocessJob.value?.status === 'SUCCEEDED') return 'success'
+  if (['PARTIAL_FAILED', 'STALE'].includes(preprocessJob.value?.status)) return 'warning'
+  return 'info'
+})
+const preprocessJobTitle = computed(() => {
+  const job = preprocessJob.value
+  if (!job) return ''
+  if (job.status === 'SUCCEEDED') return `AI 预处理已完成，新增 ${job.created_vouchers} 张凭证任务`
+  if (job.status === 'PARTIAL_FAILED') return 'AI 预处理部分失败'
+  if (job.status === 'STALE') return '原始资料已变更，任务未生成凭证'
+  if (job.status === 'FINALIZING') return 'AI 批次已完成，正在生成凭证任务'
+  return `AI 预处理进行中（${job.completed_batches}/${job.total_batches} 批）`
+})
 const enterpriseOptions = computed(() => {
   const seen = new Set()
   const options = []
@@ -1329,15 +1380,20 @@ watch(
     selectedEnterpriseId.value = packageItem?.enterpriseId || ''
     selectedPeriodPackageId.value = packageId
     persistSelectedPackageContext(packageItem)
+    stopPreprocessPolling()
+    preprocessJob.value = null
     if (!packageId) {
       voucherLoadRequestId += 1
       clearVouchers()
       return
     }
     loadVouchers(packageId)
+    loadLatestPreprocessJob(packageId)
   },
   { immediate: true },
 )
+
+onBeforeUnmount(stopPreprocessPolling)
 
 watch(
   [bankLedgerKeyword, bankSourceStatusFilter, bankVoucherStatusFilter, bankSortField, bankSortOrder],
@@ -1619,35 +1675,109 @@ async function preprocessVouchers() {
     ElMessage.warning('请先选择企业主体和工作期间')
     return
   }
-  const requestId = ++preprocessRequestId
   isGenerating.value = true
   preprocessAudit.value = null
-  const processingMessage = ElMessage.info({
-    message: 'AI 预处理中，数据量较大时可能需要 1-3 分钟，请勿刷新页面',
-    duration: 0,
-    showClose: true,
-  })
   try {
-    const response = await api.vouchers.preprocess(packageId)
-    if (isStalePreprocess(requestId, packageId)) return
-    preprocessAudit.value = response.data?.audit || null
-    const generatedVouchers = normalizeVoucherList(response.data)
-    const createdVoucherCount = Number(response.data?.created_vouchers ?? generatedVouchers.length)
-    await workspace.loadWorkspace(packageId)
-    if (isStalePreprocess(requestId, packageId)) return
-    const didLoadCurrentPackage = await loadVouchers(packageId)
-    if (!didLoadCurrentPackage || isStalePreprocess(requestId, packageId)) return
-    selectGeneratedVoucher(generatedVouchers)
-    ElMessage.success(`AI 预处理完成，本次新增 ${createdVoucherCount} 张凭证任务`)
+    const response = await api.vouchers.createPreprocessJob(packageId)
+    if (packageId !== activePackageId.value) return
+    preprocessJob.value = response.data || null
+    startPreprocessPolling(packageId)
+    ElMessage.info('AI 预处理任务已进入队列，可切换页面，完成后将自动生成凭证任务。')
   } catch (error) {
-    if (isStalePreprocess(requestId, packageId)) return
     ElMessage.error(error?.response?.data?.detail || error?.message || 'AI 预处理失败')
   } finally {
-    processingMessage?.close?.()
-    if (!isStalePreprocess(requestId, packageId)) {
+    isGenerating.value = isPreprocessJobActive(preprocessJob.value)
+  }
+}
+
+async function loadLatestPreprocessJob(packageId = activePackageId.value) {
+  if (!packageId) return null
+  stopPreprocessPolling()
+  try {
+    const response = await api.vouchers.latestPreprocessJob(packageId)
+    if (packageId !== activePackageId.value) return null
+    preprocessJob.value = response.data || null
+    isGenerating.value = isPreprocessJobActive(preprocessJob.value)
+    if (isGenerating.value) startPreprocessPolling(packageId)
+    return preprocessJob.value
+  } catch {
+    if (packageId === activePackageId.value) {
+      preprocessJob.value = null
       isGenerating.value = false
     }
+    return null
   }
+}
+
+function startPreprocessPolling(packageId) {
+  stopPreprocessPolling()
+  preprocessPollTimer = window.setInterval(() => refreshPreprocessJob(packageId), 3000)
+  refreshPreprocessJob(packageId)
+}
+
+function stopPreprocessPolling() {
+  if (preprocessPollTimer !== null) {
+    window.clearInterval(preprocessPollTimer)
+    preprocessPollTimer = null
+  }
+}
+
+async function refreshPreprocessJob(packageId = activePackageId.value) {
+  const jobId = preprocessJob.value?.id
+  if (!jobId || packageId !== activePackageId.value) return
+  try {
+    const response = await api.vouchers.getPreprocessJob(jobId)
+    if (packageId !== activePackageId.value || response.data?.id !== jobId) return
+    const previousStatus = preprocessJob.value?.status
+    preprocessJob.value = response.data
+    isGenerating.value = isPreprocessJobActive(preprocessJob.value)
+    if (isGenerating.value) return
+    stopPreprocessPolling()
+    if (preprocessJob.value?.status === 'SUCCEEDED' && previousStatus !== 'SUCCEEDED') {
+      await workspace.loadWorkspace(packageId)
+      await loadVouchers(packageId)
+      ElMessage.success(`AI 预处理完成，本次新增 ${preprocessJob.value.created_vouchers} 张凭证任务`)
+    }
+  } catch {
+    stopPreprocessPolling()
+    isGenerating.value = false
+  }
+}
+
+async function retryPreprocessJob() {
+  if (!preprocessJob.value?.id) return
+  isRetryingPreprocess.value = true
+  try {
+    const response = await api.vouchers.retryPreprocessJob(preprocessJob.value.id)
+    preprocessJob.value = response.data
+    isGenerating.value = true
+    startPreprocessPolling(activePackageId.value)
+    ElMessage.success('失败批次已重新进入队列')
+  } catch (error) {
+    ElMessage.error(error?.response?.data?.detail || error?.message || '重试失败批次失败')
+  } finally {
+    isRetryingPreprocess.value = false
+  }
+}
+
+async function cancelPreprocessJob() {
+  if (!preprocessJob.value?.id) return
+  isCancellingPreprocess.value = true
+  try {
+    const response = await api.vouchers.cancelPreprocessJob(preprocessJob.value.id)
+    preprocessJob.value = response.data
+    isGenerating.value = false
+    stopPreprocessPolling()
+    ElMessage.success('AI 预处理任务已取消')
+  } catch (error) {
+    ElMessage.error(error?.response?.data?.detail || error?.message || '取消 AI 预处理任务失败')
+  } finally {
+    isCancellingPreprocess.value = false
+  }
+}
+
+function isPreprocessJobActive(job) {
+  return ['QUEUED', 'RUNNING', 'FINALIZING'].includes(job?.status)
 }
 
 async function confirmVoucher() {
@@ -1869,16 +1999,6 @@ function isStaleVoucherLoad(requestId, packageId) {
   return requestId !== voucherLoadRequestId || packageId !== activePackageId.value
 }
 
-function isStalePreprocess(requestId, packageId) {
-  return requestId !== preprocessRequestId || packageId !== activePackageId.value
-}
-
-function selectGeneratedVoucher(generatedVouchers) {
-  const generatedIds = generatedVouchers.map((voucher) => voucher.id).filter(Boolean)
-  const nextVoucher = vouchers.value.find((voucher) => generatedIds.includes(voucher.id)) || vouchers.value[0]
-  selectedVoucherId.value = nextVoucher?.id || ''
-}
-
 function keepSelection() {
   if (vouchers.value.some((voucher) => voucher.id === selectedVoucherId.value)) return
   selectedVoucherId.value = vouchers.value[0]?.id || ''
@@ -1962,7 +2082,6 @@ function selectNextPendingVoucher(previousVoucherId) {
 }
 
 function clearVouchers() {
-  preprocessRequestId += 1
   vouchers.value = []
   ledgerSummary.value = emptyLedgerSummary()
   bankLedgerRows.value = []

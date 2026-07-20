@@ -21,6 +21,9 @@ class Settings(BaseSettings):
     moonshot_model: str = "moonshot-v1-32k"
     moonshot_report_model: str = "moonshot-v1-8k"
     moonshot_timeout_seconds: int = 240
+    voucher_ai_batch_max_sources: int = 80
+    voucher_ai_worker_poll_seconds: float = 2
+    voucher_ai_max_attempts: int = 3
     ai_match_confidence_threshold: int = 90
     finwise_auth_enabled: bool = False
     finwise_admin_username: str = "admin"

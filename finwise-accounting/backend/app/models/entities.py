@@ -178,6 +178,57 @@ class MonthlyWorkPackage(Base):
     created_at: Mapped[datetime] = mapped_column(DateTime, default=datetime.utcnow)
 
 
+class VoucherAiPreprocessJob(Base):
+    __tablename__ = "voucher_ai_preprocess_jobs"
+
+    id: Mapped[UUID] = mapped_column(Uuid(as_uuid=True), default=uuid4, primary_key=True)
+    channel_id: Mapped[UUID] = mapped_column(Uuid(as_uuid=True), default=DEFAULT_CHANNEL_ID, index=True)
+    organization_id: Mapped[UUID] = mapped_column(Uuid(as_uuid=True), ForeignKey("organizations.id"), index=True)
+    monthly_work_package_id: Mapped[UUID] = mapped_column(
+        Uuid(as_uuid=True), ForeignKey("monthly_work_packages.id"), index=True
+    )
+    status: Mapped[str] = mapped_column(String(32), default="QUEUED", index=True)
+    model: Mapped[str] = mapped_column(String(80), default="")
+    input_fingerprint: Mapped[str] = mapped_column(String(64), default="")
+    input_bank_count: Mapped[int] = mapped_column(Integer, default=0)
+    input_invoice_count: Mapped[int] = mapped_column(Integer, default=0)
+    total_batches: Mapped[int] = mapped_column(Integer, default=0)
+    completed_batches: Mapped[int] = mapped_column(Integer, default=0)
+    failed_batches: Mapped[int] = mapped_column(Integer, default=0)
+    created_vouchers: Mapped[int] = mapped_column(Integer, default=0)
+    analysis_summary: Mapped[str] = mapped_column(Text, default="")
+    error_summary: Mapped[str] = mapped_column(Text, default="")
+    started_at: Mapped[Optional[datetime]] = mapped_column(DateTime, nullable=True)
+    completed_at: Mapped[Optional[datetime]] = mapped_column(DateTime, nullable=True)
+    created_at: Mapped[datetime] = mapped_column(DateTime, default=datetime.utcnow)
+    updated_at: Mapped[datetime] = mapped_column(DateTime, default=datetime.utcnow, onupdate=datetime.utcnow)
+
+
+class VoucherAiPreprocessBatch(Base):
+    __tablename__ = "voucher_ai_preprocess_batches"
+
+    id: Mapped[UUID] = mapped_column(Uuid(as_uuid=True), default=uuid4, primary_key=True)
+    channel_id: Mapped[UUID] = mapped_column(Uuid(as_uuid=True), default=DEFAULT_CHANNEL_ID, index=True)
+    organization_id: Mapped[UUID] = mapped_column(Uuid(as_uuid=True), ForeignKey("organizations.id"), index=True)
+    job_id: Mapped[UUID] = mapped_column(Uuid(as_uuid=True), ForeignKey("voucher_ai_preprocess_jobs.id"), index=True)
+    parent_batch_id: Mapped[Optional[UUID]] = mapped_column(
+        Uuid(as_uuid=True), ForeignKey("voucher_ai_preprocess_batches.id"), nullable=True
+    )
+    sequence_no: Mapped[int] = mapped_column(Integer, default=1)
+    status: Mapped[str] = mapped_column(String(32), default="QUEUED", index=True)
+    source_count: Mapped[int] = mapped_column(Integer, default=0)
+    payload: Mapped[dict] = mapped_column(JSON, default=dict)
+    suggestions: Mapped[list] = mapped_column(JSON, default=list)
+    analysis_summary: Mapped[str] = mapped_column(Text, default="")
+    attempt_count: Mapped[int] = mapped_column(Integer, default=0)
+    next_attempt_at: Mapped[Optional[datetime]] = mapped_column(DateTime, nullable=True, index=True)
+    error_summary: Mapped[str] = mapped_column(Text, default="")
+    started_at: Mapped[Optional[datetime]] = mapped_column(DateTime, nullable=True)
+    completed_at: Mapped[Optional[datetime]] = mapped_column(DateTime, nullable=True)
+    created_at: Mapped[datetime] = mapped_column(DateTime, default=datetime.utcnow)
+    updated_at: Mapped[datetime] = mapped_column(DateTime, default=datetime.utcnow, onupdate=datetime.utcnow)
+
+
 class AccountSubject(Base):
     __tablename__ = "account_subjects"
     __table_args__ = (

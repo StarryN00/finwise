@@ -31,6 +31,11 @@ vi.mock('../api/client', () => ({
     vouchers: {
       list: vi.fn(),
       preprocess: vi.fn(),
+      createPreprocessJob: vi.fn(),
+      latestPreprocessJob: vi.fn(),
+      getPreprocessJob: vi.fn(),
+      retryPreprocessJob: vi.fn(),
+      cancelPreprocessJob: vi.fn(),
       confirm: vi.fn(),
       reject: vi.fn(),
       reopen: vi.fn(),
@@ -78,6 +83,8 @@ describe('VoucherWorkbenchView', () => {
       },
     })
     api.vouchers.list.mockResolvedValue({ data: [] })
+    api.vouchers.latestPreprocessJob.mockResolvedValue({ data: null })
+    api.vouchers.getPreprocessJob.mockResolvedValue({ data: null })
     api.vouchers.mergeSuggestions.mockResolvedValue({ data: { suggestions: [] } })
     api.vouchers.applyMergeSuggestion.mockResolvedValue({ data: voucherFixture('voucher-merged', '合并单边付款') })
     api.sourceLedgers.summary.mockResolvedValue({ data: {} })
@@ -280,7 +287,9 @@ describe('VoucherWorkbenchView', () => {
     expect(viewSource).toContain('selectNextPendingVoucher(voucherId)')
     expect(viewSource).toContain('await workspace.loadWorkspace(packageId)')
     expect(viewSource).toContain('async function preprocessVouchers()')
-    expect(viewSource).toContain('api.vouchers.preprocess')
+    expect(viewSource).toContain('api.vouchers.createPreprocessJob')
+    expect(viewSource).toContain('api.vouchers.latestPreprocessJob')
+    expect(viewSource).toContain('api.vouchers.getPreprocessJob')
     expect(viewSource).toContain('api.vouchers.mergeSuggestions')
     expect(viewSource).toContain('api.vouchers.applyMergeSuggestion')
     expect(viewSource).toContain('loadSourceLedgers(packageId, requestId)')
@@ -300,7 +309,7 @@ describe('VoucherWorkbenchView', () => {
     expect(viewSource).toContain('return `${Math.round(confidence)}%`')
     expect(viewSource).not.toContain('confidence * 100')
     expect(viewSource).toContain('voucherLoadRequestId')
-    expect(viewSource).toContain('preprocessRequestId')
+    expect(viewSource).toContain('preprocessPollTimer')
     expect(viewSource).toContain('requestId !== voucherLoadRequestId')
     expect(viewSource).toContain('packageId !== activePackageId.value')
     expect(clientSource).toContain('vouchers')
@@ -459,13 +468,34 @@ describe('VoucherWorkbenchView', () => {
     })
   })
 
-  it('clicks AI preprocessing through the voucher preprocess API', async () => {
+  it('queues AI preprocessing and keeps task progress after the request returns', async () => {
     const wrapper = mountWorkbench()
-    api.vouchers.preprocess.mockResolvedValue({
+    api.vouchers.createPreprocessJob.mockResolvedValue({
       data: {
-        created_vouchers: 1,
-        vouchers: [voucherFixture('voucher-2', '预处理新增凭证')],
-        audit: preprocessAudit(),
+        id: 'job-1',
+        status: 'QUEUED',
+        model: 'kimi-k2.6',
+        input_bank_count: 81,
+        input_invoice_count: 100,
+        total_batches: 3,
+        completed_batches: 0,
+        failed_batches: 0,
+        created_vouchers: 0,
+        batches: [],
+      },
+    })
+    api.vouchers.getPreprocessJob.mockResolvedValue({
+      data: {
+        id: 'job-1',
+        status: 'RUNNING',
+        model: 'kimi-k2.6',
+        input_bank_count: 81,
+        input_invoice_count: 100,
+        total_batches: 3,
+        completed_batches: 1,
+        failed_batches: 0,
+        created_vouchers: 0,
+        batches: [],
       },
     })
 
@@ -473,9 +503,53 @@ describe('VoucherWorkbenchView', () => {
     await aiButton(wrapper).trigger('click')
     await flushPromises()
 
-    expect(api.vouchers.preprocess).toHaveBeenCalledWith('package-1')
-    expect(api.workspace.snapshot).toHaveBeenCalledWith('package-1')
-    expect(wrapper.text()).toContain('Kimi AI 预处理已完成')
+    expect(api.vouchers.createPreprocessJob).toHaveBeenCalledWith('package-1')
+    expect(api.vouchers.getPreprocessJob).toHaveBeenCalledWith('job-1')
+    expect(wrapper.text()).toContain('AI 预处理进行中（1/3 批）')
+    wrapper.unmount()
+  })
+
+  it('cancels a queued AI preprocessing task through its explicit API action', async () => {
+    const wrapper = mountWorkbench()
+    api.vouchers.createPreprocessJob.mockResolvedValue({
+      data: queuedPreprocessJob(),
+    })
+    api.vouchers.getPreprocessJob.mockResolvedValue({ data: queuedPreprocessJob() })
+    api.vouchers.cancelPreprocessJob.mockResolvedValue({
+      data: { ...queuedPreprocessJob(), status: 'CANCELLED', error_summary: '操作员已取消 AI 预处理任务。' },
+    })
+
+    await flushPromises()
+    await aiButton(wrapper).trigger('click')
+    await flushPromises()
+    const cancelButton = wrapper.findAll('button').find((button) => button.text().includes('取消任务'))
+    await cancelButton.trigger('click')
+    await flushPromises()
+
+    expect(api.vouchers.cancelPreprocessJob).toHaveBeenCalledWith('job-1')
+    expect(wrapper.text()).toContain('操作员已取消 AI 预处理任务。')
+    wrapper.unmount()
+  })
+
+  it('requeues failed AI preprocessing batches through the retry action', async () => {
+    const wrapper = mountWorkbench()
+    api.vouchers.retryPreprocessJob.mockResolvedValue({ data: queuedPreprocessJob() })
+
+    await flushPromises()
+    wrapper.vm.preprocessJob = {
+      ...queuedPreprocessJob(),
+      status: 'PARTIAL_FAILED',
+      failed_batches: 1,
+      error_summary: '部分批次失败',
+    }
+    await wrapper.vm.$nextTick()
+    const retryButton = wrapper.findAll('button').find((button) => button.text().includes('重试失败批次'))
+    await retryButton.trigger('click')
+    await flushPromises()
+
+    expect(api.vouchers.retryPreprocessJob).toHaveBeenCalledWith('job-1')
+    expect(wrapper.vm.preprocessJob.status).toBe('QUEUED')
+    wrapper.unmount()
   })
 
   it('loads and applies AI merge suggestions with explicit source voucher ids', async () => {
@@ -510,32 +584,6 @@ describe('VoucherWorkbenchView', () => {
     expect(ElMessage.success).toHaveBeenCalledWith('已合并 3 条流水为一张待确认凭证')
     expect(wrapper.vm.selectedVoucherId).toBe('voucher-merged')
     expect(wrapper.vm.voucherDetailDialogVisible).toBe(true)
-  })
-
-  it('keeps the current preprocess loading state when a stale request finishes', async () => {
-    const oldPreprocess = deferred()
-    const currentPreprocess = deferred()
-    api.vouchers.preprocess
-      .mockReturnValueOnce(oldPreprocess.promise)
-      .mockReturnValueOnce(currentPreprocess.promise)
-    const wrapper = mountWorkbench()
-
-    await flushPromises()
-    await aiButton(wrapper).trigger('click')
-    expect(api.vouchers.preprocess).toHaveBeenCalledTimes(1)
-    await aiButton(wrapper).trigger('click')
-    expect(api.vouchers.preprocess).toHaveBeenCalledTimes(2)
-    await wrapper.vm.$nextTick()
-    expect(wrapper.vm.isGenerating).toBe(true)
-    oldPreprocess.resolve({ data: { created_vouchers: 0, vouchers: [], audit: preprocessAudit() } })
-    await flushPromises()
-
-    expect(api.vouchers.preprocess).toHaveBeenNthCalledWith(1, 'package-1')
-    expect(api.vouchers.preprocess).toHaveBeenNthCalledWith(2, 'package-1')
-    expect(wrapper.vm.isGenerating).toBe(true)
-
-    currentPreprocess.resolve({ data: { created_vouchers: 0, vouchers: [], audit: preprocessAudit() } })
-    await flushPromises()
   })
 
   it('preserves loaded voucher review state when source ledger loading fails', async () => {
@@ -891,15 +939,6 @@ function positiveDifferenceVoucherFixture() {
   }
 }
 
-function preprocessAudit() {
-  return {
-    model: 'kimi-k2',
-    input_bank_count: 1,
-    input_invoice_count: 1,
-    duration_ms: 321,
-  }
-}
-
 function mergeSuggestionFixture() {
   return {
     suggestion_id: 'merge-suggestion-test',
@@ -957,6 +996,21 @@ function mergeSuggestionFixture() {
   }
 }
 
+function queuedPreprocessJob() {
+  return {
+    id: 'job-1',
+    status: 'QUEUED',
+    model: 'kimi-k2.6',
+    input_bank_count: 81,
+    input_invoice_count: 100,
+    total_batches: 3,
+    completed_batches: 0,
+    failed_batches: 0,
+    created_vouchers: 0,
+    batches: [],
+  }
+}
+
 function aiButton(wrapper) {
   return wrapper.findAll('button').find((button) => button.text().includes('AI 预处理'))
 }
@@ -967,14 +1021,4 @@ function mergeSuggestionButton(wrapper) {
 
 function applyMergeSuggestionButton(wrapper) {
   return wrapper.findAll('button').find((button) => button.text().includes('应用合并'))
-}
-
-function deferred() {
-  let resolve
-  let reject
-  const promise = new Promise((promiseResolve, promiseReject) => {
-    resolve = promiseResolve
-    reject = promiseReject
-  })
-  return { promise, resolve, reject }
 }

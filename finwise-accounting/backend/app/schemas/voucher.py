@@ -133,6 +133,35 @@ class VoucherPreprocessResponse(BaseModel):
     audit: VoucherPreprocessAuditRead
 
 
+class VoucherPreprocessBatchRead(BaseModel):
+    id: UUID
+    sequence_no: int
+    status: str
+    source_count: int
+    attempt_count: int
+    error_summary: str = ""
+
+
+class VoucherPreprocessJobRead(BaseModel):
+    id: UUID
+    monthly_work_package_id: UUID
+    status: str
+    model: str
+    input_bank_count: int
+    input_invoice_count: int
+    total_batches: int
+    completed_batches: int
+    failed_batches: int
+    created_vouchers: int
+    analysis_summary: str = ""
+    error_summary: str = ""
+    started_at: Optional[datetime]
+    completed_at: Optional[datetime]
+    created_at: datetime
+    updated_at: datetime
+    batches: list[VoucherPreprocessBatchRead]
+
+
 class BankLedgerRowRead(BaseModel):
     id: UUID
     source_type: str = "BANK"

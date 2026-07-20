@@ -1,0 +1,15 @@
+[Unit]
+Description=FinWise Voucher AI Preprocess Worker
+After=network.target finwise-backend.service
+
+[Service]
+Type=simple
+User=ubuntu
+WorkingDirectory=/home/ubuntu/finwise-accounting/backend
+EnvironmentFile=/home/ubuntu/finwise-accounting/env/finwise.env
+ExecStart=/home/ubuntu/finwise-accounting/backend/.venv/bin/python -m app.workers.voucher_preprocess_worker
+Restart=always
+RestartSec=5
+
+[Install]
+WantedBy=multi-user.target

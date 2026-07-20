@@ -57,6 +57,14 @@ def initialize_database() -> None:
                 "ON accounting_lines (monthly_work_package_id, source_type, source_id, business_type)"
             )
         )
+        connection.execute(
+            text(
+                "CREATE UNIQUE INDEX IF NOT EXISTS "
+                "uq_voucher_preprocess_active_job_idx "
+                "ON voucher_ai_preprocess_jobs (monthly_work_package_id) "
+                "WHERE status IN ('QUEUED', 'RUNNING', 'FINALIZING')"
+            )
+        )
     with SessionLocal() as db:
         ensure_default_organization(db)
 

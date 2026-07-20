@@ -23,6 +23,8 @@ from app.models.entities import (
     TechnologyScanJobItem,
     TechnologyTag,
     Voucher,
+    VoucherAiPreprocessBatch,
+    VoucherAiPreprocessJob,
     VoucherEntry,
     VoucherRule,
 )
@@ -52,6 +54,8 @@ __all__ = [
     "TechnologyScanJobItem",
     "TechnologyTag",
     "Voucher",
+    "VoucherAiPreprocessBatch",
+    "VoucherAiPreprocessJob",
     "VoucherEntry",
     "VoucherRule",
 ]

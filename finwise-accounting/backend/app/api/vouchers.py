@@ -16,6 +16,7 @@ from app.schemas.voucher import (
     VoucherMergeApplyRequest,
     VoucherMergeSuggestionsResponse,
     VoucherPreprocessResponse,
+    VoucherPreprocessJobRead,
     VoucherRead,
     VoucherRejectRequest,
     VoucherReopenRequest,
@@ -43,6 +44,14 @@ from app.services.voucher_service import (
     update_single_source_voucher_treatment,
 )
 from app.services.voucher_ai_preprocess_service import VoucherAiPreprocessFailedError, run_voucher_ai_preprocessing
+from app.services.voucher_preprocess_job_service import (
+    cancel_voucher_preprocess_job,
+    create_voucher_preprocess_job,
+    get_latest_voucher_preprocess_job,
+    get_voucher_preprocess_job,
+    retry_voucher_preprocess_job,
+    serialize_voucher_preprocess_job,
+)
 
 
 router = APIRouter(tags=["vouchers"])
@@ -92,6 +101,60 @@ def preprocess_vouchers_endpoint(package_id: UUID, db: Session = Depends(get_db)
         return run_voucher_ai_preprocessing(db, monthly_work_package_id=package_id)
     except VoucherAiPreprocessFailedError as exc:
         raise HTTPException(status_code=status.HTTP_503_SERVICE_UNAVAILABLE, detail=str(exc)) from exc
+    except VoucherValidationError as exc:
+        raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail=str(exc)) from exc
+    except VoucherDomainError as exc:
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail=str(exc)) from exc
+
+
+@router.post(
+    "/api/monthly-packages/{package_id}/voucher-preprocess-jobs",
+    response_model=VoucherPreprocessJobRead,
+    status_code=status.HTTP_202_ACCEPTED,
+)
+def create_voucher_preprocess_job_endpoint(package_id: UUID, db: Session = Depends(get_db)):
+    try:
+        job = create_voucher_preprocess_job(db, monthly_work_package_id=package_id)
+        return serialize_voucher_preprocess_job(db, job)
+    except VoucherValidationError as exc:
+        raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail=str(exc)) from exc
+    except VoucherDomainError as exc:
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail=str(exc)) from exc
+
+
+@router.get(
+    "/api/monthly-packages/{package_id}/voucher-preprocess-jobs/latest",
+    response_model=VoucherPreprocessJobRead | None,
+)
+def get_latest_voucher_preprocess_job_endpoint(package_id: UUID, db: Session = Depends(get_db)):
+    job = get_latest_voucher_preprocess_job(db, monthly_work_package_id=package_id)
+    return serialize_voucher_preprocess_job(db, job) if job else None
+
+
+@router.get("/api/voucher-preprocess-jobs/{job_id}", response_model=VoucherPreprocessJobRead)
+def get_voucher_preprocess_job_endpoint(job_id: UUID, db: Session = Depends(get_db)):
+    try:
+        return serialize_voucher_preprocess_job(db, get_voucher_preprocess_job(db, job_id=job_id))
+    except VoucherDomainError as exc:
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail=str(exc)) from exc
+
+
+@router.post("/api/voucher-preprocess-jobs/{job_id}/retry", response_model=VoucherPreprocessJobRead)
+def retry_voucher_preprocess_job_endpoint(job_id: UUID, db: Session = Depends(get_db)):
+    try:
+        job = retry_voucher_preprocess_job(db, job_id=job_id)
+        return serialize_voucher_preprocess_job(db, job)
+    except VoucherValidationError as exc:
+        raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail=str(exc)) from exc
+    except VoucherDomainError as exc:
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail=str(exc)) from exc
+
+
+@router.post("/api/voucher-preprocess-jobs/{job_id}/cancel", response_model=VoucherPreprocessJobRead)
+def cancel_voucher_preprocess_job_endpoint(job_id: UUID, db: Session = Depends(get_db)):
+    try:
+        job = cancel_voucher_preprocess_job(db, job_id=job_id)
+        return serialize_voucher_preprocess_job(db, job)
     except VoucherValidationError as exc:
         raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail=str(exc)) from exc
     except VoucherDomainError as exc:
