@@ -926,6 +926,7 @@ const treatmentForm = ref({
 })
 let voucherLoadRequestId = 0
 let preprocessPollTimer = null
+let isRefreshingPreprocessJob = false
 
 const rematchModeOptions = [
   { label: '保留流水重选发票', value: 'replace-invoice' },
@@ -1374,9 +1375,9 @@ watch(
 )
 
 watch(
-  activePackage,
-  (packageItem) => {
-    const packageId = packageItem?.id || ''
+  activePackageId,
+  (packageId) => {
+    const packageItem = activePackage.value
     selectedEnterpriseId.value = packageItem?.enterpriseId || ''
     selectedPeriodPackageId.value = packageId
     persistSelectedPackageContext(packageItem)
@@ -1724,7 +1725,8 @@ function stopPreprocessPolling() {
 
 async function refreshPreprocessJob(packageId = activePackageId.value) {
   const jobId = preprocessJob.value?.id
-  if (!jobId || packageId !== activePackageId.value) return
+  if (!jobId || packageId !== activePackageId.value || isRefreshingPreprocessJob) return
+  isRefreshingPreprocessJob = true
   try {
     const response = await api.vouchers.getPreprocessJob(jobId)
     if (packageId !== activePackageId.value || response.data?.id !== jobId) return
@@ -1741,6 +1743,8 @@ async function refreshPreprocessJob(packageId = activePackageId.value) {
   } catch {
     stopPreprocessPolling()
     isGenerating.value = false
+  } finally {
+    isRefreshingPreprocessJob = false
   }
 }
 

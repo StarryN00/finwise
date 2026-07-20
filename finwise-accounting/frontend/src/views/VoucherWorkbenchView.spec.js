@@ -509,6 +509,25 @@ describe('VoucherWorkbenchView', () => {
     wrapper.unmount()
   })
 
+  it('reloads source ledgers after AI preprocessing reaches success', async () => {
+    const wrapper = mountWorkbench()
+    api.vouchers.createPreprocessJob.mockResolvedValue({ data: queuedPreprocessJob() })
+    api.vouchers.getPreprocessJob.mockResolvedValue({
+      data: { ...queuedPreprocessJob(), status: 'SUCCEEDED', completed_batches: 3, created_vouchers: 416 },
+    })
+    api.sourceLedgers.bank.mockClear()
+    api.sourceLedgers.invoices.mockClear()
+
+    await flushPromises()
+    await aiButton(wrapper).trigger('click')
+    await flushPromises()
+
+    expect(api.sourceLedgers.bank).toHaveBeenCalledWith('package-1')
+    expect(api.sourceLedgers.invoices).toHaveBeenCalledWith('package-1')
+    expect(wrapper.vm.isGenerating).toBe(false)
+    wrapper.unmount()
+  })
+
   it('cancels a queued AI preprocessing task through its explicit API action', async () => {
     const wrapper = mountWorkbench()
     api.vouchers.createPreprocessJob.mockResolvedValue({
