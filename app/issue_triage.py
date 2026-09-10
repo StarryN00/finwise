@@ -166,8 +166,16 @@ def _render(outcome, result, task, rows, checks, context):
             and all(balance.get('status') == 'PASS' for balance in check['balances']) for check in checks
         )
         if complete_arithmetic:
-            result['explanation'] = '已找到明确关联的红票，不含税金额、税额和价税合计算术抵消均为零。' + result['explanation']
-        result['explanation'] += '。红冲状态本身不要求人工确认；先补齐系统证据链，不代表客户必须补充文件。'
+            if codes == {'CURRENCY_SOURCE_MISSING'}:
+                result.update(
+                    title='发票币种来源待系统核验',
+                    explanation='系统需要确认本组全额红冲发票的币种，但原件未标明币种；此项由系统核验，你无需处理。',
+                    next_action='该事项保留给系统维护人员核验币种来源，你可以继续办理其他事项。',
+                )
+            else:
+                result['explanation'] = '已找到明确关联的红票，不含税金额、税额和价税合计算术抵消均为零。' + result['explanation']
+        if codes != {'CURRENCY_SOURCE_MISSING'} or not complete_arithmetic:
+            result['explanation'] += '。红冲状态本身不要求人工确认；先补齐系统证据链，不代表客户必须补充文件。'
     elif outcome == 'red_business':
         result['title'] = '红蓝发票关联检查'
         return _human(result, descriptor, '；'.join(dict.fromkeys(

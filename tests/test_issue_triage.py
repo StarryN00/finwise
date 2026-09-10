@@ -25,10 +25,14 @@ def test_normal_status_is_a_check_signal_not_a_business_question():
 
 def test_missing_currency_is_system_evidence_gap_not_customer_upload():
     checks=[{'fact_id':'f','status':'BLOCKED','codes':['CURRENCY_SOURCE_MISSING'],
-             'message':'当前提取结果缺少币种来源'}]
+             'message':'当前提取结果缺少币种来源','links':[{'fact_id':'red'}],
+             'balances':[{'field':'net_amount','status':'PASS'}]}]
     result=classify_task(task(),[row()],checks,True)
     assert result['route']=='SYSTEM' and result['questions']==[]
-    assert '币种' in result['explanation'] and not result['human_ready']
+    assert result['title']=='发票币种来源待系统核验'
+    assert result['explanation']=='系统需要确认本组全额红冲发票的币种，但原件未标明币种；此项由系统核验，你无需处理。'
+    assert result['next_action']=='该事项保留给系统维护人员核验币种来源，你可以继续办理其他事项。'
+    assert not result['human_ready']
 
 
 def test_real_offset_mismatch_has_specific_business_question():
