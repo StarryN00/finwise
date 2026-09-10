@@ -1,5 +1,6 @@
 'use strict';
 
+const OPERATOR_HTTP_ENTRY='http://127.0.0.1:8767/static/operator.html';
 const $ = id => document.getElementById(id);
 const state = {scopes: [], selected: null, overview: null, csrf: '', role: '', user: null, epoch: 0,
   sessionEpoch: 0, portfolioSequence: 0, historySequence: 0, operations: new Map(),
@@ -106,7 +107,7 @@ function clearSession() {
   state.filesFilter='all';state.filesReturn=null;
   $('baselineFile').value='';closeDialog();$('dialogBody').replaceChildren();
   $('workspace').innerHTML='<div class="empty">请登录后查看授权企业。</div>';
-  $('loginForm').classList.remove('hidden');$('logout').classList.add('hidden');$('authState').textContent='需要登录';renderScopes();
+  $('loginForm').classList.remove('hidden');$('scopeChooser').classList.add('hidden');$('logout').classList.add('hidden');$('authState').textContent='需要登录';renderScopes();
 }
 async function request(path,body,method) {
   const sessionEpoch=state.sessionEpoch;
@@ -142,7 +143,7 @@ async function loadPortfolio() {
   const current=()=>sessionEpoch===state.sessionEpoch&&sequence===state.portfolioSequence;
   const session=await request('/api/v1/auth/me');if(!current())return;state.csrf=session.csrf_token||'';state.role=session.role;state.user={user_id:session.user_id};
   const result=await request('/api/v1/portfolio');if(!current())return;state.scopes=result.scopes||[];
-  $('authState').textContent=state.role==='viewer'?'只读账号':'已登录';$('loginForm').classList.add('hidden');$('logout').classList.remove('hidden');
+  $('authState').textContent=state.role==='viewer'?'只读账号':'已登录';$('loginForm').classList.add('hidden');$('scopeChooser').classList.remove('hidden');$('logout').classList.remove('hidden');
   const saved=storage('finwise.operator.scope');let index=state.scopes.findIndex(i=>scopeKey(i.scope)===saved);
   if(index<0)index=state.scopes.findIndex(i=>[i.scope.legal_entity_id,i.scope.ledger_id,i.scope.accounting_period_id].join('|')===saved);
   if(state.scopes.length)await selectScope(index<0?0:index);else renderScopes();
@@ -581,5 +582,8 @@ if(typeof installInvoiceAmountActions==='function')installInvoiceAmountActions()
 if(typeof installMappingActions==='function')installMappingActions();
 if(typeof installBankActions==='function')installBankActions();
 if(typeof installParsePlanActions==='function')installParsePlanActions();
-if(location.protocol==='file:')notify('真实工作台需要登录服务，请通过当前 Staging 服务地址打开。',true);
+if(location.protocol==='file:'){
+  if(typeof location.replace==='function')location.replace(OPERATOR_HTTP_ENTRY);
+  else notify('真实工作台需要登录服务，请通过当前 Staging 服务地址打开。',true);
+}
 else loadPortfolio().catch(error=>{if(error.status!==401)notify(error.message,true);});

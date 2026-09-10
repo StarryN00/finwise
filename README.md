@@ -31,7 +31,7 @@ python3 scripts/manage_access.py grant-scope accountant --scope-file /absolute/p
 
 登录接口 `POST /api/v1/auth/login` 接收 `username/password`，返回 `HttpOnly` 会话 Cookie 和 CSRF 令牌；后续 POST 请求必须携带 `X-CSRF-Token`，`GET /api/v1/auth/me` 可恢复登录上下文，`POST /api/v1/auth/logout` 撤销会话。`/static/operator.html` 提供正式认证后的企业选择、原件接收、解析、基线核对和命令操作界面；原来的单企业页面所写死的角色头不再授予权限。
 
-不要直接双击 `static/index.html` 作为完整应用入口；文件模式现在可以正常显示样式，但演示和查询仍需要后端服务。若已经打开文件页面，先启动 Uvicorn，再刷新页面即可。
+不要直接双击 `static/index.html` 作为完整应用入口；文件模式现在可以正常显示样式，但演示和查询仍需要后端服务。若直接打开 `static/operator.html`，页面会自动切换到本机 `8767` Staging 服务。未登录时只显示账号密码表单，登录成功后才显示该账号获权的处理范围。
 
 ### Staging 真实 Gateway
 

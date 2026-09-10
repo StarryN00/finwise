@@ -125,6 +125,10 @@ def test_formal_operator_page_connects_real_write_workflows_without_external_ass
     materials = (root / "static" / "operator-materials.js").read_text(encoding="utf-8")
     css = (root / "static" / "operator.css").read_text(encoding="utf-8")
     assert "FinWise · 期间工作台" in page
+    assert '<section id="scopeChooser" class="hidden"' in page
+    assert '请输入用户名和密码。' in page
+    assert "location.replace(OPERATOR_HTTP_ENTRY)" in script
+    assert "http://127.0.0.1:8767/static/operator.html" in script
     assert "/api/v1/artifacts" in script
     assert "/api/v1/commands" in script
     assert "/api/v1/baseline/candidate" in script
@@ -146,7 +150,7 @@ def test_formal_operator_page_connects_real_write_workflows_without_external_ass
     parser.close()
     assert parser.stack == []
     assert parser.external_assets == [
-            'operator.css?v=action-types-1',
+            'operator.css?v=login-flow-1',
         'operator-historical.js?v=guided-decision-2',
             'operator-materials.js?v=action-types-1',
         'operator-problem-review.js?v=action-types-1',
@@ -158,7 +162,7 @@ def test_formal_operator_page_connects_real_write_workflows_without_external_ass
         'operator-invoice-review.js?v=guided-decision-2',
         'operator-accounts.js?v=guided-decision-2',
         'operator-mapping.js?v=guided-decision-2',
-        'operator-parse-plans.js?v=structure-plan-1', 'operator.js?v=action-types-1']
+        'operator-parse-plans.js?v=structure-plan-1', 'operator.js?v=login-flow-1']
     for asset in parser.external_assets:
         assert client.get('/static/' + asset).status_code == 200
     response = client.get("/static/operator.html")

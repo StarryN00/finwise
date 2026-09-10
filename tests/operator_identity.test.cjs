@@ -4,15 +4,19 @@ const fs=require('node:fs');
 const vm=require('node:vm');
 function app(display_context) {
   const nodes=new Map();
-  const context=vm.createContext({location:{protocol:'file:'},document:{addEventListener(){},getElementById(id){
+  let redirected='';
+  const context=vm.createContext({location:{protocol:'file:',replace(url){redirected=url;}},document:{addEventListener(){},getElementById(id){
     if(!nodes.has(id))nodes.set(id,{value:'',innerHTML:'',addEventListener(){}});return nodes.get(id);
   }}});
   vm.runInContext(fs.readFileSync('static/operator.js','utf8')+';globalThis.api={state,renderScopes,renderContext};',context);
   const item={scope:{legal_entity_id:'kunshan-juxianda',ledger_id:'chengyuan-ledger',accounting_period_id:'2026-01'},display_context,
     blockers:[],baseline:{validation:{status:'DRAFT'}},pending_confirmation_cards:0,period:{status:'OPEN'}};
   context.api.state.scopes=[item];context.api.state.selected=0;context.api.state.overview=item;
-  return {...context.api,nodes,item};
+  return {...context.api,nodes,item,redirected:()=>redirected};
 }
+test('file entry redirects to the authenticated HTTP workbench',()=>{
+  const a=app();assert.equal(a.redirected(),'http://127.0.0.1:8767/static/operator.html');
+});
 test('missing license is explicit and default ledger is Chinese',()=>{
   const a=app();a.renderScopes();
   assert.match(a.nodes.get('scopeList').innerHTML,/营业执照编号待补充/);

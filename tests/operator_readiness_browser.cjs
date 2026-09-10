@@ -26,7 +26,8 @@ async function main(){
     const fixture=JSON.parse(fs.readFileSync(path.join(temp,'fixture.json'),'utf8'));
     async function login(user='readiness-operator'){
       await context.clearCookies();
-      await page.goto(base+'/static/operator.html');await page.locator('#username').fill(user);await page.locator('#password').fill('ReadinessTest!2026');await page.locator('#loginForm button').click();await page.locator('#currentTask').waitFor();
+      await page.goto(base+'/static/operator.html');assert.equal(await page.locator('#loginForm').isVisible(),true);assert.equal(await page.locator('#scopeChooser').isHidden(),true);assert.doesNotMatch(await page.locator('#sidebar').innerText(),/处理范围/);
+      await page.locator('#username').fill(user);await page.locator('#password').fill('ReadinessTest!2026');await page.locator('#loginForm button').click();await page.locator('#currentTask').waitFor();assert.equal(await page.locator('#scopeChooser').isVisible(),true);
       if(!await page.locator('.context').innerText().then(t=>t.includes('校验测试企业'))){await page.locator('[data-scope]').filter({hasText:'校验测试企业'}).click();await page.locator('#currentTask').waitFor();}
     }
     await check('login and first screen show structure, direct task and one action',async()=>{

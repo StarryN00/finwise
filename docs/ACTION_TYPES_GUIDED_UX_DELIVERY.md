@@ -52,7 +52,7 @@
 ## 自动验证
 
 - Python：925 项通过。
-- Node：159 项通过。
+- Node：160 项通过；另有登录专用 Playwright 流程通过。
 - Playwright：3 条关键浏览器流程通过。
 - Python 编译、JavaScript 语法、Git 差异格式检查通过。
 
