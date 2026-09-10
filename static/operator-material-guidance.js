@@ -4,7 +4,7 @@ function materialGuidanceResponse(t,channel){const custom=decisionGuide(t).custo
 function materialGuidanceToken(t,channel){return JSON.stringify([decisionIdentity(t),channel,materialGuidanceResponse(t,channel)]);}
 function materialGuidanceCandidates(t,r){
   if(!r||r.valid===false||r.descriptor_hash!==t.descriptor.fingerprint||!['PROPOSED','NEEDS_HUMAN'].includes(r.status)||!Array.isArray(r.candidates)||r.candidates.length<1||r.candidates.length>3)return [];
-  const ids=t.descriptor.options.filter(o=>o.available).map(o=>o.id),refs=new Set(['task',...t.record_ids.map((_,i)=>'record-'+(i+1))]),seen=new Set();
+  const ids=t.descriptor.options.filter(o=>typeof decisionOptionAvailable==='function'?decisionOptionAvailable(o):o.available).map(o=>o.id),refs=new Set(['task',...t.record_ids.map((_,i)=>'record-'+(i+1))]),seen=new Set();
   for(const c of r.candidates){
     if(!c||c.option_id!==null&&!ids.includes(c.option_id)||c.option_id!==null&&seen.has(c.option_id)||typeof c.reason!=='string'||c.title!==undefined&&(!['string'].includes(typeof c.title)||c.title.length>80)||!Array.isArray(c.uncertainties)||!c.uncertainties.every(s=>typeof s==='string')||!c.prefill||Array.isArray(c.prefill)||typeof c.prefill!=='object'||Object.keys(c.prefill).length||!Number.isFinite(c.confidence)||c.confidence<0||c.confidence>1||c.option_id!==null&&c.confidence<.7||!Array.isArray(c.evidence_refs)||!c.evidence_refs.every(ref=>refs.has(ref))||!Array.isArray(c.steps)||!c.steps.every(s=>s&&ids.includes(s.option_id)&&typeof s.instruction==='string'))return [];
     if(c.legacy!==true&&!c.evidence_refs.length)return [];
@@ -34,7 +34,7 @@ function materialGuidancePlainReason(c,label){
   return '系统发现这项资料需要进一步确认，请对照原件后选择合适的处理方式。';
 }
 function materialGuidancePlainText(value){
-  return String(value||'').replace(/记录record-\d+/g,'这笔记录').replace(/record-\d+/g,'这笔记录').replace(/period字段为DERIVED/gi,'所属月份是系统推算的').replace(/标准化匹配|格式化后匹配/g,'日期格式已统一').replace(/映射/g,'对应').replace(/业务动作/g,'账务处理').replace(/门禁/g,'后续审核条件').replace(/用户/g,'你');
+  return String(typeof value==='string'?value:value?.description||'').replace(/记录record-\d+/g,'这笔记录').replace(/record-\d+/g,'这笔记录').replace(/period字段为DERIVED/gi,'所属月份是系统推算的').replace(/标准化匹配|格式化后匹配/g,'日期格式已统一').replace(/映射/g,'对应').replace(/业务动作/g,'账务处理').replace(/门禁/g,'后续审核条件').replace(/用户/g,'你');
 }
 function materialGuidanceImpact(o){
   const effects=(o?.effects||[]).map(materialGuidancePlainText).join('；');
@@ -51,7 +51,7 @@ function materialGuidanceChoose(t,channel,index,token){
   const entry=typeof materialDetailEntry==='function'?materialDetailEntry():null;
   if(entry)entry.suggestionPlan={option_id:c.option_id,pending:c.steps.filter(s=>s.option_id!==c.option_id).map(s=>({label:t.descriptor.options.find(o=>o.id===s.option_id)?.label||'后续事项',instruction:s.instruction})),recorded:false};
   if(c.option_id){
-    const option=t.descriptor.options.find(o=>o.id===c.option_id&&o.available);if(!option)return;
+    const option=t.descriptor.options.find(o=>o.id===c.option_id&&(typeof decisionOptionAvailable==='function'?decisionOptionAvailable(o):o.available));if(!option)return;
     decisionChoose(t,c.option_id,true);
     notify(`已选择“${materialGuidanceLabel(c,option,index)}”，请补齐必要信息后确认；尚未执行。`);
     return;

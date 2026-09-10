@@ -20,7 +20,10 @@ def setup_command(app, scope):
 def test_cached_commands_cannot_cross_scope_actor_role_or_payload(app, scope):
     service, typed, args = setup_command(app, scope)
     first = service.execute_command(**args)
-    assert service.execute_command(**args)["idempotent"] is True
+    assert first['next']['version'] == 'workbench-next-step-v1'
+    replay = service.execute_command(**args)
+    assert replay["idempotent"] is True
+    assert replay['next']['version'] == 'workbench-next-step-v1'
     for changes, code in [({"scope": typed.model_copy(update={"ledger_id": "foreign"})}, "SCOPE_VIOLATION"),
                           ({"actor_id": "bob"}, "SCOPE_VIOLATION"),
                           ({"role": "viewer"}, "PERMISSION_DENIED"),

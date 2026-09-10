@@ -63,10 +63,32 @@ class DecisionStep(BaseModel):
     fields: list[str]
 
 
+class EffectDescriptor(BaseModel):
+    """A bounded, machine-readable effect. No task action grants accounting use."""
+    model_config = ConfigDict(extra='forbid')
+    kind: str
+    target: str
+    description: str
+    grants_accounting_usable: Literal[False] = False
+
+
+class ReversibilityDescriptor(BaseModel):
+    model_config = ConfigDict(extra='forbid')
+    revocable: bool
+    entry: Optional[str] = None
+
+
 class OptionDescriptor(BaseModel):
     model_config = ConfigDict(extra='forbid')
-    id: Literal['supplement', 'parse', 'verify_source_values', 'confirm_invoice_amount',
-                'confirm_bill_business', 'confirm_statement_account', 'defer_material_issue', 'confirm_bank_period']
+    id: str
+    action_type_version: str = 'action-catalog-v1'
+    fallback: bool = False
+    permissions: list[str] = Field(default_factory=list)
+    applicability: dict[str, Any] = Field(default_factory=dict)
+    required_evidence: list[str] = Field(default_factory=list)
+    reversibility: ReversibilityDescriptor = Field(
+        default_factory=lambda: ReversibilityDescriptor(revocable=False)
+    )
     label: str
     submit_label: str = ''
     execution_type: Literal['COMMAND', 'NAVIGATION'] = 'COMMAND'
@@ -76,7 +98,7 @@ class OptionDescriptor(BaseModel):
     fields: list[FieldDescriptor] = Field(default_factory=list)
     requires: list[str] = Field(default_factory=list)
     completion: str
-    effects: list[str]
+    effects: list[EffectDescriptor]
     not_effects: list[str]
     available: bool = True
     unavailable_reason: str = ''
@@ -85,7 +107,9 @@ class OptionDescriptor(BaseModel):
 
 class TaskDescriptor(BaseModel):
     model_config = ConfigDict(extra='forbid')
-    version: Literal['decision-v1'] = 'decision-v1'
+    version: Literal['decision-v2'] = 'decision-v2'
+    stage: Literal['SOURCE_REVIEW', 'BUSINESS_REVIEW', 'SYSTEM_REVIEW']
+    why_now: str
     title: str
     why: WhyDescriptor
     scope: DecisionScope
@@ -387,6 +411,7 @@ def describe_task(task, scope, artifact, records, bank=None):
     if option['id'] not in {'supplement', 'parse', 'verify_source_values'}:
         options.append(dict(id='supplement', label='补充资料（可选）', requires=requires,
                             completion='补充资料后仍须通过对应检查。', effects=['追加保存补充资料'], not_effects=common))
+    from app.action_types import decorate_option
     for item in options:
         item['steps'] = OPTION_STEPS.get(item['id'], [])
         item.update(OPTION_EXECUTION[item['id']])
@@ -394,11 +419,36 @@ def describe_task(task, scope, artifact, records, bank=None):
             target = task.get('bank_period', {}).get('target_period', '目标期间')
             item['confirmation_label'] = f'确认所选流水归属 {target}'
             item['success_label'] = f'所选流水已确认归属 {target}'
+        item.update(decorate_option(item['id'], item.get('effects', [])))
     binding = dict(scope.model_dump(), artifact={'id': artifact['object_id'], 'version': artifact['version'], 'sha256': artifact['data'].get('sha256')},
                    records=[dict(id=r['object_id'], version=r['version'], source_anchor=r.get('source_anchor')) for r in records])
     rule = task['reason'].replace('bank_account_ref：', '所属银行：', 1)
-    result = TaskDescriptor(title=title, why={'facts': facts_summary, 'rule': rule,
+    stage = 'SYSTEM_REVIEW' if task['kind'] == 'PARSE' else ('SOURCE_REVIEW' if task['kind'] == 'VERIFY' else 'BUSINESS_REVIEW')
+    result = TaskDescriptor(stage=stage, why_now=advice, title=title, why={'facts': facts_summary, 'rule': rule,
                           'recommendation': advice, 'origin': 'RULE', 'evidence': binding['records']}, scope=binding,
                           options=options, presentation=issue_presentation(task, scope, artifact, records, bank)).model_dump()
-    result['fingerprint'] = digest({'task_id': task['id'], 'deferred': task.get('deferred', False), 'descriptor': result})
+    result['fingerprint'] = descriptor_fingerprint(task['id'], task.get('deferred', False), result)
     return result
+
+
+def descriptor_fingerprint(task_id: str, deferred: bool, descriptor: dict[str, Any]) -> str:
+    """Hash a descriptor without recursively binding the previous fingerprint."""
+    projected = {**descriptor, 'fingerprint': ''}
+    return digest({'task_id': task_id, 'deferred': deferred, 'descriptor': projected})
+
+
+def attach_fallback_actions(task: dict[str, Any]) -> None:
+    """Add only catalog projections to a safely bound unknown projected task."""
+    from app.action_types import fallback_option_descriptors
+
+    descriptor = task.get('descriptor') or {}
+    if descriptor.get('version') != 'decision-v2':
+        return
+    existing = {item.get('id') for item in descriptor.get('options', [])}
+    descriptor['options'].extend(
+        item for item in fallback_option_descriptors() if item['id'] not in existing
+    )
+    descriptor['fingerprint'] = descriptor_fingerprint(
+        task['id'], task.get('deferred', False), descriptor
+    )
+    TaskDescriptor.model_validate(descriptor)

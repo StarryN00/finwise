@@ -12,6 +12,7 @@ from app.ontology.baseline import BaselineConfirmation, VALIDATION_VERSION
 from app.ontology.errors import DomainError
 from app.ontology.service import OntologyService
 from app.auth import authorize_api, authorized_scopes, identity
+from app.action_types import catalog_contract
 
 router = APIRouter(prefix="/api/v1", dependencies=[Depends(authorize_api)])
 
@@ -48,15 +49,18 @@ def health(request: Request) -> dict[str, Any]:
 @router.get("/ontology/contract")
 def ontology_contract() -> dict[str, Any]:
     return {
-        "contract_version": "ontology-v1.2",
+        "contract_version": "ontology-v1.3",
         "voucher_amount_encoding": "decimal-string-2dp; readers accept legacy numeric amounts",
         "baseline_validation_version": VALIDATION_VERSION,
         "baseline_confirmation_schema": BaselineConfirmation.model_json_schema(),
         "compatibility_policy": "新增字段向后兼容；对象、关系和命令语义变更必须升级版本",
         "object_scope_required": True,
-        "objects": ["Scope", "AccountingBook", "AccountingPeriod", "BaselineSnapshot", "SourceArtifact", "FactRecord", "BusinessFact", "BusinessEvent", "ProcessingGroup", "Evidence", "Decision", "RuleInstance", "VoucherVersion", "DeliveryPackage", "ProcessingRun"],
+        "objects": ["Scope", "AccountingBook", "AccountingPeriod", "BaselineSnapshot", "SourceArtifact", "FactRecord", "BusinessFact", "BusinessEvent", "ProcessingGroup", "Evidence", "ActionType", "Decision", "RuleInstance", "VoucherVersion", "DeliveryPackage", "ProcessingRun"],
         "relations": ["DERIVED_FROM", "SUPPORTS", "MATCHES", "BELONGS_TO", "APPLIES_TO", "CONFLICTS_WITH", "GENERATES", "VALIDATES"],
-        "commands": ["parse_artifact", "confirm_baseline", "create_procurement_group", "approve_rule", "approve_rule_batch", "resolve_rule_conflict", "revoke_rule", "confirm_grouping", "suspend_group", "rerun_group", "generate_draft", "validate_draft", "revise_voucher", "release_delivery", "export_package", "ack_external_import", "close_period", "archive_period", "lock_period", "archive_artifact", "reparse_fact", "reconcile_group", "retry_run", "replay_run", "cancel_run", "complete_run"],
+        "commands": ["parse_artifact", "confirm_baseline", "create_procurement_group", "approve_rule", "approve_rule_batch", "resolve_rule_conflict", "revoke_rule", "confirm_grouping", "suspend_group", "rerun_group", "generate_draft", "validate_draft", "revise_voucher", "release_delivery", "export_package", "ack_external_import", "close_period", "archive_period", "lock_period", "archive_artifact", "reparse_fact", "reconcile_group", "retry_run", "replay_run", "cancel_run", "complete_run", "execute_task_action", "revoke_task_action"],
+        "action_types": catalog_contract(),
+        "task_decision_contract": {"current": "decision-v2", "read_only_compatibility": ["decision-v1"]},
+        "action_type_candidate_audit": "ACTION_TYPE_CANDIDATE_REQUESTED",
         "read_only_workflows": ["POST /api/v1/baseline/candidate"],
         "agent_can_write": ["AgentSuggestion", "RuleCandidate", "ConfirmationCard", "ModelRun"],
         "agent_cannot_write": ["BusinessFact", "RuleInstance", "VoucherVersion", "DeliveryPackage", "AccountingPeriod"],

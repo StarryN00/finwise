@@ -87,7 +87,9 @@ python3 scripts/migrate.py
 
 采购核对按业务组中的**全部**发票、付款计算，逐张检查价税合计和税额；缺失或非法值不能按零处理。同来源哈希、定位和类型的事实重复提交会复用原记录，解析内容发生变化必须明确重新解析。已确认主归属会同时检查专用编号与来源外部编号，不能通过补字段或更换行号重复记账。
 
-`ontology-v1.2` 的新凭证金额、复核借贷合计使用两位十进制字符串，旧数字金额仍可读取。来源更正后须重新校验；未交付凭证可生成新修订并重新复核，旧版本保留，已进入交付包的版本不可普通修改。测试金额均为合成数据，不代表真实企业交付。
+`ontology-v1.3` 保留 v1.2 的凭证金额编码：新凭证金额、复核借贷合计使用两位十进制字符串，旧数字金额仍可读取。来源更正后须重新校验；未交付凭证可生成新修订并重新复核，旧版本保留，已进入交付包的版本不可普通修改。测试金额均为合成数据，不代表真实企业交付。
+
+`ontology-v1.3` 同时提供只读、版本化 ActionType 目录。当原件、来源定位、解析与范围门禁均通过，但业务类型仍未识别时，工作台使用 `decision-v2` 提供记录专业判断、暂停、请求补充、标记本期不处理和转交复核五类受控动作。执行与撤销分别经 `execute_task_action` / `revoke_task_action` 命令，均绑定任务指纹、原件版本、幂等键并保留审计；所有结构化效果均不授予账务可用。旧 `decision-v1` 仅兼容只读展示。
 
 ### 表格资料解析
 
@@ -97,7 +99,7 @@ python3 scripts/migrate.py
 
 ### 期初基线确认
 
-当前契约为 `ontology-v1.2`，保留上述金额编码，并收紧 `confirm_baseline`。先在目标 Scope 上传上期余额和结账依据原件，其 `observed_period` 必须是紧邻上月；这些资料保留期间例外状态，不会因此变为本期业务事实。可调用只读 `POST /api/v1/baseline/candidate`，传入 `scope`、`balance_artifact_id` 和 `close_artifact_id`，系统会按科目及辅助项逐行比较期初与上期末金额，并返回来源定位、缺口、四项合计和待确认草稿。确认仍走命令接口，携带目标基线最新版本，`payload` 必须包含：
+当前契约为 `ontology-v1.3`，保留上述金额编码，并收紧 `confirm_baseline`。先在目标 Scope 上传上期余额和结账依据原件，其 `observed_period` 必须是紧邻上月；这些资料保留期间例外状态，不会因此变为本期业务事实。可调用只读 `POST /api/v1/baseline/candidate`，传入 `scope`、`balance_artifact_id` 和 `close_artifact_id`，系统会按科目及辅助项逐行比较期初与上期末金额，并返回来源定位、缺口、四项合计和待确认草稿。确认仍走命令接口，携带目标基线最新版本，`payload` 必须包含：
 
 - `prior_period`、`close_reference`、`currency: "CNY"`、`completeness_confirmed: true`。
 - `balance_source`、`close_source`：各含 `artifact_id`、整数 `version`、非空 `anchor`（页码、行号、字段或区域）。

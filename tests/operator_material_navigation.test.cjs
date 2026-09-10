@@ -3,8 +3,8 @@ const source=fs.readFileSync(path.join(__dirname,'../static/operator-materials.j
 const navigation=fs.readFileSync(path.join(__dirname,'../static/operator-material-navigation.js'),'utf8');
 function app(){
  const messages=[],context=vm.createContext({state:{user:{user_id:'operator'},overview:{material_review:{counts:{},records:[],tasks:[{id:'a',kind:'VERIFY',filename:'甲工资.xls',record_ids:[],deferred:false},{id:'b',kind:'VERIFY',filename:'乙发票.xls',record_ids:[],deferred:false}]}}},
-  scope:()=>({period:'2026-01'}),scopeKey:()=> '甲企业/2026-01',storage:()=>'',actions:{},render(){},$:()=>null,document:{addEventListener(){}},notify:m=>messages.push(m)});
- vm.runInContext(source+navigation+';installMaterialActions();globalThis.api={actions,materialState,currentMaterialTask,materialIssueGroups,materialTasks,materialRecordedOpinion,openMaterialDetail,materialAdvance,materialEntryStatus,materialReturnList,materialTaskIsCurrent,materialDraft,materialNavigationSnapshot,restoreMaterialNavigation};',context);
+  scope:()=>({accounting_period_id:'2026-01'}),scopeKey:()=> '甲企业/2026-01',storage:()=>'',actions:{},render(){},$:()=>null,document:{addEventListener(){}},notify:m=>messages.push(m),esc:v=>String(v??''),badge:v=>String(v??''),primary:(action,label)=>`<button class="primary" data-action="${action}">${label}</button>`});
+ vm.runInContext(source+navigation+';installMaterialActions();globalThis.api={actions,materialState,currentMaterialTask,materialIssueGroups,materialTasks,materialRecordedOpinion,openMaterialDetail,materialAdvance,materialEntryStatus,materialReturnList,materialTaskIsCurrent,materialDraft,materialDraftRevision,materialDeleteDraft,materialNavigationSnapshot,restoreMaterialNavigation,materialNextStepPanel,renderMaterialTask,renderActionMetrics};',context);
  return {...context.api,messages,state:context.state};
 }
 test('explicit result selection restores exactly the skipped file, not the next file',()=>{
@@ -20,6 +20,18 @@ test('stale result entry gives feedback and never substitutes another file',()=>
 });
 test('normal verification records are not counted as an exception queue',()=>{
  const a=app();a.materialState().filter='all';assert.equal(a.currentMaterialTask(),undefined);
+});
+test('server next and empty state render exactly one primary action',()=>{
+ const a=app(),m=a.state.overview.material_review;m.tasks=[];m.counts.files=0;m.next_step={version:'workbench-next-step-v1',owner:'USER',state:'NEEDS_INPUT',title:'接收本期资料',explanation:'尚无业务原件',task_id:null,action:{kind:'UPLOAD',label:'添加本期资料'}};
+ const html=a.materialNextStepPanel()+a.renderMaterialTask();assert.equal((html.match(/class="primary"/g)||[]).length,1);assert.match(html,/data-action="upload"/);
+});
+test('every action metric number has a drilldown control and secondary sections stay collapsed',()=>{
+ const a=app();a.state.overview.material_review.action_metrics={executed_action_count:3,fallback_action_count:2,fallback_ratio:.6667,items:[{action_type_id:'suspend',label:'暂停办理本事项',count:2,fallback:true,drilldown:[{command_id:'c',target_id:'a'}]}]};const html=a.renderActionMetrics();
+ assert.match(html,/^<details/);assert.doesNotMatch(html,/^<details[^>]* open/);assert.equal((html.match(/data-action="material-action-metric"/g)||[]).length,3);for(const text of ['已执行动作 3 次','兜底动作 2 次','暂停办理本事项 2 次'])assert.match(html,new RegExp('<button[^>]+>'+text.replace(/[.*+?^${}()|[\\]\\]/g,'\\$&')));
+ const workbenchSource=source;assert.match(workbenchSource,/<details class="panel pad mat-history"><summary>/);assert.match(workbenchSource,/<details class="panel pad mat-overview"><summary>/);assert.doesNotMatch(workbenchSource,/mat-overview-status/);
+});
+test('an edited task-action draft is not deleted by a late successful response',()=>{
+ const a=app(),draft=a.materialDraft(a.state.overview.material_review.tasks[0]);draft.taskAction={reason:'第一版依据'};const revision=a.materialDraftRevision(draft);draft.taskAction.reason='请保留的新依据';assert.equal(a.materialDeleteDraft('a',revision),false);assert.equal(a.materialDraft(a.state.overview.material_review.tasks[0]).taskAction.reason,'请保留的新依据');
 });
 test('saved processing opinions belong to the system queue and leave the issue unresolved',()=>{
  const a=issueApp(),m=a.state.overview.material_review,ui=a.materialState();m.tasks[0].material_opinions=[{valid:true,status:'SAVED_NOT_EXECUTED',text:'按原交易日期归属二月'}];

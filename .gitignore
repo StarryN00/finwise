@@ -9,5 +9,6 @@ __pycache__/
 .playwright-cli/
 .DS_Store
 .venv/
+node_modules/
 deploy/staging.env
 deploy/staging-reports/

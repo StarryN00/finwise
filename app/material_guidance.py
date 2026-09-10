@@ -194,6 +194,11 @@ OPTION_MEANINGS = {
     'confirm_statement_account': '人工确认流水账户归属',
     'defer_material_issue': '记录暂缓原因，保留阻断',
     'confirm_bank_period': '依据已核验原件日期，由用户确认流水期间归属；不改原日期',
+    'record_judgement': '记录有具体依据的专业判断，原告警继续保留',
+    'suspend': '暂停当前事项办理，不解除业务门禁',
+    'request_supplement': '请求补充具体材料并说明待核验事实',
+    'mark_out_of_scope': '仅将绑定记录排除出本期办理和候选分组',
+    'escalate': '记录理由并转交更高权限复核',
 }
 
 
@@ -738,7 +743,16 @@ class MaterialGuidance:
             }
             if actor_id is not None:
                 task['material_opinions'] = own_opinions
-            personal = [job for job in personal_jobs if job['data'].get('task_id') == task['id']]
+            own_opinion_ids = {
+                opinion['object_id'] for opinion in all_opinions
+                if opinion['data'].get('task_id') == task['id']
+                and opinion['data'].get('actor_id') == actor_id
+            }
+            personal = [
+                job for job in personal_jobs
+                if job['data'].get('task_id') == task['id']
+                and job['data'].get('opinion_id') in own_opinion_ids
+            ]
             if not personal:
                 continue
             fingerprint = task_fingerprint(self.service, scope, task)
@@ -823,6 +837,25 @@ class MaterialGuidance:
         base = {'version': 'material-handling-v1', 'state': 'NEEDS_DECISION', 'owner': 'USER',
                 'label': '待选择处理方式', 'explanation': '请核对问题和源数据后选择处理方式。',
                 'option_id': None, 'action_label': '选择处理方式'}
+        task_action = task.get('task_action')
+        if task_action and task_action.get('valid'):
+            action_id = task_action['data']['action_type_id']
+            projected = {
+                'record_judgement': ('WAITING_SYSTEM', 'SYSTEM', '专业判断已记录',
+                                     '原告警继续保留，等待专用动作或后续复核。'),
+                'suspend': ('COMPLETED', 'NONE', '本事项已暂停',
+                            '已移出当前办理队列；业务门禁没有解除。'),
+                'request_supplement': ('WAITING_EXTERNAL', 'EXTERNAL', '等待具体补充材料',
+                                       '材料名称及待核验事实已记录，等待外部响应。'),
+                'mark_out_of_scope': ('COMPLETED', 'NONE', '本期不处理',
+                                      '仅排除绑定记录的本期办理和候选分组；原件与事实未修改。'),
+                'escalate': ('WAITING_SYSTEM', 'SYSTEM', '已转交更高权限复核',
+                             '转交理由已记录，等待更高权限角色处理。'),
+            }.get(action_id)
+            if projected:
+                state, owner, label, explanation = projected
+                return {**base, 'state': state, 'owner': owner, 'label': label,
+                        'explanation': explanation, 'action_label': ''}
         if task.get('deferred'):
             return {**base, 'state': 'WAITING_EXTERNAL', 'owner': 'EXTERNAL', 'label': '等待外部资料或条件',
                     'explanation': '暂无法确认的原因已记录；问题仍保留，你当前无需重复处理。',

@@ -353,6 +353,19 @@ class ObjectStore:
             )
         return command
 
+    def list_commands(self, scope: Scope, *, status: str | None = None) -> list[dict[str, Any]]:
+        conditions = ["scope_json = ?"]
+        parameters: list[Any] = [scope_key(scope)]
+        if status is not None:
+            conditions.append("status = ?")
+            parameters.append(status)
+        with self.database.connect() as connection:
+            rows = connection.execute(
+                f"SELECT * FROM commands WHERE {' AND '.join(conditions)} ORDER BY created_at ASC",
+                parameters,
+            ).fetchall()
+        return [self._command_from_row(row) for row in rows]
+
     def create_run(self, scope: Scope, data: dict[str, Any]) -> dict[str, Any]:
         run_id = data["run_id"]
         now = utcnow()

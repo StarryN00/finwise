@@ -82,13 +82,31 @@ def test_projection_is_additive_and_does_not_change_existing_tasks_counts_or_gat
     assert current == previous
 
 
+def test_every_current_task_answers_stage_reason_action_and_effect_questions(client, scope):
+    setup(client, scope)
+    tasks = view(client, scope)['material_review']['tasks']
+    assert tasks
+    for task in tasks:
+        descriptor = TaskDescriptor.model_validate(task['descriptor'])
+        assert descriptor.stage in {'SOURCE_REVIEW', 'BUSINESS_REVIEW', 'SYSTEM_REVIEW'}
+        assert descriptor.why_now.strip()
+        assert descriptor.why.facts.strip()
+        assert descriptor.why.rule.strip()
+        available = [option for option in descriptor.options if option.available]
+        assert available, task['id']
+        assert all(option.effects for option in available)
+        assert all(effect.grants_accounting_usable is False
+                   for option in available for effect in option.effects)
+
+
 def test_invoice_and_defer_descriptions_match_existing_behavior_without_unlocking_finance(client, scope):
     a, facts = setup_invoices(client, scope)
     before = view(client, scope)
     task = next(t for t in before['material_review']['tasks'] if t['kind'] == 'INVOICE_AMOUNT')
     d = task['descriptor']
     assert d['options'][0]['fields'][0]['required']
-    assert '仅解除本张发票' in d['options'][0]['effects'][0]
+    assert '仅解除本张发票' in d['options'][0]['effects'][0]['description']
+    assert d['options'][0]['effects'][0]['grants_accounting_usable'] is False
     r = command(client, scope, 'defer_material_issue', a['object_id'], a['version'], 'contract-defer',
                 {'task_id': task['id'], 'reason': '等待客户说明'})
     assert r.status_code == 200

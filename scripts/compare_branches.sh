@@ -4,10 +4,16 @@
 # 在开发开始前固定，避免事后按结果调整标准。
 set -uo pipefail
 BR="${1:-$(git branch --show-current)}"
-VENV="$(git rev-parse --show-toplevel)/.venv/bin/python"
+ROOT="$(git rev-parse --show-toplevel)"
+VENV="$ROOT/.venv/bin/python"
 WT="/tmp/acc-check-$$"
 git worktree add -q "$WT" "$BR" || { echo "无法检出 $BR"; exit 1; }
-trap 'git worktree remove "$WT" --force >/dev/null 2>&1; git worktree prune' EXIT
+cleanup() {
+  cd "$ROOT" || return
+  git worktree remove "$WT" --force >/dev/null 2>&1
+  git worktree prune
+}
+trap cleanup EXIT
 cd "$WT"
 
 echo "=========== 验收：$BR ==========="
@@ -29,7 +35,7 @@ C=$(grep -c "ACTION_TYPE" app/ontology/enums.py 2>/dev/null | head -1); C=${C:-0
 
 echo "[3] R1 一屏一主：primary() 调用数应显著下降并有测试锁住"
 P=$(grep -o "primary(" static/operator.js 2>/dev/null | wc -l | tr -d ' ')
-echo "    primary() = $P（基线 12）"
+echo "    primary() = ${P}（基线 12）"
 grep -rqE "primary|主按钮" tests/ 2>/dev/null && echo "    ✓ 存在相关测试" || echo "    ✗ 无 R1 断言测试"
 
 echo "[4] if-chain 特征化测试（防行为漂移）"

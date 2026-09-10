@@ -47,7 +47,7 @@ test('evidence is escaped, unknown sources have no link, and mismatched task pro
 });
 test('integration places review after source evidence and before original handling without replacing forms',()=>{
  const decision=fs.readFileSync(path.join(__dirname,'../static/operator-decision.js'),'utf8'),html=fs.readFileSync(path.join(__dirname,'../static/operator.html'),'utf8');
- assert.match(decision,/decisionEvidence\(t\)\+\(typeof renderProblemReviewDetail/);assert.match(html,/operator-problem-review.js\?v=guided-flow-1/);
+ assert.match(decision,/decisionEvidence\(t\)\+\(typeof renderProblemReviewDetail/);assert.match(html,/operator-problem-review.js\?v=action-types-1/);
 });
 test('historical evidence opens bound versions; missing historical versions never use current facts',()=>{
  const a=fixture();a.job.valid=false;a.job.data.binding={artifact:{id:'a',version:1},records:[{id:'r',version:4}]};

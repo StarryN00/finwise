@@ -1,12 +1,16 @@
 const {test}=require('node:test'),assert=require('node:assert/strict'),fs=require('node:fs'),vm=require('node:vm'),path=require('node:path');
 const root=path.join(__dirname,'../static');
-function option(id='confirm_invoice_amount') {return {id,label:'契约主操作',fields:id==='confirm_invoice_amount'?[{name:'reason',component:'textarea',label:'契约字段',required:true,placeholder:'契约占位',max_length:321}]:[],requires:['契约前置'],completion:'契约完成条件',effects:['契约影响'],not_effects:['契约边界'],available:true,unavailable_reason:'',execution_type:['parse','supplement'].includes(id)?'NAVIGATION':'COMMAND',confirmation_label:id==='defer_material_issue'?'记录暂无法确认原因':'确认实际处理结果',success_label:'本项处理完成',post_submit_owner:id==='defer_material_issue'?'EXTERNAL':'NONE'};}
+function option(id='confirm_invoice_amount') {return {id,label:'契约主操作',fields:id==='confirm_invoice_amount'?[{name:'reason',component:'textarea',label:'契约字段',required:true,placeholder:'契约占位',max_length:321}]:[],requires:['契约前置'],completion:'契约完成条件',effects:[{kind:'CREATE',target:'Decision',description:'契约影响',grants_accounting_usable:false}],not_effects:['契约边界'],available:true,unavailable_reason:'',execution_type:['parse','supplement'].includes(id)?'NAVIGATION':'COMMAND',confirmation_label:id==='defer_material_issue'?'记录暂无法确认原因':'确认实际处理结果',success_label:'本项处理完成',post_submit_owner:id==='defer_material_issue'?'EXTERNAL':'NONE'};}
+function fallbackOption(id='record_judgement'){
+ const fields={record_judgement:['judgement','reason'],suspend:['reason'],request_supplement:['material','fact_to_verify'],mark_out_of_scope:['reason'],escalate:['reason']}[id].map(name=>({name,component:'textarea',label:'受控输入-'+name,required:true,placeholder:'请填写具体依据',max_length:2000}));
+ return {...option(id),label:'受控动作-'+id,fallback:true,action_type_version:'action-type-v1',permissions:['operator','accountant','admin'],fields,steps:[{id:'decision',prompt:'请填写具体依据',fields:fields.map(f=>f.name)}],post_submit_owner:id==='request_supplement'?'EXTERNAL':id==='suspend'||id==='mark_out_of_scope'?'NONE':'SYSTEM'};
+}
 const boundScope={tenant_id:'t',organization_id:'o',legal_entity_id:'e',ledger_id:'l',accounting_period_id:'2026-03',baseline_id:'b'};
 const boundRecord={id:'r',version:1,source_anchor:{region:'A1'}};
 const triage=route=>({version:'issue-triage-v1',route,title:'分流标题',explanation:'分流解释',next_action:'检查原件字段映射',questions:['真实业务期间是什么？'],checks:[]});
-function descriptor(o=option()){o.steps=o.steps||o.fields.map(f=>({id:f.name,prompt:'契约提问-'+f.label,fields:[f.name]}));return {version:'decision-v1',title:'契约标题',why:{facts:'契约事实',rule:'契约规则',recommendation:'契约建议',origin:'RULE',evidence:[structuredClone(boundRecord)]},scope:{...boundScope,artifact:{id:'a',version:1,sha256:'hash'},records:[structuredClone(boundRecord)]},options:[o],steps:[]};}
+function descriptor(o=option()){o.steps=o.steps||o.fields.map(f=>({id:f.name,prompt:'契约提问-'+f.label,fields:[f.name]}));return {version:'decision-v2',stage:'BUSINESS_REVIEW',why_now:'契约建议',title:'契约标题',why:{facts:'契约事实',rule:'契约规则',recommendation:'契约建议',origin:'RULE',evidence:[structuredClone(boundRecord)]},scope:{...boundScope,artifact:{id:'a',version:1,sha256:'hash'},records:[structuredClone(boundRecord)]},options:[o],steps:[]};}
 function app(){
- const saved=new Map();const draft={note:'原草稿',reason:'原原因',selected:new Set()},ui={page:0,screen:'detail'},listeners={};
+ const saved=new Map();const draft={note:'原草稿',reason:'原原因',taskAction:{},selected:new Set()},ui={page:0,screen:'detail'},listeners={};
  const t={id:'task',kind:'ARBITRARY_KIND',record_ids:['r'],artifact_id:'a',artifact_version:1,descriptor:descriptor()};
  const c=vm.createContext({crypto:require('node:crypto').webcrypto,queueMicrotask,notify(){},sessionStorage:{getItem:k=>saved.get(k)||null,setItem:(k,v)=>saved.set(k,v)},state:{view:'materials',role:'operator',user:{user_id:'actor'},overview:{artifacts:[{object_id:'a',version:1,data:{sha256:'hash'}}],material_review:{records:[{object_id:'r',version:1,source_anchor:{region:'A1'},values:{invoice_no:'i'}}]},bill_review:{candidates:[]},bank_accounts:{accounts:[],statements:[]}}},actions:{},esc:v=>String(v??'').replace(/[&<>"']/g,ch=>({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[ch])),materialState:()=>ui,materialDraft:()=>draft,currentMaterialTask:()=>t,materialTaskIsCurrent:()=>true,materialCanWrite:()=>true,materialComparison:(r,s)=>s?'SELECTION':'SOURCE',materialPager:()=>'',objectButton:()=>'',materialSaveDraft(){},render(){},readonly:()=>false,scope:()=>boundScope,scopeKey:()=>'',document:{addEventListener:(event,fn)=>{(listeners[event]??=[]).push(fn);}},activeArtifacts:()=>[],badge:()=>''});
  for(const f of ['operator-decision.js','operator-bank-periods.js','operator-material-guidance.js','operator-bills.js','operator-accounts.js','operator-invoice-review.js'])vm.runInContext(fs.readFileSync(path.join(root,f),'utf8'),c);
@@ -18,7 +22,7 @@ test('descriptor text, field constraints and option drive card independently of 
  a.t.kind='VERIFY';assert.equal(a.render(),html);a.c.decisionNext(a.t);for(const text of ['契约完成条件','契约影响','契约边界','确认执行内容','确认实际处理结果'])assert.ok(a.render().includes(text));a.t.descriptor.options[0].label='更改后的按钮';assert.match(a.render(),/更改后的按钮/);
 });
 test('unknown versions, options, fields, components and malformed contracts fail closed',()=>{
- for(const mutate of [d=>d.version='decision-v2',d=>d.options[0].id='eval',d=>d.options[0].fields[0].component='script',d=>d.options[0].fields[0].name='actor',d=>d.options[0].fields=[],d=>d.options=[null],d=>d.options[0].fields[0].slot='unknown']){
+ for(const mutate of [d=>d.version='decision-v999',d=>d.options[0].effects[0].grants_accounting_usable=true,d=>d.options[0].id='eval',d=>d.options[0].fields[0].component='script',d=>d.options[0].fields[0].name='actor',d=>d.options[0].fields=[],d=>d.options=[null],d=>d.options[0].fields[0].slot='unknown']){
   const a=app();mutate(a.t.descriptor);if(a.t.descriptor.options?.[0]?.fields?.[0]?.slot==='unknown')a.t.descriptor.options[0].fields[0].component='slot';const html=a.render();assert.match(html,/任务契约暂不支持/);assert.doesNotMatch(html,/<form|type="submit"|material-supplement/);
  }
 });
@@ -189,4 +193,24 @@ test('step navigation renders before focusing the current question including bac
  expectFocus(()=>a.c.decisionChoose(a.t,'confirm_invoice_amount'));
  expectFocus(()=>a.c.decisionNext(a.t));
  expectFocus(()=>a.c.decisionCommit(a.t,{querySelectorAll:()=>[{disabled:true,querySelectorAll:()=>[{disabled:false,checkValidity:()=>false}]}]}));
+});
+test('five fallback actions satisfy decision-v2 and keep one primary action in every live state',()=>{
+ const ids=['record_judgement','suspend','request_supplement','mark_out_of_scope','escalate'];
+ for(const id of ids){const a=app();a.t.descriptor=descriptor(fallbackOption(id));assert.equal(a.c.decisionValid(a.t.descriptor),true,id);const html=a.render();assert.equal((html.match(/class="primary"/g)||[]).length,1,id);assert.match(html,/业务判断/);assert.match(html,/data-task-action-field/);}
+ const choice=app();choice.t.descriptor=descriptor(fallbackOption());choice.t.descriptor.options=ids.map(fallbackOption);choice.t.material_opinions=[];const choiceHtml=choice.render();assert.equal((choiceHtml.match(/class="primary"/g)||[]).length,1);assert.equal((choiceHtml.match(/data-guide="option"/g)||[]).length,5);
+});
+test('role permissions disable escalation when there is no higher role',()=>{
+ const a=app(),ids=['record_judgement','suspend','request_supplement','mark_out_of_scope','escalate'];a.c.state.role='admin';a.t.descriptor=descriptor(fallbackOption());a.t.descriptor.options=ids.map(fallbackOption);a.t.descriptor.options.find(o=>o.id==='escalate').permissions=['operator','accountant'];a.t.material_opinions=[];
+ const html=a.render();assert.match(html,/data-option="escalate"[^>]*disabled/);const original=a.c.decisionGuide(a.t).option;a.c.decisionChoose(a.t,'escalate');assert.equal(a.c.decisionGuide(a.t).option,original);
+});
+test('fallback commit sends an explicit execute_task_action payload and follows server next',async()=>{
+ const a=app(),calls=[],messages=[];a.t.descriptor=descriptor(fallbackOption());a.t.descriptor.fingerprint='descriptor-fingerprint';a.draft.taskAction={judgement:'保留为特殊合同判断',reason:'已核对合同第 3 条'};
+ let pending=Promise.resolve();a.c.exclusive=fn=>(pending=Promise.resolve().then(fn));a.c.materialDraftRevision=()=>3;a.c.materialDeleteDraft=()=>{};a.c.materialSaveNavigation=()=>{};a.c.loadWorkbench=async()=>{};a.c.notify=m=>messages.push(m);a.c.command=async(...args)=>{calls.push(args);return {next:{version:'workbench-next-step-v1',task_id:null,title:'本组已完成'}};};
+ a.c.decisionNext(a.t);assert.equal(a.c.decisionCanSubmit(a.t),true);assert.equal((a.render().match(/class="primary"/g)||[]).length,1);assert.match(a.render(),/<details><summary>执行后/);assert.doesNotMatch(a.render(),/<details[^>]* open[^>]*><summary>执行后/);
+ const form={querySelectorAll:()=>[]},card={querySelector:()=>form},button={dataset:{guide:'commit'}};
+ a.c.decisionCapture({type:'click',target:{closest:s=>s==='.decision-chat'?card:s==='button'?button:null},preventDefault(){},stopImmediatePropagation(){}});await pending;
+ assert.equal(calls.length,1);assert.equal(calls[0][0],'execute_task_action');assert.equal(calls[0][1],'a');assert.equal(calls[0][2],1);assert.deepEqual(JSON.parse(JSON.stringify(calls[0][3])),{task_id:'task',descriptor_hash:'descriptor-fingerprint',action_type_id:'record_judgement',values:{judgement:'保留为特殊合同判断',reason:'已核对合同第 3 条'}});assert.doesNotMatch(JSON.stringify(calls),/\[object PointerEvent\]/);assert.equal(a.ui.screen,'list');assert.match(messages[0],/本组已完成/);
+});
+test('decision-v1 remains visible but read only',()=>{
+ const a=app(),legacy=descriptor();legacy.version='decision-v1';delete legacy.stage;delete legacy.why_now;legacy.options[0].effects=['历史影响'];a.t.descriptor=legacy;const html=a.render();assert.match(html,/历史办理契约（只读）/);assert.match(html,/历史影响/);assert.doesNotMatch(html,/<form|class="primary"|data-guide="commit"/);assert.equal(a.c.decisionReady(a.t),false);
 });

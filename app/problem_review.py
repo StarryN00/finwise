@@ -354,6 +354,7 @@ class ProblemReview:
         # Read-only triage is evaluated even before a model review exists. It
         # never rewrites the persisted review or removes another warning.
         from app.issue_triage import classify_task
+        from app.task_descriptors import attach_fallback_actions
         from app.problem_evidence import full_red_checks
         sources={a['object_id']:a for a in artifacts}
         valid_sources={a['object_id']:self.service.materials.source_valid(a) for a in artifacts}
@@ -361,8 +362,11 @@ class ProblemReview:
         rows={r['object_id']:r for r in material['records']}
         for task in kept:
             task_checks=[local_checks[rid] for rid in task['record_ids'] if rid in local_checks] if task['reason']==STATUS_ISSUE else []
-            task['triage']=classify_task(task,[rows[rid] for rid in task['record_ids'] if rid in rows],task_checks,
-                                         valid_sources.get(task['artifact_id'],False))
+            task_rows=[rows[rid] for rid in task['record_ids'] if rid in rows]
+            task['triage']=classify_task(task,task_rows,task_checks,valid_sources.get(task['artifact_id'],False))
+            if task['triage'].get('fallback_eligible'):
+                attach_fallback_actions(task)
+                task['triage']=classify_task(task,task_rows,task_checks,valid_sources.get(task['artifact_id'],False))
             if task_checks and any('CURRENCY_SOURCE_MISSING' in c.get('codes',[]) for c in task_checks):
                 task['triage']['source_audit']=self.currency_source_audit(sources.get(task['artifact_id']))
             # Keep original ModelRun / ProblemReview text in history. This is

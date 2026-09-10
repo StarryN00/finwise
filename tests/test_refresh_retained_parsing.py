@@ -45,7 +45,9 @@ def test_post_update_failure_rolls_back_facts_commands_and_audit(client,scope,mo
     original=s.workbench;calls=[]
     def workbench(scope):
         calls.append(1);view=original(scope)
-        if len(calls)==2:
+        # execute_command now computes the response `next` projection after
+        # the write, so the explicit post-update verification is call 3.
+        if len(calls)==3:
             if failure=='exception':raise RuntimeError('post-update view failed')
             view['material_review']['counts']['accounting_usable']+=1
         return view
@@ -53,7 +55,7 @@ def test_post_update_failure_rolls_back_facts_commands_and_audit(client,scope,mo
     monkeypatch.setattr(s,'workbench',workbench)
     with pytest.raises((AssertionError,RuntimeError)):
         apply_checked(s,typed,token)
-    assert len(calls)==2 and database_dump(s)==before
+    assert len(calls)==3 and database_dump(s)==before
 
 
 def test_other_scope_changes_invalidate_token_before_any_write(client,scope):

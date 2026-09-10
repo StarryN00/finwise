@@ -47,7 +47,7 @@ def test_public_contract_declares_required_baseline_inputs(client):
     response = client.get("/api/v1/ontology/contract")
     assert response.status_code == 200
     contract = response.json()
-    assert contract["contract_version"] == "ontology-v1.2"
+    assert contract["contract_version"] == "ontology-v1.3"
     assert contract["baseline_validation_version"] == "baseline-v1"
     required = contract["baseline_confirmation_schema"]["required"]
     assert {"prior_period", "balance_source", "close_source", "balances", "completeness_confirmed"} <= set(required)

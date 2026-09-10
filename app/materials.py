@@ -5,8 +5,9 @@ import re
 from decimal import Decimal, InvalidOperation
 from pydantic import BaseModel, ConfigDict, Field, StrictInt, StrictStr, ValidationError
 from app.db import utcnow
-from app.ontology.errors import PreconditionFailed, VersionConflict
+from app.ontology.errors import PermissionDenied, PreconditionFailed, VersionConflict
 from app.ontology.store import digest
+from app.action_types import ACTION_TYPE_BY_ID, FALLBACK_IDS
 
 
 def compare_fields(data):
@@ -94,6 +95,19 @@ class VerifyInput(BaseModel):
 class ReasonInput(BaseModel):
     model_config=ConfigDict(extra='forbid',str_strip_whitespace=True)
     task_id: StrictStr
+    reason: StrictStr = Field(min_length=1,max_length=2000)
+
+
+class TaskActionInput(BaseModel):
+    model_config=ConfigDict(extra='forbid',str_strip_whitespace=True)
+    task_id: StrictStr = Field(min_length=1)
+    descriptor_hash: StrictStr = Field(min_length=16)
+    action_type_id: StrictStr = Field(min_length=1)
+    values: dict[str, StrictStr]
+
+
+class RevokeTaskActionInput(BaseModel):
+    model_config=ConfigDict(extra='forbid',str_strip_whitespace=True)
     reason: StrictStr = Field(min_length=1,max_length=2000)
 
 
@@ -346,3 +360,141 @@ class MaterialReview:
             self.store.add_audit('SOURCE_VALUES_VERIFIED',actor,scope,object_id=key,object_version=saved['version'],before=prior,after=saved,reason='原件与提取值人工核对，保留财务门禁')
             results.append(saved)
         return {'objects':results,'verified_count':len(results)}
+
+    def execute_task_action(self, scope, target, version, actor, role, payload):
+        """Persist one fallback decision without mutating evidence or finance objects."""
+        self.service._ensure_period_open(scope)
+        artifact = self.store.get_object(target, scope)
+        if artifact['version'] != version or artifact['object_type'] != 'SourceArtifact':
+            raise VersionConflict()
+        if not self.source_valid(artifact):
+            raise PreconditionFailed('原件已失效或哈希不一致，不能执行人工兜底动作')
+        try:
+            value = TaskActionInput.model_validate(payload)
+        except ValidationError as exc:
+            raise PreconditionFailed('任务动作字段无效，请刷新后按当前表单填写') from exc
+        definition = ACTION_TYPE_BY_ID.get(value.action_type_id)
+        if not definition or value.action_type_id not in FALLBACK_IDS or not definition.fallback:
+            raise PreconditionFailed('只能执行当前目录声明的兜底动作')
+        if role not in definition.permissions:
+            raise PermissionDenied('当前角色不能执行该任务动作')
+        overview = self.service.workbench(scope, actor_id=actor)['material_review']
+        task = next((item for item in overview['tasks']
+                     if item['id'] == value.task_id and item['artifact_id'] == target), None)
+        if not task or (task.get('triage') or {}).get('route') != 'HUMAN':
+            raise PreconditionFailed('事项已变化或安全门禁未通过，请刷新后重新核对')
+        descriptor = task.get('descriptor') or {}
+        option = next((item for item in descriptor.get('options', [])
+                       if item.get('id') == value.action_type_id and item.get('available')
+                       and item.get('fallback') is True), None)
+        if not option or descriptor.get('fingerprint') != value.descriptor_hash:
+            raise VersionConflict('事项动作目录或依据版本已变化，请刷新后重试')
+        expected = {field.name for field in definition.fields}
+        if set(value.values) != expected:
+            raise PreconditionFailed('请只填写当前动作声明的决策字段')
+        inputs = {}
+        for field in definition.fields:
+            entered = value.values.get(field.name, '').strip()
+            if field.required and not entered:
+                raise PreconditionFailed(f'请填写{field.label}')
+            if len(entered) > field.max_length:
+                raise PreconditionFailed(f'{field.label}内容过长')
+            inputs[field.name] = entered
+        if value.action_type_id == 'request_supplement':
+            vague = {'资料', '材料', '补充资料', '相关资料', '待确认', '待核验', '不清楚'}
+            if inputs['material'] in vague or inputs['fact_to_verify'] in vague \
+                    or len(inputs['material']) < 4 or len(inputs['fact_to_verify']) < 6:
+                raise PreconditionFailed('请分别写明具体材料名称和需要核验的具体事实')
+        if value.action_type_id == 'mark_out_of_scope':
+            self._assert_not_in_formal_downstream(scope, task['record_ids'])
+        active = [item for item in self.store.list_objects('Decision', scope)
+                  if item['status'] == 'CONFIRMED'
+                  and item['data'].get('decision_type') == 'TASK_ACTION'
+                  and item['data'].get('task_id') == task['id']]
+        if active:
+            raise PreconditionFailed('本事项已有有效处置记录，请先撤销后再选择')
+        escalation = {'operator': 'accountant', 'accountant': 'admin'}.get(role)
+        if value.action_type_id == 'escalate' and escalation is None:
+            raise PreconditionFailed('管理员已是当前最高权限，请改用其他处置或线下治理入口')
+        key = 'task-action-' + digest({'scope': scope.model_dump(), 'task_id': task['id']})
+        previous = next((item for item in self.store.list_objects('Decision', scope)
+                         if item['object_id'] == key), None)
+        data = {
+            'decision_type': 'TASK_ACTION', 'action_catalog_version': 'action-catalog-v1',
+            'action_type_id': value.action_type_id, 'task_id': task['id'],
+            'descriptor_hash': value.descriptor_hash, 'binding': descriptor['scope'],
+            'inputs': inputs, 'effects': [item.model_dump() for item in definition.effects],
+            'grants_accounting_usable': False, 'decided_by': actor, 'decided_at': utcnow(),
+            'escalated_to_role': escalation if value.action_type_id == 'escalate' else None,
+            'candidate_request': {'event': 'ACTION_TYPE_CANDIDATE_REQUESTED', 'status': 'AUDIT_ONLY'},
+        }
+        saved = (self.store.revise_object(key, previous['version'], scope, data, status='CONFIRMED', created_by=actor)
+                 if previous else self.store.create_initial_object(
+                     'Decision', scope, data, status='CONFIRMED', created_by=actor, object_id=key
+                 ))
+        self.store.add_audit('TASK_ACTION_EXECUTED', actor, scope, object_type='Decision',
+                             object_id=key, object_version=saved['version'], before=previous, after=saved,
+                             evidence=task['record_ids'], reason=value.action_type_id)
+        self.store.add_audit('ACTION_TYPE_CANDIDATE_REQUESTED', actor, scope, object_type='Decision',
+                             object_id=key, object_version=saved['version'], after={
+                                 'action_type_id': value.action_type_id, 'task_id': task['id'],
+                                 'status': 'AUDIT_ONLY',
+                             }, reason='阶段 2 仅预留审计接口；未创建动作、未自动审批')
+        return {'object': saved, 'action_type': definition.model_dump()}
+
+    def revoke_task_action(self, scope, target, version, actor, payload):
+        self.service._ensure_period_open(scope)
+        decision = self.store.get_object(target, scope)
+        if decision['version'] != version:
+            raise VersionConflict()
+        if decision['object_type'] != 'Decision' or decision['status'] != 'CONFIRMED' \
+                or decision['data'].get('decision_type') != 'TASK_ACTION':
+            raise PreconditionFailed('任务动作已撤销、失效或目标类型不匹配')
+        try:
+            value = RevokeTaskActionInput.model_validate(payload)
+        except ValidationError as exc:
+            raise PreconditionFailed('请填写有效撤销原因') from exc
+        data = {**decision['data'], 'revoked_by': actor, 'revoked_at': utcnow(),
+                'revocation_reason': value.reason}
+        saved = self.store.revise_object(target, version, scope, data, status='REVOKED', created_by=actor)
+        self.store.add_audit('TASK_ACTION_REVOKED', actor, scope, object_type='Decision',
+                             object_id=target, object_version=saved['version'], before=decision, after=saved,
+                             evidence=[item['id'] for item in decision['data']['binding'].get('records', [])],
+                             reason=value.reason)
+        return {'object': saved}
+
+    def _assert_not_in_formal_downstream(self, scope, record_ids):
+        selected = set(record_ids)
+        groups = [item for item in self.store.list_objects('ProcessingGroup', scope)
+                  if item['status'] not in {'VOID', 'MERGED'}
+                  and selected.intersection(item['data'].get('member_fact_ids', []))]
+        if groups:
+            raise PreconditionFailed('绑定记录已进入正式下游流程，不能标记本期不处理')
+
+    def task_action_projection(self, scope, material):
+        """Apply only current, version-bound decisions to the read model."""
+        decisions = [item for item in self.store.list_objects('Decision', scope)
+                     if item['data'].get('decision_type') == 'TASK_ACTION']
+        tasks = {item['id']: item for item in material.get('tasks', [])}
+        records = {item['object_id']: item for item in material.get('records', [])}
+        projected = []
+        for decision in decisions:
+            task = tasks.get(decision['data'].get('task_id'))
+            valid = bool(
+                decision['status'] == 'CONFIRMED' and task
+                and decision['data'].get('descriptor_hash') == task.get('descriptor', {}).get('fingerprint')
+                and decision['data'].get('binding') == task.get('descriptor', {}).get('scope')
+            )
+            item = {**decision, 'valid': valid}
+            projected.append(item)
+            if not valid:
+                continue
+            task['task_action'] = item
+            if decision['data']['action_type_id'] == 'mark_out_of_scope':
+                for ref in decision['data']['binding'].get('records', []):
+                    row = records.get(ref['id'])
+                    if row:
+                        row['eligible'] = False
+                        row['period_disposition'] = 'OUT_OF_SCOPE'
+        material['task_action_records'] = projected
+        return material

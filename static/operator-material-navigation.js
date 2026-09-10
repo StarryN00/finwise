@@ -10,9 +10,9 @@ function materialStoredDraft(key,id,value){
 }
 function materialSaveDraft(t){
   const ui=materialState(),d=ui.drafts.get(t.id);if(!d)return;
-  materialStoredDraft(ui.key,t.id,{note:d.note,reason:d.reason,defer:d.defer,bill:d.bill,resume:d.resume,fingerprint:materialTaskFingerprint(t)});
+  materialStoredDraft(ui.key,t.id,{note:d.note,reason:d.reason,taskAction:d.taskAction,defer:d.defer,bill:d.bill,resume:d.resume,fingerprint:materialTaskFingerprint(t)});
 }
-function materialDraftRevision(d){return JSON.stringify([d?.note,d?.reason,d?.defer,d?.bill]);}
+function materialDraftRevision(d){return JSON.stringify([d?.note,d?.reason,d?.taskAction,d?.defer,d?.bill]);}
 function materialDeleteDraft(id,submittedRevision){const ui=materialState();if(submittedRevision&&materialDraftRevision(ui.drafts.get(id))!==submittedRevision)return false;ui.drafts.delete(id);materialStoredDraft(ui.key,id,null);return true;}
 function materialDetailStillOpen(group,taskId){const ui=materialState();return state.view==='materials'&&ui.screen==='detail'&&ui.group===group&&ui.selected===taskId;}
 function materialSupplementReceived(taskId,artifact){

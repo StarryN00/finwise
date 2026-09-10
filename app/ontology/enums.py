@@ -16,6 +16,7 @@ class ObjectType(str, Enum):
     PROCESSING_GROUP = "ProcessingGroup"
     PROCESSING_GROUP_REVISION = "ProcessingGroupRevision"
     EVIDENCE = "Evidence"
+    ACTION_TYPE = "ActionType"
     DECISION = "Decision"
     RULE_CANDIDATE = "RuleCandidate"
     CONFIRMATION_CARD = "ConfirmationCard"

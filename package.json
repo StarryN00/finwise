@@ -1,0 +1,11 @@
+{
+  "name": "finwise-ontology-finance-system",
+  "version": "0.0.0",
+  "private": true,
+  "scripts": {
+    "test:node": "node --test tests/*.test.cjs"
+  },
+  "devDependencies": {
+    "playwright": "1.62.1"
+  }
+}

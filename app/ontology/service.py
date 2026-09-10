@@ -57,6 +57,7 @@ for _role in ("operator", "accountant", "admin"):
     ROLE_PERMISSIONS[_role].update({'confirm_invoice_amount','revoke_invoice_amount'})
     ROLE_PERMISSIONS[_role].add("prepare_historical")
     ROLE_PERMISSIONS[_role].add("save_historical_issue_plan")
+    ROLE_PERMISSIONS[_role].update({'execute_task_action', 'revoke_task_action'})
 for _role in ("accountant", "reviewer", "admin"):
     ROLE_PERMISSIONS[_role].add("review_historical_issue_plan")
 
@@ -740,6 +741,15 @@ class OntologyService:
         facts = [self.store.get_object(item, scope) for item in fact_ids]
         if any(item["object_type"] != ObjectType.FACT_RECORD.value or item["status"] != "PARSED" or item["data"].get("period_check") != "PASS" for item in facts):
             raise PreconditionFailed("存在期间异常事实，不能建立正式采购业务")
+        versions = {(item['object_id'], item['version']) for item in facts}
+        excluded = [decision for decision in self.store.list_objects('Decision', scope)
+                    if decision['status'] == 'CONFIRMED'
+                    and decision['data'].get('decision_type') == 'TASK_ACTION'
+                    and decision['data'].get('action_type_id') == 'mark_out_of_scope'
+                    and any((ref.get('id'), ref.get('version')) in versions
+                            for ref in decision['data'].get('binding', {}).get('records', []))]
+        if excluded:
+            raise PreconditionFailed('存在已标记本期不处理的绑定记录，撤销处置前不能进入候选分组')
         stable_identity = f"PURCHASE:{business_identity}"
         event = self._find_by_data(ObjectType.BUSINESS_EVENT.value, scope, "stable_identity", stable_identity)
         if event is None:
@@ -1587,22 +1597,28 @@ class OntologyService:
                     if existing["status"] != "SUCCEEDED":
                         error = existing["effect"]
                         raise DomainError(error.get("reason", "该命令之前已被拒绝"), error.get("code", "COMMAND_REJECTED"), error.get("status_code", 409))
-                    return {"idempotent": True, "command": existing, "effect": existing.get("effect", {})}
-                self._assert_command_target_version(scope, action, target_id, target_version)
-                reads_fixed_export = action == "export_package" and self.store.get_object(target_id, scope)["status"] in {"EXPORT_CREATED", "EXTERNAL_IMPORTED"}
-                if action not in {"archive_period", "lock_period", "replay_run"} and not reads_fixed_export:
-                    self._ensure_period_open(scope)
-                effect = self._dispatch_command(scope, action=action, target_id=target_id, target_version=target_version, actor_id=actor_id, payload=payload)
-                if self.store.database.settings.agent_mode == 'gateway' and action in {
-                    'parse_artifact','reparse_fact','archive_artifact','confirm_statement_account',
-                    'confirm_bill_business','revoke_bill_business','confirm_invoice_amount','revoke_invoice_amount',
-                    'confirm_bank_period','revoke_bank_period','accept_bank_period','revoke_bank_period_intake',
-                    'verify_source_values','revoke_source_verification','defer_material_issue','apply_parse_plan'}:
-                    self.material_guidance.signal(scope,actor_id)
-                command = {"command_id": new_id("cmd"), "idempotency_key": idempotency_key, "action": action, "target_id": target_id, "target_version": target_version, "scope": scope.model_dump(), "actor_id": actor_id, "status": "SUCCEEDED", "request": payload, "effect": effect, "created_at": utcnow()}
-                self.store.save_command(command)
-                self.store.add_audit("COMMAND_SUCCEEDED", actor_id, scope, object_id=target_id, object_version=target_version, after=effect, reason=action)
-                return {"idempotent": False, "command": command, "effect": effect}
+                    response = {"idempotent": True, "command": existing, "effect": existing.get("effect", {})}
+                else:
+                    self._assert_command_target_version(scope, action, target_id, target_version)
+                    reads_fixed_export = action == "export_package" and self.store.get_object(target_id, scope)["status"] in {"EXPORT_CREATED", "EXTERNAL_IMPORTED"}
+                    if action not in {"archive_period", "lock_period", "replay_run"} and not reads_fixed_export:
+                        self._ensure_period_open(scope)
+                    effect = self._dispatch_command(scope, action=action, target_id=target_id,
+                                                    target_version=target_version, actor_id=actor_id,
+                                                    role=role, payload=payload)
+                    if self.store.database.settings.agent_mode == 'gateway' and action in {
+                        'parse_artifact','reparse_fact','archive_artifact','confirm_statement_account',
+                        'confirm_bill_business','revoke_bill_business','confirm_invoice_amount','revoke_invoice_amount',
+                        'confirm_bank_period','revoke_bank_period','accept_bank_period','revoke_bank_period_intake',
+                        'verify_source_values','revoke_source_verification','defer_material_issue','apply_parse_plan',
+                        'execute_task_action','revoke_task_action'}:
+                        self.material_guidance.signal(scope,actor_id)
+                    command = {"command_id": new_id("cmd"), "idempotency_key": idempotency_key, "action": action, "target_id": target_id, "target_version": target_version, "scope": scope.model_dump(), "actor_id": actor_id, "status": "SUCCEEDED", "request": payload, "effect": effect, "created_at": utcnow()}
+                    self.store.save_command(command)
+                    self.store.add_audit("COMMAND_SUCCEEDED", actor_id, scope, object_id=target_id, object_version=target_version, after=effect, reason=action)
+                    response = {"idempotent": False, "command": command, "effect": effect}
+            response['next'] = self._command_next(scope, actor_id)
+            return response
         except DomainError as exc:
             # Failed effects are rolled back before a separate rejection audit is committed.
             with self.store.database.transaction():
@@ -1615,7 +1631,25 @@ class OntologyService:
                 self.store.add_audit("COMMAND_REJECTED", actor_id, scope, object_id=target_id, object_version=target_version, reason=exc.message)
             raise
 
-    def _dispatch_command(self, scope: Scope, *, action: str, target_id: str, target_version: int, actor_id: str, payload: dict[str, Any]) -> dict[str, Any]:
+    def _command_next(self, scope: Scope, actor_id: str) -> dict[str, Any]:
+        try:
+            try:
+                view = self.workbench(scope, actor_id=actor_id)
+            except TypeError as exc:
+                # Some internal callers wrap workbench(scope) to verify
+                # transaction rollback. Preserve that narrow compatibility
+                # without swallowing TypeErrors raised inside workbench itself.
+                if "unexpected keyword argument 'actor_id'" not in str(exc):
+                    raise
+                view = self.workbench(scope)
+            return view['material_review']['next_step']
+        except (DomainError, KeyError, ValueError):
+            return {'version': 'workbench-next-step-v1', 'state': 'COMPLETED', 'owner': 'NONE',
+                    'title': '本组已完成', 'explanation': '本次操作已记录，当前没有可继续定位的事项。',
+                    'task_id': None, 'waiting': [], 'action': None}
+
+    def _dispatch_command(self, scope: Scope, *, action: str, target_id: str, target_version: int,
+                          actor_id: str, role: str, payload: dict[str, Any]) -> dict[str, Any]:
         if action=='save_material_opinion':
             if set(payload)!={'task_id','descriptor_hash','reason'}:
                 raise PreconditionFailed('仅接受当前事项与处理意见，不接受改值或责任人')
@@ -1666,6 +1700,14 @@ class OntologyService:
             return self.payroll_mapping.preview(scope,target_id,target_version,actor_id,payload)
         if action in {'verify_source_values','revoke_source_verification','defer_material_issue'}:
             return self.materials.execute(scope,action,target_id,target_version,actor_id,payload)
+        if action == 'execute_task_action':
+            return self.materials.execute_task_action(
+                scope, target_id, target_version, actor_id, role, payload
+            )
+        if action == 'revoke_task_action':
+            return self.materials.revoke_task_action(
+                scope, target_id, target_version, actor_id, payload
+            )
         if action == "save_historical_issue_plan":
             return {"object": self.historical_plans.save(scope, target_id, target_version, actor_id, payload)}
         if action == "review_historical_issue_plan":
@@ -1778,6 +1820,8 @@ class OntologyService:
             'retry_problem_review': 'ProblemReview',
             'defer_material_issue': 'SourceArtifact',
             'revoke_source_verification': 'SourceVerification',
+            'execute_task_action': 'SourceArtifact',
+            'revoke_task_action': 'Decision',
             "parse_artifact": ObjectType.SOURCE_ARTIFACT.value,
             "confirm_baseline": ObjectType.BASELINE.value,
             "prepare_historical": ObjectType.BASELINE.value,
@@ -1811,6 +1855,40 @@ class OntologyService:
             "company_name": profile.get("name"),
             "business_license_number": profile.get("business_license_number"),
             "ledger_name": name if name and name != scope.ledger_id else "主账套",
+        }
+
+    def _action_metrics(self, scope: Scope) -> dict[str, Any]:
+        """Count successful declared task actions in this exact scope/period."""
+        from collections import Counter
+        from app.action_types import ACTION_TYPE_BY_ID, CATALOG_VERSION, FALLBACK_IDS
+
+        aliases = {'parse_artifact': 'parse'}
+        rows = []
+        for command in self.store.list_commands(scope, status='SUCCEEDED'):
+            action_id = ((command.get('request') or {}).get('action_type_id')
+                         if command['action'] == 'execute_task_action'
+                         else aliases.get(command['action'], command['action']))
+            definition = ACTION_TYPE_BY_ID.get(action_id)
+            if not definition:
+                continue
+            rows.append({
+                'command_id': command['command_id'], 'action_type_id': action_id,
+                'label': definition.label, 'fallback': definition.fallback,
+                'target_id': command['target_id'], 'created_at': command['created_at'],
+            })
+        counts = Counter(row['action_type_id'] for row in rows)
+        fallback_count = sum(row['action_type_id'] in FALLBACK_IDS for row in rows)
+        total = len(rows)
+        return {
+            'version': 'action-metrics-v1', 'catalog_version': CATALOG_VERSION,
+            'executed_action_count': total, 'fallback_action_count': fallback_count,
+            'fallback_ratio': round(fallback_count / total, 4) if total else 0,
+            'items': [
+                {'action_type_id': action_id, 'label': ACTION_TYPE_BY_ID[action_id].label,
+                 'count': count, 'fallback': action_id in FALLBACK_IDS,
+                 'drilldown': [row for row in rows if row['action_type_id'] == action_id]}
+                for action_id, count in sorted(counts.items())
+            ],
         }
 
     @staticmethod
@@ -2006,7 +2084,9 @@ class OntologyService:
         review = {'jobs':[], 'counts':{}, 'system_tasks':[], 'fingerprint':''}
         if _problem_review:
             material_review, review = self.problem_review.project(scope, material_review, artifacts, facts)
+            material_review = self.materials.task_action_projection(scope, material_review)
             material_review = self.material_guidance.project(scope,material_review,actor_id=actor_id)
+        material_review['action_metrics'] = self._action_metrics(scope)
         material_review['next_step'] = self._workbench_next_step(
             progress, material_review, current_artifacts, blockers, cards, vouchers, groups, baseline_validation)
         return {
