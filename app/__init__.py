@@ -1,0 +1,2 @@
+"""FinWise Ontology standalone application."""
+

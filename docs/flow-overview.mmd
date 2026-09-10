@@ -1,0 +1,74 @@
+flowchart TD
+    A[选择企业、账套、会计期间]
+    B{账套基线是否完整}
+    C[接收并解析资料]
+    D[形成原始记录]
+    E[识别业务事件]
+    F[形成业务处理组]
+    G{是否需要规则确认}
+    H[人工确认规则]
+    I[银行、发票、税额、余额对账]
+    J{对账是否通过}
+    K[生成凭证草稿]
+    L{凭证复核是否通过}
+    M[按业务组交付]
+    N{所有异常是否关闭}
+    O[形成归档包]
+    P[期间归档或锁账]
+    X[异常或待补资料]
+
+    A --> B
+    B -- 否 --> X
+    B -- 是 --> C
+    C --> D --> E --> F --> G
+    G -- 是 --> H
+    G -- 否 --> I
+    H --> I
+    I --> J
+    J -- 否 --> X
+    J -- 是 --> K --> L
+    L -- 否 --> K
+    L -- 是 --> M --> N
+    X --> N
+    N -- 否 --> X
+    N -- 是 --> O --> P
+
+    subgraph AI[受控 Agent：只提出建议，不直接过账]
+        AI1[资料分类与字段识别]
+        AI2[业务事件识别与分组建议]
+        AI3[规则候选与异常解释]
+    end
+
+    subgraph RULE[确定性引擎：负责事实校验和动作门禁]
+        R1[期间和基线校验]
+        R2[金额、税额和余额对账]
+        R3[借贷平衡与凭证 dry-run]
+        R4[导出、归档和锁账门禁]
+    end
+
+    subgraph HUMAN[人工确认]
+        H1[确认账套基线]
+        H2[确认业务规则]
+        H3[复核凭证版本]
+    end
+
+    AI1 -.辅助.-> D
+    AI2 -.辅助.-> E
+    AI3 -.辅助.-> G
+    R1 -.校验.-> B
+    R2 -.校验.-> I
+    R3 -.校验.-> K
+    R4 -.门禁.-> M
+    R4 -.门禁.-> P
+    H1 -.确认.-> B
+    H2 -.确认.-> H
+    H3 -.复核.-> L
+
+    classDef gate fill:#fff4cc,stroke:#b8860b,stroke-width:1.5px;
+    classDef ai fill:#e8f1ff,stroke:#4a78b8;
+    classDef engine fill:#e9f7ef,stroke:#3c8c5a;
+    classDef human fill:#f7e8f2,stroke:#a34b7a;
+    class B,G,J,L,N gate;
+    class AI1,AI2,AI3 ai;
+    class R1,R2,R3,R4 engine;
+    class H1,H2,H3 human;

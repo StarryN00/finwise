@@ -1,0 +1,23 @@
+[project]
+name = "finwise-ontology-finance-system"
+version = "0.1.0"
+description = "A controlled ontology-oriented finance workflow for FinWise"
+requires-python = ">=3.9"
+dependencies = [
+  "fastapi>=0.115,<1",
+  "uvicorn>=0.30,<1",
+  "pydantic>=2.7,<3",
+  "openpyxl>=3.1,<4",
+  "xlrd>=2,<3",
+  "pypdf>=5,<7",
+]
+
+[project.optional-dependencies]
+test = ["pytest>=8", "httpx>=0.27"]
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+addopts = "-q"
+
+[tool.uvicorn]
+factory = false

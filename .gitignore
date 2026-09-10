@@ -1,0 +1,13 @@
+# 真实客户财务数据与数据库 —— 整目录排除，任何情况下不得入库
+data/
+output/
+storage/
+
+__pycache__/
+*.pyc
+.pytest_cache/
+.playwright-cli/
+.DS_Store
+.venv/
+deploy/staging.env
+deploy/staging-reports/

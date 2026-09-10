@@ -1,0 +1,690 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<meta name="color-scheme" content="light">
+<title>FinWise · 多企业待办驾驶舱 Demo</title>
+<style>
+/* Linear: focus and hierarchy; Figma: spacing; Raycast: compact feedback.
+   Local Chinese finance demo. No brand assets or external dependencies. */
+:root{--page:#f3f6fa;--surface:#fff;--ink:#182d48;--muted:#586a80;--line:#dce4ee;--blue:#245bd6;--blue-soft:#edf3ff;--green:#217453;--green-soft:#edf8f2;--red:#b53636;--red-soft:#fff2f1;--amber:#95600c;--amber-soft:#fff8e9;--radius:8px}
+*{box-sizing:border-box}body{margin:0;background:var(--page);color:var(--ink);font:14px/1.55 -apple-system,BlinkMacSystemFont,"PingFang SC","Microsoft YaHei",sans-serif}
+button,input,textarea,select{font:inherit;color:inherit}button,a,input,textarea,select{touch-action:manipulation}button{cursor:pointer}button:disabled{opacity:.55;cursor:not-allowed}
+button{border:0;background:none}a{color:var(--blue)}h1,h2,h3,p{margin:0}h1{font-size:22px;line-height:1.4}h2{font-size:20px;line-height:1.5}h3{font-size:16px}
+:focus-visible{outline:3px solid #7b9fe8;outline-offset:3px}input,textarea,select{border:1px solid var(--line);border-radius:6px;background:white;padding:9px 12px;min-width:0}
+textarea{width:100%;resize:vertical;min-height:72px}input:focus,textarea:focus{border-color:var(--blue)}
+[hidden]{display:none!important}.muted{color:var(--muted)}.small{font-size:12px}.number,.money,.company-license{font-variant-numeric:tabular-nums;font-family:ui-monospace,SFMono-Regular,Consolas,monospace}
+.money{white-space:nowrap}.good{color:var(--green)}.bad{color:var(--red)}.flex{display:flex;align-items:center;gap:12px;flex-wrap:wrap}.spread{justify-content:space-between}.grow{flex:1;min-width:0}.stack{display:grid;gap:16px}
+.button{display:inline-flex;align-items:center;justify-content:center;gap:8px;padding:9px 15px;min-height:40px;border:1px solid var(--line);border-radius:6px;background:white;font-weight:600;text-decoration:none;line-height:1.5}
+.primary{background:var(--blue);border-color:var(--blue);color:white}.text-button{color:var(--blue);padding:6px 4px;min-height:36px}.icon-button{min-width:40px;min-height:40px;border-radius:6px}.icon-button:hover,.button:not(.primary):hover{background:var(--blue-soft)}
+.badge{display:inline-flex;align-items:center;gap:5px;border-radius:4px;padding:3px 7px;font-size:12px;font-weight:600;white-space:nowrap;background:#edf1f6;color:var(--muted)}
+.badge.blocked{color:var(--red);background:var(--red-soft)}.badge.waiting{color:var(--amber);background:var(--amber-soft)}.badge.running{color:var(--blue);background:var(--blue-soft)}.badge.complete{color:var(--green);background:var(--green-soft)}
+.sidebar{position:fixed;inset:0 auto 0 0;width:300px;background:#fbfcfe;border-right:1px solid var(--line);display:flex;flex-direction:column;z-index:30}
+.brand{height:72px;display:flex;align-items:center;gap:10px;padding:0 20px;border-bottom:1px solid var(--line)}.brand-mark{width:30px;height:30px;background:var(--ink);color:white;display:grid;place-items:center;font:bold 22px Georgia,serif;border-radius:6px}.brand strong{font-size:22px;letter-spacing:-.8px}.brand .badge{margin-left:auto}
+.sidebar-head{padding:18px 16px 12px}.sidebar-head input{width:100%;margin-top:12px;padding-left:12px;font-size:12px}.sidebar-head h2{font-size:14px}
+.company-list{flex:1;overflow:auto;padding:0 10px 12px}.company-row{position:relative;display:grid;grid-template-columns:minmax(0,1fr) 65px;gap:5px;padding:13px 10px;border:1px solid transparent;border-bottom-color:var(--line);border-radius:6px;margin:3px 0}
+.company-row.selected{background:var(--blue-soft);border-color:#afc5f4}.company-row.selected:before{content:"";position:absolute;left:-1px;top:14px;bottom:14px;width:3px;background:var(--blue);border-radius:2px}
+.company-main{text-align:left;min-width:0;padding:0}.company-name{display:block;font-size:14px;font-weight:650;line-height:1.5;overflow-wrap:anywhere}.company-license{display:block;min-width:0;max-width:100%;overflow:hidden;white-space:nowrap;text-overflow:ellipsis;font-size:12px;color:var(--muted);line-height:1.7;margin:5px 0}
+.company-next{display:block;color:var(--muted);font-size:12px;line-height:1.65}.company-tools{display:flex;flex-direction:column;align-items:flex-end;gap:7px;text-align:right;font-size:12px}
+.company-tools button{color:var(--muted);font-size:12px;padding:3px 0}.tags{display:flex;gap:5px;flex-wrap:wrap;grid-column:1/-1;margin-top:5px}.tag{font-size:12px;padding:1px 6px;border:1px solid var(--line);border-radius:4px;background:rgba(255,255,255,.7);color:var(--muted)}
+.alert-dot{display:inline-block;background:var(--red);width:7px;height:7px;border-radius:50%;margin-right:5px}.company-row.new{border-right:3px solid var(--red)}
+.sidebar-foot{padding:12px 18px;border-top:1px solid var(--line)}summary{cursor:pointer}summary::marker{color:var(--muted)}.sidebar-foot details>div{padding-top:8px;display:grid;gap:8px}.sidebar-foot p{font-size:12px;color:var(--muted);margin-top:8px}
+.shell{margin-left:300px;min-width:0}.mobile-head{display:none}.context{padding:22px 28px 0;background:white;border-bottom:1px solid var(--line)}.context-title{display:flex;align-items:flex-start;justify-content:space-between;gap:20px}.context-meta{margin-top:5px;font-size:12px;color:var(--muted);overflow-wrap:anywhere}.context-period{text-align:right;flex-shrink:0}.context-period strong{display:block;font-size:18px}
+.top-tabs{display:flex;gap:28px;margin-top:18px}.top-tabs button{padding:10px 0 12px;border-bottom:2px solid transparent;color:var(--muted);font-weight:600}.top-tabs button[aria-current=page]{border-color:var(--blue);color:var(--blue)}
+.workspace{max-width:1360px;margin:0 auto;padding:24px 28px 40px;display:grid;gap:18px}.panel{background:white;border:1px solid var(--line);border-radius:var(--radius);padding:24px;min-width:0}
+.progress-top{display:flex;gap:28px;align-items:center}.overall-value{display:flex;align-items:baseline;gap:3px;line-height:1.1}.overall-value strong{font-size:36px;letter-spacing:-1.5px}.overall-value span{font-size:18px}.progress-copy{font-size:12px;color:var(--muted);margin-top:6px}
+.overall-track{height:7px;background:#e8edf5;border-radius:8px;overflow:hidden;max-width:260px;margin:9px 0}.bar-fill{display:block;height:100%;background:var(--blue);border-radius:inherit}.outcomes{margin-left:auto;display:flex;gap:24px;font-size:12px;color:var(--muted)}.outcomes strong{display:block;font-size:20px;color:var(--ink)}.outcomes .bad{color:var(--red)}
+.stages{display:grid;grid-template-columns:repeat(5,minmax(0,1fr));gap:8px;margin-top:20px}.stage{text-align:left;border:1px solid var(--line);border-radius:6px;padding:11px 10px;min-width:0;position:relative}.stage.active{border-color:#a6bff3;background:var(--blue-soft)}.stage:disabled{opacity:1;color:var(--muted);background:#fafbfd;cursor:default}
+.stage-top{display:flex;align-items:center;gap:7px;white-space:nowrap;font-size:12px;font-weight:650}.step-number{display:inline-grid;place-items:center;width:19px;height:19px;flex-shrink:0;border:1px solid #b6c3d6;border-radius:50%;color:var(--muted);font-size:12px}
+.stage.complete .step-number{background:var(--green);border-color:var(--green);color:white}.stage.active .step-number{background:var(--blue);border-color:var(--blue);color:white}.stage.blocked .stage-state{color:var(--red)}.stage.complete .stage-state{color:var(--green)}
+.stage-state{font-size:12px;margin-top:8px}.stage-count{font-size:12px;color:var(--muted);margin-top:3px}.stage-percent{font-size:16px;font-weight:600;color:var(--ink)}.mini-track{height:3px;background:#e8edf5;border-radius:4px;overflow:hidden;margin-top:7px}.stage.complete .bar-fill{background:var(--green)}
+.mobile-stage-toggle{display:none}.task-panel{padding:0;overflow:visible}.task-heading{padding:18px 24px;border-bottom:1px solid var(--line);display:flex;align-items:center;gap:16px;justify-content:space-between}.task-heading h2{font-size:16px}.task-heading .eyebrow{font-size:12px;color:var(--blue);margin-bottom:4px}.task-progress{width:165px;flex-shrink:0}.task-progress strong{font-size:24px;line-height:1}.task-progress span{font-size:12px;color:var(--muted)}
+.task-body{padding:20px 24px}.task-title-row{display:flex;gap:10px;align-items:flex-start;justify-content:space-between}.task-title-row h3{font-size:19px;line-height:1.45}.task-position{font-size:12px;color:var(--muted);margin-bottom:5px}
+.facts{display:grid;grid-template-columns:repeat(3,minmax(0,1fr));gap:12px;padding:0;margin:16px 0}.fact{border-right:1px solid var(--line);padding-right:12px;min-width:0}.fact:last-child{border:0}.fact dt{font-size:12px;color:var(--muted)}.fact dd{margin:3px 0 0;font-size:20px;font-weight:600;overflow-wrap:anywhere}.fact .text-value{font-size:14px}
+.issue-line,.goal-line{display:flex;gap:12px;align-items:baseline;margin-top:10px;line-height:1.65}.field-label{font-size:12px;color:var(--muted);flex-shrink:0;width:48px}.issue-line .problem{color:var(--red)}
+.source-line{font-size:12px;color:var(--muted);margin-top:10px;overflow-wrap:anywhere}.checks{display:flex;gap:8px 18px;flex-wrap:wrap;font-size:12px;margin-top:9px}.check-item{display:inline-flex;gap:5px}.suggestion{font-size:12px;color:var(--muted);margin-top:10px}
+.note-field{display:block;font-size:12px;color:var(--muted);margin-top:16px}.note-field textarea{display:block;margin-top:6px;color:var(--ink);font-size:14px}
+.action-row{position:sticky;bottom:0;z-index:10;display:flex;align-items:center;gap:16px;flex-wrap:wrap;padding:14px 24px;border-top:1px solid var(--line);background:#fbfcfe;border-radius:0 0 8px 8px}.action-row .hint{font-size:12px;color:var(--muted);margin-left:auto}
+.task-queue{padding:0 24px 16px}.queue-row{border-top:1px solid var(--line);font-size:12px;padding:10px 0}.queue-row summary{display:flex;gap:10px;justify-content:space-between;align-items:center}.queue-row p{margin-top:8px;color:var(--muted);white-space:pre-wrap}.queue-row button{text-align:left;color:var(--blue)}
+.context-note{padding:11px 14px;background:var(--blue-soft);border-radius:6px;font-size:12px}.empty{padding:36px 16px;text-align:center}.empty h3{font-size:18px;margin-bottom:8px}.empty p{color:var(--muted);margin-bottom:18px}
+.related-tools{display:flex;gap:8px 20px;flex-wrap:wrap;border-top:1px solid var(--line);padding-top:8px;margin-top:16px}.related-tools .text-button{font-size:12px}.stage-body{margin-top:20px}
+.table-scroll{overflow:auto;max-width:100%;border:1px solid var(--line);border-radius:6px;margin-top:12px}table{width:100%;min-width:570px;border-collapse:collapse;font-size:12px;text-align:left}th,td{padding:11px 12px;border-bottom:1px solid var(--line)}th{color:var(--muted);background:#f7f9fc;font-weight:500}tr:last-child td{border:0}td.right,th.right{text-align:right}.table-button{color:var(--blue);min-height:36px}
+
+.simple-list{list-style:none;margin:12px 0 0;padding:0}.simple-list li{padding:11px 0;border-bottom:1px solid var(--line)}.simple-list li:last-child{border:0}
+.records{margin-top:12px;padding:12px;background:#f7f9fc;font-size:12px;white-space:pre-wrap}.query-form{display:flex;gap:8px;margin-top:14px;flex-wrap:wrap}.query-form input{flex:1;min-width:180px}
+.alert-banner{margin:16px 28px 0;padding:10px 14px;border:1px solid #eec6bf;border-radius:6px;background:var(--red-soft);display:flex;align-items:center;gap:10px;font-size:12px}
+.toast{position:fixed;bottom:24px;left:calc(50% + 150px);transform:translateX(-50%);background:var(--ink);color:white;border-radius:6px;padding:11px 18px;z-index:70;max-width:min(540px,calc(100vw - 32px));font-size:13px;pointer-events:none}.toast:empty{display:none}
+dialog{border:1px solid var(--line);border-radius:10px;padding:24px;max-width:min(580px,calc(100vw - 32px));width:100%;color:var(--ink)}dialog::backdrop{background:rgba(15,30,50,.35)}dialog header{display:flex;align-items:center;justify-content:space-between;gap:16px;margin-bottom:16px}dialog label{display:block;margin-top:12px}dialog input{width:100%;margin:8px 0}.dialog-actions{display:flex;justify-content:flex-end;gap:10px;margin-top:20px}
+dialog.voucher-dialog{max-width:min(820px,calc(100vw - 32px));max-height:calc(100dvh - 32px);overflow:auto;overscroll-behavior:contain}dialog.voucher-dialog header .icon-button{flex-shrink:0}dialog.voucher-dialog table{min-width:0;table-layout:fixed}dialog.voucher-dialog th:first-child{width:40%}dialog.voucher-dialog th:not(:first-child){width:30%}
+.overlay{display:none}.mobile-close{display:none}.status-note{margin-top:12px;padding:12px 14px;border:1px solid #efd2c9;border-radius:6px;background:#fff9f6}
+@media(min-width:1700px){.workspace{padding-top:28px}.task-body{padding-top:24px;padding-bottom:24px}}
+@media(max-width:1150px){.sidebar{width:280px}.shell{margin-left:280px}.workspace{padding:20px}.context{padding:20px 20px 0}.stages{gap:5px}.stage{padding:10px 7px}.stage-top{white-space:normal;align-items:flex-start}.outcomes{gap:16px}.toast{left:calc(50% + 140px)}}
+@media(max-width:960px){.sidebar{width:300px;transform:translateX(-100%);transition:transform .15s ease}.sidebar.open{transform:none}.shell{margin-left:0}.mobile-head{display:flex;align-items:center;gap:8px;height:48px;padding:0 16px;background:white;border-bottom:1px solid var(--line)}.mobile-head .badge{margin-left:auto}.mobile-close{display:block}.overlay.show{display:block;position:fixed;inset:0;background:rgba(15,30,50,.3);z-index:29}.toast{left:50%}}
+@media(max-width:760px){.context-title .badge,.context-license{display:none}.context{padding:16px 16px 0}.context-title{gap:12px}h1{font-size:18px}.context-meta{font-size:12px}.context-period strong{font-size:14px}.context-period .small{font-size:12px}.top-tabs{gap:22px;margin-top:12px}.top-tabs button{font-size:13px}.workspace{padding:16px 12px 28px;gap:14px}.panel{padding:16px}.progress-top{gap:16px;flex-wrap:wrap}.overall-value strong{font-size:28px}.overall-value span{font-size:14px}.outcomes{margin:0;gap:22px;width:100%;border-top:1px solid var(--line);padding-top:10px}.outcomes>div{display:flex;align-items:baseline;gap:6px}.outcomes strong{font-size:16px}.stages{display:none;grid-template-columns:1fr;margin-top:12px}.stages.expanded{display:grid}.stage{display:grid;grid-template-columns:1fr 1fr;gap:2px 12px;padding:9px 12px}.stage-top{grid-row:1/3;align-items:center}.stage .mini-track{display:none}.stage-state,.stage-count{margin:0;text-align:right}.mobile-stage-toggle{display:flex;align-items:center;justify-content:space-between;width:100%;font-size:12px;margin-top:12px;padding:9px 0 0;border-top:1px solid var(--line);color:var(--blue)}
+.task-panel{padding:0}.task-heading{padding:14px 16px;gap:8px}.task-heading h2{font-size:14px}.task-progress{width:110px}.task-body{padding:16px}.task-title-row h3{font-size:17px}.task-position{font-size:12px}.facts{gap:8px;padding:10px 0}.fact{padding-right:5px}.fact dd{font-size:16px}.fact dt{font-size:12px}.issue-line,.goal-line{gap:8px}.source-line{margin-top:8px}.action-row{position:sticky;bottom:0;z-index:10;padding:12px 16px;background:white;padding-bottom:max(12px,env(safe-area-inset-bottom));gap:8px}.action-row .primary{flex:1;min-height:44px}.action-row .hint{display:none}.task-queue{padding:0 16px 12px}.alert-banner{margin:12px 12px 0;flex-wrap:wrap}.context-note{padding:10px;font-size:12px}button.button,.icon-button,.text-button{min-height:44px}.queue-row{min-height:44px}.sidebar .company-tools button{min-height:32px}.query-form input{width:100%;min-width:0}.task-progress strong{font-size:24px}}
+@media(max-width:760px){dialog.voucher-dialog{padding:16px}dialog.voucher-dialog th,dialog.voucher-dialog td{padding:10px 6px}}
+@media(prefers-reduced-motion:reduce){*{scroll-behavior:auto!important;transition:none!important}}
+#archiveSearchForm{align-items:flex-end;margin-top:16px}#archiveSearchForm label{display:grid;gap:6px;flex:1 1 260px;min-width:0;font-size:12px}#archiveSearchForm .date-filter{flex:0 1 155px}#archiveSearchForm input{width:100%;min-height:42px;font-size:14px}#archiveSearchError{margin-top:8px}#archiveResultsStatus{margin-top:16px}
+@media(max-width:760px){#archiveSearchForm .date-filter{flex:1 1 130px}#archiveSearchForm .archive-search-actions{width:100%}#archiveSearchForm .button{flex:1}}
+</style>
+</head>
+<body>
+<aside class="sidebar" id="sidebar" aria-label="企业导航">
+  <div class="brand"><span class="brand-mark" aria-hidden="true">F</span><strong>FinWise</strong><span class="badge">本地演示</span><button class="icon-button mobile-close" data-action="close-menu" aria-label="关闭企业列表">×</button></div>
+  <div class="sidebar-head"><div class="flex spread"><h2>客户企业</h2><span class="small muted" id="companyCount"></span></div><input id="companySearch" type="search" placeholder="搜索企业、证照编号、标签" aria-label="搜索企业、证照编号、标签"></div>
+  <div class="company-list" id="companyList"></div>
+  <footer class="sidebar-foot"><details><summary class="small">演示控制</summary><div><button class="button" data-action="simulate-alert">模拟新异常</button><button class="button" data-action="simulate-analysis">完成当前演示分析</button><button class="text-button" data-action="reset-dialog">重置办理记录</button></div></details><p>数据及证照编号均为演示，仅保存在本机。</p></footer>
+</aside>
+<div class="overlay" id="overlay" data-action="close-menu"></div>
+<div class="shell" id="shell">
+  <div class="mobile-head"><button id="mobileMenu" class="icon-button" data-action="open-menu" aria-expanded="false" aria-controls="sidebar" aria-label="打开企业列表">☰</button><span>客户企业</span><span class="badge">本地演示</span></div>
+  <header class="context" id="context"></header>
+  <div id="alertBanner"></div>
+  <main class="workspace" id="main"></main>
+</div>
+<div class="toast" id="toast" role="status" aria-live="polite"></div>
+<dialog id="dialog" aria-labelledby="dialogTitle"></dialog>
+<script>
+'use strict';
+const SELECT_KEY = 'finwise.operator-workbench.selected-company';
+const TAG_KEY = 'finwise.operator-workbench.company-tags';
+const LEGACY_TASK_KEY = 'finwise.operator-workbench.task-state';
+const STATE_KEY = 'finwise.operator-workbench.v5';
+const STAGES = ['资料接收','资料分析','待确认与校验','凭证复核','交付归档'];
+const period = '2026-03';
+const labels = { complete:'已完成', blocked:'已阻断', waiting:'待处理', running:'处理中', idle:'尚未开始', partial:'部分完成' };
+const money = cents => '¥' + (cents / 100).toLocaleString('zh-CN', {minimumFractionDigits:2,maximumFractionDigits:2});
+const task = (id,title,reason,source,goal,amount,checks) => ({id,title,reason,source,goal,amount,checks});
+const companies = [
+ {id:'juxianda',name:'昆山聚贤达信息科技有限公司',short:'聚贤达',license:'91320583·JXD·0426',ledger:'juxianda-ledger-real',tags:['重点客户','待补证'],files:5,analyzed:true,groups:1,passed:0,blockers:1,voucherCount:0,amount:1757000,
+  missing:['采购合同','入库单','付款差额的说明或补充流水'],
+  sources:['聚贤达26年3月进项.xlsx','2026.3月聚贤达农村商业银行流水.xls','凭证导入表.xlsx','社保明细.xlsx','工资明细.xlsx'],
+  tasks:[
+   task('jx-stock-gap','补齐采购合同与入库证据','已收到进项发票和付款流水，但采购合同、入库单缺失。','聚贤达26年3月进项.xlsx · Sheet1 · 第 18 行','补齐合同、入库单并通过校验；核实记录不能代替证据。',1757000,[['发票税额与合计','通过'],['期间归属','通过'],['合同、入库证据','缺失']]),
+   task('jx-payment-gap','核实付款与发票的差额','发票价税合计 17,570.00 元，已匹配付款 8,732.00 元，差额尚未解释。','2026.3月聚贤达农村商业银行流水.xls · Sheet1 · 第 47 行','核实是否分期付款，并提供剩余款项说明或补充流水，重新校验付款关系。',883800,[['付款匹配','阻断'],['重复事实','通过'],['差额说明','缺失']])
+  ],history:[{period:'2026-02',count:8,total:12864000},{period:'2026-01',count:6,total:9638000}]},
+ {id:'luhai',name:'苏州陆海精密制造有限公司',short:'陆海精密',license:'91320583·LHP·0326',ledger:'luhai-ledger',tags:['制造业','处理中'],files:12,analyzed:false,batches:7,batchesDone:4,groups:14,passed:0,blockers:0,voucherCount:0,expectedVouchers:4,amount:28460000,tasks:[],history:[{period:'2026-02',count:6,total:22140000}]},
+ {id:'minghe',name:'苏州明合电子商务有限公司',short:'明合电商',license:'91320583·MHE·0326',ledger:'minghe-ledger',tags:['资料待收','电商'],files:0,analyzed:false,groups:1,passed:0,blockers:0,voucherCount:0,expectedVouchers:1,amount:120000,tasks:[],history:[{period:'2026-02',count:3,total:1842000}]},
+ {id:'huanyu',name:'昆山环宇新材料有限公司',short:'环宇新材料',license:'91358301·HYC·0326',ledger:'huanyu-ledger',tags:['规则待确认','制造业'],files:18,analyzed:true,groups:23,passed:20,blockers:0,voucherCount:0,expectedVouchers:3,amount:6842000,
+  tasks:[
+   task('huanyu-rule-1','核实设备采购的处理口径','设备用途与历史维修费用规则不一致，需与客户核实是否为新增设备。','凭证导入表.xlsx · 第 26 行','取得客户对设备用途的确认；后续仍需运行校验并复核候选分录。',3200000,[['金额日期','通过'],['设备用途','待核实']]),
+   task('huanyu-rule-2','核实往来款的对方性质','付款对象已识别，对方的供应商身份仍需核实。','银行流水.xlsx · 第 71 行','记录对方性质的核实依据，交由后续规则校验处理。',1890000,[['付款方向','通过'],['对方性质','待核实']]),
+   task('huanyu-rule-3','核实费用所属期间','费用发生日期与拟入账期间不同，需核实本期归属。','费用单.xlsx · 第 9 行','记录客户对费用归属的说明，再校验期间规则。',1752000,[['来源定位','通过'],['期间归属','待核实']])
+  ],history:[{period:'2026-02',count:5,total:5432000}]},
+ {id:'chengyuan',name:'苏州承远供应链有限公司',short:'承远供应链',license:'91320594·CYG·0326',ledger:'chengyuan-ledger',tags:['凭证复核','供应链'],files:21,analyzed:true,groups:31,passed:31,validated:true,blockers:0,voucherCount:4,amount:41286000,tasks:[],history:[{period:'2026-02',count:8,total:38440000}]},
+ {id:'qingsong',name:'苏州青松智能设备有限公司',short:'青松智能',license:'91320583·QSN·0326',ledger:'qingsong-ledger',tags:['部分交付','设备'],files:16,analyzed:true,groups:19,passed:18,blockers:1,voucherCount:12,reviewed:12,delivered:12,amount:35628000,deliveredTotal:34348000,missing:['设备交付验收单（异常业务组 QS-019）'],tasks:[],
+  blockedReason:'业务组 QS-019 缺少设备交付验收单；其余 18 个安全业务组已形成 12 张交付凭证。',
+  history:[{period:'2026-02',count:9,total:29460000}]},
+ {id:'xinqiyuan',name:'苏州新启源科技有限公司',short:'新启源科技',license:'91320505·XQY·0326',ledger:'xinqiyuan-ledger',tags:['新建企业','待上传'],files:0,analyzed:false,groups:1,passed:0,blockers:0,voucherCount:0,expectedVouchers:1,amount:120000,tasks:[],history:[]}
+];
+const clone = value => JSON.parse(JSON.stringify(value));
+const escapeHtml = value => String(value == null ? '' : value).replace(/[&<>"']/g, c => ({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[c]));
+const isObject = value => !!value && typeof value === 'object' && !Array.isArray(value);
+let storageFailed = false;
+function readRaw(key) { try { return localStorage.getItem(key); } catch (_) { storageFailed = true; return null; } }
+function readJSON(key,fallback) { try { const v = JSON.parse(readRaw(key)); return v == null ? fallback : v; } catch (_) { return fallback; } }
+function writeJSON(key,value) { try { localStorage.setItem(key,JSON.stringify(value)); } catch (_) { storageFailed = true; } }
+function scopeKey(c) { return c.id + '|' + c.ledger + '|' + period; }
+function emptyRuntime() { return {records:{},draftNotes:{},deferred:[],reviewed:[],uploaded:false,analysisDone:false,validated:false,generated:false,archived:false,auxConfirmed:false,alert:false,unread:false,view:{stage:null,taskId:null,records:false},log:[]}; }
+const saved = readJSON(STATE_KEY,{});
+const legacy = readJSON(LEGACY_TASK_KEY,{});
+const tags = readJSON(TAG_KEY,{});
+const runtimes = {};
+for (const c of companies) {
+ const s = isObject(saved) && isObject(saved.scopes) && isObject(saved.scopes[scopeKey(c)]) ? saved.scopes[scopeKey(c)] : null;
+ const r = emptyRuntime();
+ if (s) {
+  for (const k of ['uploaded','analysisDone','validated','generated','archived','auxConfirmed','alert','unread']) r[k] = s[k] === true;
+  for (const k of ['deferred','reviewed']) if (Array.isArray(s[k])) r[k] = [...new Set(s[k].filter(x=>typeof x==='string'))];
+  if (isObject(s.records)) for (const [id,v] of Object.entries(s.records)) if (isObject(v)) r.records[id] = {note:String(v.note || ''),at:String(v.at || '')};
+  if (isObject(s.draftNotes)) for (const [id,v] of Object.entries(s.draftNotes)) if (typeof v==='string') r.draftNotes[id] = v;
+  if (isObject(s.view)) r.view = {...r.view,...s.view};
+  if (Array.isArray(s.log)) r.log = s.log.filter(x=>typeof x==='string').slice(-30);
+ } else {
+  const old = isObject(legacy) && isObject(legacy[c.id]) ? legacy[c.id] : {};
+  if (Array.isArray(old.recordedIds)) for (const t of c.tasks) if (old.recordedIds.includes(t.id)) r.records[t.id] = {note:isObject(old.notes) ? String(old.notes[t.id] || '') : '',at:'此前已记录'};
+ }
+ if (isObject(tags) && Array.isArray(tags[c.id])) c.tags = [...new Set(tags[c.id].filter(t=>typeof t==='string' && t.trim()).map(t=>t.trim()))];
+ delete r.view.detail;
+ if (!Number.isInteger(r.view.stage) || r.view.stage < 0 || r.view.stage > 4) r.view.stage=null;
+ runtimes[scopeKey(c)] = r;
+}
+const selection = readRaw(SELECT_KEY);
+const state = {selectedId:companies.some(c=>c.id===selection)?selection:'juxianda',tab:'current',search:'',historyPeriod:null,mobileStages:false,alertDismissed:false,query:'',queryResult:null};
+function currentCompany() { return companies.find(c=>c.id===state.selectedId) || companies[0]; }
+function runtime(c) { return runtimes[scopeKey(c)]; }
+function persist() {
+ writeJSON(STATE_KEY,{version:5,scopes:runtimes});
+ writeJSON(TAG_KEY,Object.fromEntries(companies.map(c=>[c.id,c.tags])));
+ try { localStorage.setItem(SELECT_KEY,state.selectedId); } catch (_) { storageFailed=true; }
+}
+function tasksFor(c,r=runtime(c)) {
+ const list = [...c.tasks];
+ if (r.uploaded && r.analysisDone) list.push(task(c.id+'-source-check','核实本批资料的期间归属','本批演示资料已接收并完成分析，请核实资料均属于当前期间。','本地演示资料包 · 2026-03','记录资料期间的核实结果，再执行确定性校验。',c.amount,[['文件识别','通过'],['期间归属','待核实']]));
+ if (r.alert) list.push(task('luhai-new-block','核实新增流水的重复业务','新收到的一笔银行流水与已有付款记录疑似重复，资料分析已暂停。','陆海精密银行流水.xlsx · 第 42 行','核实交易流水号，提供正确记录后重新校验；人工记录不会删除重复证据。',680000,[['重复业务','阻断'],['处理器','已暂停']]));
+ return list;
+}
+function fileNames(c,r=runtime(c)) {
+ const count=c.files || (r.uploaded?4:0);
+ const seed = c.sources || [c.short+'银行流水.xlsx',c.short+'进项发票.xlsx',c.short+'销项发票.xlsx',c.short+'费用明细.xlsx'];
+ return Array.from({length:count},(_,i)=>seed[i] || c.short+'财务资料-'+String(i+1).padStart(2,'0')+'.xlsx');
+}
+function stageInfo(done,total,unit,status,complete) { return {done,total,unit,status,complete,percent:total>0?Math.round(done/total*100):null}; }
+function derive(c,r=runtime(c)) {
+ const files=fileNames(c,r),hasFiles=files.length>0, analyzed=!!c.analyzed || r.analysisDone;
+ const tasks=tasksFor(c,r),pending=tasks.filter(t=>!r.records[t.id]);
+ const blockers=c.blockers+(r.alert?1:0);
+ const valid=hasFiles && analyzed && !blockers && !pending.length && (!!c.validated || r.validated);
+ const groups=hasFiles?c.groups:null;
+ const passed=valid?groups:(c.passed || 0);
+ const count=c.voucherCount || (r.generated?(c.expectedVouchers || 1):0);
+ const reviewed=Math.min(count,(c.reviewed || 0)+r.reviewed.filter(id=>/^v\d+$/.test(id) && Number(id.slice(1))<count).length);
+ const reviewComplete=valid && count>0 && reviewed===count;
+ const archived=reviewComplete && r.archived;
+ const delivered=archived?count:(c.delivered || 0);
+ const stages=[
+  stageInfo(files.length,hasFiles?files.length:null,'份',hasFiles?'complete':'waiting',hasFiles),
+  stageInfo(analyzed?(c.batches || files.length):(c.batchesDone || 0),hasFiles?(c.batches || files.length):null,c.batches?'批':'份',analyzed?'complete':r.alert?'blocked':hasFiles?'running':'idle',analyzed),
+  stageInfo(passed,groups,'组',valid?'complete':blockers?'blocked':analyzed?'waiting':'idle',valid),
+  stageInfo(reviewed,blockers?null:count || null,'张',reviewComplete?'complete':reviewed?'partial':count?'waiting':'idle',reviewComplete),
+  stageInfo(delivered,blockers?null:count || null,'张',archived?'complete':delivered?'partial':'idle',archived)
+ ];
+ const completed=stages.filter(s=>s.complete).length;
+ const active=!hasFiles?0:(pending.length || blockers)?2:!analyzed?1:!valid?2:!reviewComplete?3:4;
+ const status=blockers?'blocked':archived?'complete':active===1?'running':'waiting';
+ const recorded=tasks.length-pending.length;
+ const candidates=pending.filter(t=>!r.deferred.includes(t.id));
+ const selected=candidates.find(t=>t.id===r.view.taskId) || candidates[0] || null;
+ const next=active===0?'添加本期资料':selected?'核实 '+pending.length+' 项事项':blockers?'补齐阻断证据':pending.length?'继续处理暂缓事项':active===1?'等待分析结果':active===2?'运行演示校验':active===3?count?'复核 '+(count-reviewed)+' 张凭证':'生成演示草稿':archived?'查看归档清单':'完成演示归档';
+ return {files,hasFiles,analyzed,tasks,pending,blockers,valid,groups,passed,count,reviewed,reviewComplete,archived,delivered,stages,completed,percent:completed*20,active,status,recorded,selected,next};
+}
+function canViewStage(d,index) {
+ if (!Number.isInteger(index) || index<0 || index>=STAGES.length) return false;
+ return index===d.active || d.stages[index].complete || d.stages[index].done>0 ||
+  (index===1 && d.hasFiles) || (index===2 && (d.analyzed || d.tasks.length>0 || d.blockers>0)) || (index===3 && d.count>0);
+}
+function viewedStage(c,d=derive(c)) {
+ const index=runtime(c).view.stage;
+ return canViewStage(d,index)?index:d.active;
+}
+function chooseStage(c,index) {
+ const d=derive(c);
+ if (!canViewStage(d,index)) return false;
+ runtime(c).view.stage=index===d.active?null:index;
+ persist();return true;
+}
+function recordTask(c,id) {
+ const r=runtime(c),d=derive(c,r);
+ if (!d.selected || d.selected.id!==id || r.records[id]) return false;
+ r.records[id]={note:r.draftNotes[id] || '',at:new Date().toLocaleString('zh-CN',{hour12:false})};
+ r.deferred=r.deferred.filter(x=>x!==id);r.view.taskId=null;
+ r.log.push('人工核实已记录：'+d.selected.title);persist();return true;
+}
+function deferTask(c,id) {
+ const r=runtime(c),d=derive(c,r);
+ if (!d.selected || d.selected.id!==id) return false;
+ r.deferred=[...new Set([...r.deferred,id])];r.view.taskId=null;persist();return true;
+}
+function changeStep(c,action) {
+ const r=runtime(c),d=derive(c,r);
+ if (action==='upload' && !d.hasFiles) {r.uploaded=true;r.log.push('已接收 4 份本地演示资料，未上传文件。');}
+ else if (action==='analysis' && d.hasFiles && !d.analyzed && !d.blockers) {r.analysisDone=true;r.log.push('本地演示资料分析已完成。');}
+ else if (action==='validate' && d.analyzed && !d.pending.length && !d.blockers && !d.valid) {r.validated=true;r.log.push('演示确定性校验通过。');}
+ else if (action==='generate' && d.valid && !d.count) {r.generated=true;r.log.push('已生成候选凭证草稿，尚未复核。');}
+ else if (action==='archive' && d.reviewComplete && !d.archived) {r.archived=true;r.log.push('本地演示归档完成；未写入外部财务软件。');}
+ else return false;
+ r.view.stage=null;persist();return true;
+}
+function currentVouchers(c,r=runtime(c)) {
+ const d=derive(c,r);
+  return vouchersFor(c,period,d.count,c.deliveredTotal || c.amount).map((v,i)=>({...v,reviewed:i<(c.reviewed || 0)||r.reviewed.includes(v.id),auxRequired:c.id==='chengyuan' && i===3 && !r.auxConfirmed}));
+}
+function reviewVoucher(c,id) {
+ const r=runtime(c),d=derive(c,r),v=currentVouchers(c,r).find(v=>!v.reviewed);
+ if (!d.valid || !v || v.id!==id || v.auxRequired) return false;
+ r.reviewed.push(id);r.log.push('已复核：'+v.number);persist();return true;
+}
+function vouchersFor(c,p,count,total) {
+ if (!count) return [];
+ return Array.from({length:count},(_,i)=>{
+  const amount=Math.floor(total/count)+(i<total%count?1:0);
+  return {id:'v'+i,number:'记-'+String(i+1).padStart(3,'0'),date:p+'-'+String(8+i%20).padStart(2,'0'),amount,
+   summary:c.short+' · '+['采购结算','费用结转','往来结算'][i%3],
+   source:c.short+' '+p+' 原始资料包 · 业务组 '+String(i+1).padStart(3,'0'),
+   lines:[{account:['原材料','管理费用','其他应收款'][i%3],debit:amount,credit:0},{account:'银行存款',debit:0,credit:amount}]};
+ });
+}
+function archivePeriods(c) {
+ const d=derive(c),past=(c.history || []).map(p=>({...p,complete:true}));
+ if (d.delivered) past.unshift({period,count:d.delivered,total:c.deliveredTotal || c.amount,complete:d.archived});
+ return past;
+}
+function pendingActionCount(c) {
+ const d=derive(c);
+ return d.pending.length || (d.blockers?0:d.active===0?1:d.active===3?Math.max(d.count-d.reviewed,1):d.active===2?1:d.active===4&&!d.archived?1:0);
+}
+function filterArchiveVouchers(c,p,filters={}) {
+ const term=(filters.query || '').trim().toLowerCase();
+ return vouchersFor(c,p.period,p.count,p.total).filter(v=>
+  (!filters.start || v.date>=filters.start) && (!filters.end || v.date<=filters.end) &&
+  [v.number,v.summary,v.source,...v.lines.map(line=>line.account)].join(' ').toLowerCase().includes(term));
+}
+// Browser view. The model above is also exercised by the dependency-free Node tests.
+const $ = id => document.getElementById(id);
+let toastTimer,dialogCompany=null,dialogReturnFocus=null,tagDraft='',voucherReturnScroll=0;
+const archiveSearch = {};
+function archiveSearchKey(c) { return c.id+'|'+state.historyPeriod; }
+function renderArchiveResults(c,p) {
+ const filters=archiveSearch[archiveSearchKey(c)] || {},vouchers=filterArchiveVouchers(c,p,filters);
+ const conditions=[filters.query?'关键词：'+filters.query:'',filters.start?'自 '+filters.start:'',filters.end?'至 '+filters.end:''].filter(Boolean).join(' · ');
+ return '<div id="archiveResultsStatus" class="small" role="status" aria-live="polite"><div class="flex spread"><strong>'+(conditions?'匹配':'共')+' '+vouchers.length+' 张 / 所选期间 '+p.count+' 张</strong><span>结果借贷合计各 <strong class="money">'+money(vouchers.reduce((sum,v)=>sum+v.amount,0))+'</strong></span></div>'+
+ (conditions?'<p class="muted" style="margin-top:4px;overflow-wrap:anywhere">'+escapeHtml(conditions)+'</p>':'')+'</div>'+
+ (vouchers.length?voucherTable(vouchers,'archive-voucher'):'<div class="empty">未找到匹配的凭证，请更换关键词或清除条件。</div>');
+}
+function searchArchive(clear=false) {
+ const c=currentCompany(),p=archivePeriods(c).find(p=>p.period===state.historyPeriod);
+ if(!p || !$('archiveQuery')) return;
+ const query=$('archiveQuery'),start=$('archiveStartDate'),end=$('archiveEndDate');
+ if(clear) {query.value='';start.value='';end.value='';}
+ const invalid=start.value && end.value && start.value>end.value;
+ const error=invalid?'开始日期不能晚于结束日期，查询条件尚未应用。':'';
+ start.setCustomValidity(error);$('archiveSearchError').textContent=error;$('archiveSearchError').hidden=!invalid;
+ if(invalid) {start.reportValidity();return;}
+ if(!$('archiveSearchForm').reportValidity()) return;
+ archiveSearch[archiveSearchKey(c)]={query:query.value.trim(),start:start.value,end:end.value};
+ $('archiveResults').innerHTML=renderArchiveResults(c,p);
+ if(clear) query.focus({preventScroll:true});
+ toast(clear?'已清除查询条件，显示所选期间全部凭证':'查询完成，匹配 '+filterArchiveVouchers(c,p,archiveSearch[archiveSearchKey(c)]).length+' 张凭证');
+}
+if ('scrollRestoration' in history) history.scrollRestoration='manual';
+function badge(status,text) { return '<span class="badge '+status+'">'+escapeHtml(text || labels[status] || status)+'</span>'; }
+function button(action,label,primary=false,extra='') { return '<button class="button'+(primary?' primary':'')+'" data-action="'+action+'" '+extra+'>'+label+'</button>'; }
+function textButton(action,label,extra='') { return '<button class="text-button" data-action="'+action+'" '+extra+'>'+label+'</button>'; }
+function toast(message) { $('toast').textContent=message+(storageFailed?'（本地保存不可用，刷新可能丢失本次操作）':'');clearTimeout(toastTimer);toastTimer=setTimeout(()=>$('toast').textContent='',4500); }
+function bar(value,cls='mini-track',label='完成进度') { return '<div class="'+cls+'" role="progressbar" aria-label="'+label+'" aria-valuenow="'+value+'" aria-valuemin="0" aria-valuemax="100"><span class="bar-fill" style="width:'+value+'%"></span></div>'; }
+function renderCompanies() {
+ const term=state.search.trim().toLowerCase();
+ const list=companies.filter(c=>[c.name,c.short,c.license,...c.tags].join(' ').toLowerCase().includes(term)).sort((a,b)=>{
+  const rank=c=>{const d=derive(c);return d.blockers?0:d.pending.length?1:d.active===0?2:d.active===3?3:d.archived?5:4;};
+  return rank(a)-rank(b);
+ });
+ $('companyCount').textContent=list.length+' / '+companies.length+' 家';
+ $('companyList').innerHTML=list.length?list.map(c=>{
+  const d=derive(c),r=runtime(c),statusText=d.blockers?'已阻断':d.archived?'已归档':d.active===0?'待上传':d.active===1?'处理中':d.active===3?'待复核':'待确认';
+  return '<article class="company-row'+(c.id===state.selectedId?' selected':'')+(r.unread?' new':'')+'" data-company-row="'+c.id+'">'+
+   '<button class="company-main" data-action="company" data-id="'+c.id+'" aria-current="'+(c.id===state.selectedId?'true':'false')+'" aria-label="选择'+c.name+'">'+
+   '<span class="company-name">'+(r.unread?'<span class="alert-dot" aria-label="新异常"></span>':'')+c.name+'</span>'+
+   '<span class="company-license" title="'+c.license+'（演示编号）">'+c.license+'</span><span class="company-next">03 月 · '+escapeHtml(d.next)+'</span></button>'+
+   '<div class="company-tools">'+badge(d.status,statusText)+'<span>'+pendingActionCount(c)+' 项待办</span>'+(d.blockers?'<span class="bad">'+d.blockers+' 组阻断</span>':'')+
+   '<button data-action="tags" data-id="'+c.id+'" data-tag-company="'+c.id+'" aria-label="管理'+c.short+'标签">＋ 标签</button></div>'+
+   '<div class="tags">'+c.tags.slice(0,2).map(t=>'<button class="tag" data-action="tag-search" data-tag="'+escapeHtml(t)+'">'+escapeHtml(t)+'</button>').join('')+(c.tags.length>2?'<button class="tag" data-action="tags" data-id="'+c.id+'">＋'+(c.tags.length-2)+'</button>':'')+'</div></article>';
+ }).join(''):'<div class="empty"><p>没有匹配的企业</p>'+textButton('clear-search','清除搜索')+'</div>';
+}
+function renderContext(c) {
+ const d=derive(c);
+ $('context').innerHTML='<div class="context-title"><div class="grow"><div class="flex"><h1>'+c.name+'</h1>'+badge(d.status,d.blockers?'存在阻断':d.archived?'已归档':d.active===0?'待上传':labels[d.status])+'</div>'+
+ '<p class="context-meta"><span class="context-license number" title="营业执照号（演示）">'+c.license+' · </span>账套 '+c.ledger+'</p></div>'+ 
+ '<div class="context-period"><span class="small muted">当前办理期间</span><strong class="number">2026 / 03</strong></div></div>'+
+ '<nav class="top-tabs" aria-label="企业工作区">'+[['current','本期办理'],['history','往期数据'],['archive','已归档凭证']].map(([id,label])=>'<button data-action="tab" data-tab="'+id+'"'+(state.tab===id || (state.tab==='vouchers' && id==='current')?' aria-current="page"':'')+'>'+label+'</button>').join('')+'</nav>';
+}
+function renderAlert() {
+ const target=companies.find(c=>runtime(c).unread);
+ $('alertBanner').innerHTML=target&&!state.alertDismissed?'<div class="alert-banner" role="status"><span class="grow"><strong>'+target.short+'</strong> 新增 1 组阻断 · 疑似重复流水</span>'+textButton('company','查看企业','data-id="'+target.id+'"')+'<button class="icon-button" data-action="dismiss-alert" aria-label="关闭新异常提醒">×</button></div>':'';
+}
+function renderProgress(c,d) {
+ const viewed=viewedStage(c,d);
+ return '<section class="panel progress-panel" aria-label="整体进度"><div class="progress-top">'+
+ '<div><div class="overall-value number"><strong id="overallPercent">'+d.percent+'</strong><span>%</span></div><p class="progress-copy">整体阶段完成度</p></div>'+
+ '<div class="grow"><strong title="按实际完成阶段数计算，不代表耗时比例">已完成 '+d.completed+' / 5 阶段</strong>'+bar(d.percent,'overall-track','整体阶段完成度')+'</div>'+ 
+ '<div class="outcomes"><div><strong class="number">'+d.files.length+'</strong><span>份资料</span></div>'+(d.delivered?'<div><strong class="number">'+d.delivered+'</strong><span>张已交付</span></div>':'')+
+ '<div><strong class="number '+(d.blockers?'bad':'')+'">'+d.blockers+'</strong><span>组阻断</span></div></div></div>'+
+ '<button class="mobile-stage-toggle" data-action="toggle-stages" aria-expanded="'+state.mobileStages+'"><span>'+(viewed===d.active?'当前步骤':'正在查看')+' '+(viewed+1)+' / 5 · '+STAGES[viewed]+'</span><span>阶段总览 '+(state.mobileStages?'−':'＋')+'</span></button>'+
+ '<nav class="stages'+(state.mobileStages?' expanded':'')+'" aria-label="五阶段进度">'+d.stages.map((s,i)=>
+ '<button class="stage '+s.status+(i===viewed?' active':'')+'" data-action="stage" data-stage="'+i+'" aria-pressed="'+(i===viewed)+'" aria-controls="stageWorkspace"'+(i===d.active?' aria-current="step"':'')+(canViewStage(d,i)?'':' disabled title="尚未开始，暂无成果可查看"')+'>'+
+ '<span class="stage-top"><span class="step-number">'+(s.complete?'✓':i+1)+'</span>'+STAGES[i]+'</span>'+
+ '<div class="stage-state">'+labels[s.status]+(i===d.active?' · 当前办理':i===viewed?' · 查看中':'')+'</div>'+
+ '<div class="stage-count">'+(s.percent===null?(s.done?(i===3?'已复核 ':'已交付 ')+s.done+' '+s.unit+' · 总量待定':'待统计'):'<span class="stage-percent number">'+s.percent+'%</span> · '+s.done+'/'+s.total+' '+s.unit)+'</div>'+ 
+ (s.percent===null?'':bar(s.percent,'mini-track',STAGES[i]+'进度'))+'</button>').join('')+'</nav></section>';
+}
+function renderFacts(c,t) {
+ const jx=c.id==='juxianda';
+ const values=jx?[['发票价税合计',money(1757000)],['已匹配付款',money(873200)],['未解释差额',money(883800)]]:[['涉及金额',money(t.amount)],['核实范围','当前事项'],['来源','本期资料']];
+ return '<dl class="facts">'+values.map(([k,v],i)=>'<div class="fact"><dt>'+k+'</dt><dd class="'+(v.startsWith('¥')?'money':'text-value')+(jx&&i===2?' bad':'')+'">'+v+'</dd></div>').join('')+'</dl>';
+}
+function renderTaskQueue(c,d) {
+ const r=runtime(c);
+ const others=d.tasks.filter(t=>!d.selected || t.id!==d.selected.id);
+ return others.length?'<div class="task-queue">'+others.map(t=>{
+  const record=r.records[t.id];
+  if (record) return '<details class="queue-row"><summary><span>✓ '+escapeHtml(t.title)+'</span>'+badge('complete','已记录')+'</summary><p>'+escapeHtml(record.note || '未填写备注')+'<br>'+escapeHtml(record.at)+'</p></details>';
+  return '<div class="queue-row flex spread"><button data-action="resume-task" data-id="'+t.id+'">'+escapeHtml(t.title)+'</button>'+badge('waiting',r.deferred.includes(t.id)?'已暂缓':'待核实')+'</div>';
+ }).join('')+'</div>':'';
+}
+function renderTask(c,d) {
+ const r=runtime(c);
+ const heading='<header class="task-heading"><div><p class="eyebrow">当前任务 · 第 '+(d.active+1)+' 步</p><h2>'+STAGES[d.active]+'</h2></div>'+
+ (d.tasks.length?'<div class="task-progress"><div class="flex spread"><span>已核实</span><strong class="number">'+d.recorded+'<span> / '+d.tasks.length+'</span></strong></div>'+bar(Math.round(d.recorded/d.tasks.length*100),'mini-track','人工核实进度')+'</div>':badge(d.status,d.blockers?'等待补证':d.archived?'已归档':labels[d.status]))+'</header>';
+ let body='',actions='';
+ if (d.selected) {
+  const t=d.selected;
+  body='<div class="task-position">第 '+(d.tasks.findIndex(x=>x.id===t.id)+1)+' 项 / 共 '+d.tasks.length+' 项</div><div class="task-title-row"><h3 tabindex="-1" id="currentTaskTitle">'+escapeHtml(t.title)+'</h3>'+badge(d.blockers?'blocked':'waiting',d.blockers?'证据阻断':'待核实')+'</div>'+renderFacts(c,t)+
+   '<div class="issue-line"><span class="field-label">问题</span><p class="'+(d.blockers?'problem':'')+'">'+escapeHtml(t.reason)+'</p></div>'+
+   '<div class="goal-line"><span class="field-label">本项目标</span><p>'+escapeHtml(t.goal)+'</p></div>'+
+   '<div class="source-line">来源：'+escapeHtml(t.source)+' '+textButton('source','查看定位','data-task="'+t.id+'"')+'</div>'+
+   '<div class="checks">'+t.checks.map(([k,v])=>'<span class="check-item '+(v==='通过'?'good':v==='已暂停'?'muted':'bad')+'">'+(v==='通过'?'✓':'!')+' '+k+' · '+v+'</span>').join('')+'</div>'+
+   '<p class="suggestion">建议：对照来源资料与客户核实，补充核实依据或待补资料说明。</p>'+
+   '<label class="note-field" for="confirmationNote">核实备注 <span>（选填）</span><textarea id="confirmationNote" data-task="'+t.id+'" placeholder="例如：客户确认分期付款，等待补充付款计划" rows="2">'+escapeHtml(r.draftNotes[t.id] || '')+'</textarea></label>';
+  actions=button('confirm','确认已与客户核实',true,'data-id="'+t.id+'"')+textButton('defer','暂不处理','data-id="'+t.id+'"')+'<span class="hint">仅记录核实结果，不解除证据阻断</span>';
+ } else if (d.pending.length) {
+  body='<h3>还有 '+d.pending.length+' 项暂缓事项</h3><p class="muted" style="margin-top:10px">暂缓事项未计入完成数，可以继续核实。</p>';
+  actions=button('resume','继续处理暂缓事项',true);
+ } else if (d.blockers) {
+  body='<h3>'+(d.delivered?'已交付 '+d.delivered+' 张凭证，剩余 '+d.blockers+' 组待补证':'核实已记录，等待补齐证据')+'</h3>'+
+   '<div class="issue-line"><span class="field-label">问题</span><p class="problem">'+escapeHtml(c.blockedReason || (c.id==='juxianda'?'采购合同、入库证据仍缺失，付款差额 8,838.00 元尚未解释。':'疑似重复流水尚未完成证据校验，分析保持暂停。'))+'</p></div>'+
+   '<div class="goal-line"><span class="field-label">下一步</span><p>向客户收集'+escapeHtml((c.missing || ['正确的交易流水及重复记录说明']).join('、'))+'。</p></div>'+
+   '<div class="goal-line"><span class="field-label">完成条件</span><p>补充资料与业务对象关联，并通过确定性校验；现有核实记录继续保留。</p></div>'+
+   (d.delivered?'<div class="status-note">已交付部分与异常业务分开保留，本期尚未完整归档。</div>':'');
+  actions=button('supplement','查看补证清单',true);
+ } else if (d.active===0) {
+  body='<h3>'+(c.id==='xinqiyuan'?'新企业已建立，等待上传资料':'添加本期财务资料')+'</h3><p class="muted" style="margin-top:10px">本期尚未接收资料。准备以下文件后，即可开始分析。</p>'+
+   '<ul class="simple-list">'+['银行流水','进项及销项发票','费用及往来明细'].map(s=>'<li class="flex spread"><span>'+s+'</span>'+badge('waiting','待接收')+'</li>').join('')+'</ul>'+
+   '<div class="goal-line"><span class="field-label">本步目标</span><p>接收本批资料并确认所属期间，建立可分析的资料包。</p></div>';
+  actions=button('upload-dialog','添加资料',true)+'<span class="hint">仅接收内置样例，不上传真实文件</span>';
+ } else if (d.active===1) {
+  const s=d.stages[1];
+  body='<h3>正在分析本期资料</h3><div class="facts"><div class="fact"><dt>已分析</dt><dd class="number">'+s.done+' / '+s.total+' '+s.unit+'</dd></div><div class="fact"><dt>分析进度</dt><dd class="number">'+s.percent+'%</dd></div></div>'+
+   '<div class="goal-line"><span class="field-label">当前动作</span><p>识别资料内容，建立发票、付款与业务对象的关联。</p></div>'+
+   '<div class="goal-line"><span class="field-label">本步目标</span><p>完成本批分析并列出需要人工核实的事项；当前无需人工确认。</p></div>';
+  actions=button('processing-details','查看处理详情',true)+'<span class="hint">使用“演示控制”推进模拟分析</span>';
+ } else if (d.active===2) {
+  body='<h3>核实记录齐备，可以执行校验</h3><div class="goal-line"><span class="field-label">本步目标</span><p>检查金额、期间、业务重复及来源关联。校验通过后，才能生成候选凭证。</p></div><p class="suggestion">这是本地模拟校验，不修改原始证据或正式账务数据。</p>';
+  actions=button('validate','运行演示校验',true);
+ } else if (d.active===3) {
+  if (!d.count) {
+   body='<h3>校验通过，准备生成凭证草稿</h3><div class="goal-line"><span class="field-label">本步目标</span><p>生成候选分录后逐张复核，草稿不计入正式账务余额。</p></div>';
+   actions=button('generate','生成演示草稿',true);
+  } else {
+   const v=currentVouchers(c).find(v=>!v.reviewed);
+   body='<div class="task-title-row"><h3>复核 '+v.number+'</h3><span class="small muted">已复核 '+d.reviewed+' / '+d.count+' 张</span></div>'+voucherDetail(v)+
+    (v.auxRequired?'<div class="status-note"><label><input type="checkbox" id="auxConfirmed"> 已与客户核实供应商辅助核算信息（演示）</label></div>':'')+
+    '<div class="goal-line"><span class="field-label">本步目标</span><p>核对摘要、科目、借贷金额及来源，确认凭证符合本期业务。</p></div>';
+   actions=button('review','确认凭证复核',true,'data-id="'+v.id+'"'+(v.auxRequired?' disabled':''))+textButton('all-vouchers','查看全部凭证');
+  }
+ } else if (!d.archived) {
+  body='<h3>'+d.count+' 张凭证已复核，等待归档</h3><div class="goal-line"><span class="field-label">本步目标</span><p>保存本地演示凭证及来源清单，形成可追溯的归档记录。</p></div><p class="suggestion">不向外部财务软件回传，不代表实际导入、关账或锁账。</p>';
+  actions=button('archive-current','完成演示归档',true);
+ } else {
+  body='<h3>本期演示归档完成</h3><p class="muted" style="margin-top:10px">'+d.count+' 张凭证及来源清单已保存在本地演示状态中。</p>';
+  actions=button('open-archive','查看归档清单',true);
+ }
+ return '<section class="panel task-panel" aria-label="当前任务">'+heading+'<div class="task-body">'+body+renderTaskTools(c,d)+'</div>'+renderTaskQueue(c,d)+'<footer class="action-row">'+actions+'</footer></section>';
+}
+function voucherDetail(v) {
+ const debit=v.lines.reduce((s,l)=>s+l.debit,0),credit=v.lines.reduce((s,l)=>s+l.credit,0);
+ return '<p class="small muted" style="margin-top:10px">'+v.date+' · '+escapeHtml(v.summary)+'</p><div class="table-scroll"><table><thead><tr><th>会计科目</th><th class="right">借方金额</th><th class="right">贷方金额</th></tr></thead><tbody>'+
+ v.lines.map(l=>'<tr><td>'+l.account+'</td><td class="money right">'+(l.debit?money(l.debit):'—')+'</td><td class="money right">'+(l.credit?money(l.credit):'—')+'</td></tr>').join('')+
+ '<tr><td><strong>合计</strong></td><td class="money right">'+money(debit)+'</td><td class="money right">'+money(credit)+'</td></tr></tbody></table></div>'+
+ '<p class="source-line">来源：'+escapeHtml(v.source)+'</p><div class="checks"><span class="'+(debit===credit?'good':'bad')+'">'+(debit===credit?'✓ 借贷平衡':'! 借贷不平衡')+'</span><span class="muted">分录为内置演示数据</span></div>';
+}
+function voucherTable(vouchers,action) {
+ return '<div class="table-scroll"><table><thead><tr><th>凭证字号</th><th>日期</th><th>摘要</th><th class="right">金额</th><th>操作</th></tr></thead><tbody>'+vouchers.map(v=>'<tr><td>'+v.number+'</td><td class="number">'+v.date+'</td><td>'+escapeHtml(v.summary)+'</td><td class="money right">'+money(v.amount)+'</td><td><button class="table-button" data-action="'+action+'" data-id="'+v.id+'">查看分录</button></td></tr>').join('')+'</tbody></table></div>';
+}
+function renderFiles(c,d) {
+ return '<p class="small muted">本批已接收 '+d.files.length+' 份 · 失败 0 份 · 作废 0 份</p>'+
+ (d.files.length?'<ul class="simple-list">'+d.files.map(f=>'<li class="flex spread"><span>'+escapeHtml(f)+'</span>'+badge('complete','已接收')+'</li>').join('')+'</ul>':'<p class="muted">尚未接收本期资料。</p>');
+}
+function renderValidation(c,d) {
+ return '<div class="flex spread"><h3>确定性校验</h3>'+badge(d.valid?'complete':d.blockers?'blocked':'waiting',d.valid?'通过':d.blockers?'存在阻断':'等待校验')+'</div><ul class="simple-list">'+
+ ['金额与税额','期间归属','重复业务','科目及辅助核算','来源追溯'].map(label=>'<li class="flex spread"><span>'+label+'</span><span class="small muted">'+(d.valid?'已通过演示校验':d.blockers?'详见阻断事项':d.analyzed?'待执行完整校验':'等待资料分析')+'</span></li>').join('')+'</ul>';
+}
+function renderTaskTools(c,d) {
+ let links='';
+ if(d.active===1) links+=textButton('files-dialog','查看本批资料');
+ if(d.active===2) links+=textButton('validation-dialog','查看校验结果');
+ if(d.analyzed || d.stages[1].done>0) links+=textButton('objects-dialog','查看关联业务');
+ if(d.active!==1) links+=textButton('processing-details','处理记录');
+ return links?'<div class="related-tools" aria-label="相关查看">'+links+'</div>':'';
+}
+function renderObjects(c,d) {
+ return '<p class="small muted">'+c.name+' · '+period+'</p><ul class="simple-list"><li>业务组：'+(d.groups || 0)+' 组</li><li>校验通过：'+d.passed+' 组</li><li>阻断：'+d.blockers+' 组</li></ul>'+
+ (d.blockers?'<p class="status-note">'+escapeHtml(c.blockedReason || (c.missing || ['疑似重复流水的核实依据']).join('、'))+'</p>':'')+
+ '<form class="query-form" id="queryForm"><input id="objectQuery" aria-label="查询本期业务对象" placeholder="查询本期阻断、付款或资料" value="'+escapeHtml(state.query)+'">'+button('query-submit','查询')+'</form>'+
+ '<div id="queryResult" class="records" role="status"'+(state.queryResult?'':' hidden')+'>'+escapeHtml(state.queryResult || '')+'</div>';
+}
+function renderStageContent(c,d,index) {
+ let body='';
+ if(index===0) body=renderFiles(c,d);
+ if(index===1) body='<p class="muted">已分析 '+d.stages[1].done+' / '+d.stages[1].total+' '+d.stages[1].unit+
+  (d.analyzed?'，已形成 '+d.groups+' 个业务组。':'；当前分析尚未完成。')+'</p>'+
+  '<ul class="simple-list">'+d.files.map(f=>'<li class="flex spread"><span>'+escapeHtml(f)+'</span>'+badge(d.analyzed?'complete':'running',d.analyzed?'已分析':'分析中')+'</li>').join('')+'</ul>';
+ if(index===2) body=renderValidation(c,d)+renderTaskQueue(c,{...d,selected:null});
+ if(index===3) body='<p class="small muted">本期已生成 '+d.count+' 张凭证 · 已复核 '+d.reviewed+' 张'+(d.blockers?' · 异常业务尚未全部生成凭证':'')+'</p>'+voucherTable(currentVouchers(c),'voucher-dialog');
+ if(index===4) body='<h3>'+d.delivered+' 张凭证已交付</h3><p class="muted" style="margin-top:12px">'+
+  (d.archived?'本期已完成本地演示归档。':'本期尚未完整归档，剩余 '+d.blockers+' 组异常业务仍需处理。')+'</p>'+
+  '<div class="status-note">来源清单与凭证分录随交付记录保留；查看成果不会改变当前任务。</div>'+
+  textButton('open-archive','查看交付凭证');
+ const links=(index===1||index===2||index===3?textButton('objects-dialog','查看关联业务'):'')+textButton('processing-details','处理记录');
+ return '<section class="panel stage-content" aria-label="'+STAGES[index]+'内容"><header class="flex spread"><div class="flex"><h2>'+STAGES[index]+'</h2>'+badge(d.stages[index].status)+'</div>'+
+ textButton('return-step','返回当前步骤')+'</header><div class="stage-body">'+body+'</div><div class="related-tools" aria-label="相关查看">'+links+'</div></section>';
+}
+function renderHistory(c) {
+ const periods=c.history || [];
+ if (!periods.length) return '<section class="panel empty"><h2>暂无往期数据</h2><p>这是一家新建企业，尚无已完成期间。</p>'+textButton('back-current','返回本期办理')+'</section>';
+ const chosen=periods.find(p=>p.period===state.historyPeriod);
+ return '<section class="panel"><div class="flex spread"><h2>往期数据</h2><span class="small muted">只读 · 不改变本期任务</span></div><div class="table-scroll"><table><thead><tr><th>会计期间</th><th>资料状态</th><th>凭证</th><th class="right">凭证金额</th><th>操作</th></tr></thead><tbody>'+
+ periods.map(p=>'<tr><td class="number">'+p.period+'</td><td>已归档</td><td>'+p.count+' 张</td><td class="money right">'+money(p.total)+'</td><td><button class="table-button" data-action="history-period" data-period="'+p.period+'">查看期间</button></td></tr>').join('')+'</tbody></table></div></section>'+
+ (chosen?'<section class="panel"><div class="flex spread"><h3>'+chosen.period+' 期间归档摘要</h3>'+textButton('history-archive','查看归档凭证','data-period="'+chosen.period+'"')+'</div><p class="muted" style="margin-top:12px">'+chosen.count+' 张演示凭证 · 借贷合计各 '+money(chosen.total)+'</p><ul class="simple-list"><li>'+c.short+' '+chosen.period+' 资料包</li><li>凭证清单、来源定位及本地归档记录</li></ul><p class="small muted">历史数据为该企业独立的演示样例，原始记录只读。</p></section>':'');
+}
+function renderArchive(c) {
+ const periods=archivePeriods(c);
+ if (!periods.length) return '<section class="panel empty"><h2>暂无已归档凭证</h2><p>本期尚未归档，也没有往期归档记录。</p>'+textButton('back-current','返回本期办理')+'</section>';
+ const p=periods.find(p=>p.period===state.historyPeriod) || periods[0];
+ state.historyPeriod=p.period;
+ const filters=archiveSearch[archiveSearchKey(c)] || {};
+ return '<section class="panel"><div class="flex spread"><div><h2>已归档凭证</h2><p class="small muted">只读查看 · '+(p.complete?'本地演示归档':'部分交付，整期未归档')+'</p></div><label class="small">查看期间 <select id="archivePeriod" aria-label="归档凭证期间">'+periods.map(h=>'<option value="'+h.period+'"'+(h.period===p.period?' selected':'')+'>'+h.period+(h.complete?' · 已归档':' · 部分交付')+'</option>').join('')+'</select></label></div>'+
+ '<div class="context-note" style="margin-top:16px">'+c.short+' · '+p.period+' · '+p.count+' 张凭证 · 借贷合计各 <span class="money">'+money(p.total)+'</span></div>'+
+ '<form id="archiveSearchForm" class="flex"><label for="archiveQuery">查询凭证<input id="archiveQuery" type="search" placeholder="凭证字号、摘要、科目或来源资料" value="'+escapeHtml(filters.query || '')+'"></label>'+
+ '<label class="date-filter" for="archiveStartDate">凭证开始日期<input id="archiveStartDate" type="date" aria-describedby="archiveSearchError" value="'+escapeHtml(filters.start || '')+'"></label>'+
+ '<label class="date-filter" for="archiveEndDate">凭证结束日期<input id="archiveEndDate" type="date" value="'+escapeHtml(filters.end || '')+'"></label>'+
+ '<div class="flex archive-search-actions"><button type="submit" class="button primary">查询</button>'+textButton('clear-archive-search','清除条件','type="button"')+'</div></form><p id="archiveSearchError" class="small bad" role="alert" hidden></p><div id="archiveResults">'+renderArchiveResults(c,p)+'</div></section>';
+}
+function renderAllVouchers(c) {
+ const d=derive(c);
+ return '<section class="panel" aria-labelledby="voucherListTitle"><div class="flex spread"><h2 id="voucherListTitle" tabindex="-1">本期全部凭证</h2>'+textButton('back-current','返回工作台')+'</div>'+
+ '<p class="context-note" style="margin-top:16px">共 '+d.count+' 张 · 已复核 '+d.reviewed+' 张 · 待复核 '+Math.max(0,d.count-d.reviewed)+' 张</p>'+voucherTable(currentVouchers(c),'voucher-dialog')+'</section>';
+}
+function renderMain() {
+ const c=currentCompany(),d=derive(c),viewed=viewedStage(c,d);
+ $('main').innerHTML=state.tab==='history'?renderHistory(c):state.tab==='archive'?renderArchive(c):state.tab==='vouchers'?renderAllVouchers(c):
+ renderProgress(c,d)+'<div id="stageWorkspace" role="region" aria-label="阶段工作区" data-stage="'+viewed+'">'+(viewed===d.active?renderTask(c,d):renderStageContent(c,d,viewed))+'</div>';
+}
+function render() { renderCompanies();renderContext(currentCompany());renderAlert();renderMain(); }
+function openDialog(title,body,actions='',dialogClass='') {
+ if (!$('dialog').open) dialogReturnFocus=document.activeElement;
+ $('dialog').className=dialogClass;
+ $('dialog').innerHTML='<header><h2 id="dialogTitle">'+title+'</h2><button class="icon-button" data-action="close-dialog" aria-label="关闭对话框">×</button></header>'+body+(actions?'<div class="dialog-actions">'+actions+'</div>':'');
+ if (!$('dialog').open) $('dialog').showModal();
+}
+function closeDialog() { $('dialog').close(); }
+function openVoucherDialog(c,p,v,status,statusText) {
+ openDialog('凭证分录 · '+v.number,'<div class="flex spread"><p class="small muted">'+escapeHtml(c.name)+' · '+p+'</p>'+badge(status,statusText)+'</div>'+voucherDetail(v),'','voucher-dialog');
+}
+$('dialog').addEventListener('close',()=>{if(dialogReturnFocus && dialogReturnFocus.isConnected) dialogReturnFocus.focus({preventScroll:true});else $('mobileMenu').focus({preventScroll:true});});
+function openMenu() {
+ $('sidebar').classList.add('open');$('overlay').classList.add('show');$('mobileMenu').setAttribute('aria-expanded','true');
+ $('shell').inert=true;$('sidebar').setAttribute('role','dialog');$('sidebar').setAttribute('aria-modal','true');
+ $('companySearch').focus({preventScroll:true});
+}
+function closeMenu(restore=true) {
+ const wasOpen=$('sidebar').classList.contains('open');
+ $('sidebar').classList.remove('open');$('overlay').classList.remove('show');$('shell').inert=false;
+ $('sidebar').removeAttribute('role');$('sidebar').removeAttribute('aria-modal');$('mobileMenu').setAttribute('aria-expanded','false');
+ if(wasOpen && restore) $('mobileMenu').focus({preventScroll:true});
+}
+function selectCompany(id) {
+ if (!companies.some(c=>c.id===id)) return;
+ state.selectedId=id;state.tab='current';state.historyPeriod=null;state.query='';state.queryResult=null;state.mobileStages=false;
+ const r=runtime(currentCompany());r.unread=false;r.view.stage=null;
+ persist();closeMenu();render();
+}
+function tagDialog(c) {
+ dialogCompany=c.id;
+ openDialog(c.short+' · 企业标签','<p class="small muted">标签可用于搜索，增删后保存在本机。</p><div class="tags" style="margin:16px 0">'+c.tags.map(t=>'<button class="tag" data-action="delete-tag" data-tag="'+escapeHtml(t)+'" aria-label="删除标签 '+escapeHtml(t)+'">'+escapeHtml(t)+' ×</button>').join('')+'</div>'+
+ '<form id="tagForm"><label for="newTag">新增标签</label><input id="newTag" maxlength="20" placeholder="例如：重点客户" value="'+escapeHtml(tagDraft)+'">'+button('add-tag','添加标签')+'</form>');
+}
+function addTag() {
+ const c=companies.find(c=>c.id===dialogCompany),value=$('newTag').value.trim();
+ if(!value){toast('请先填写标签名称');$('newTag').focus();return;}
+ if(c.tags.includes(value)){toast('该标签已存在');return;}
+ c.tags.push(value);tagDraft='';persist();renderCompanies();tagDialog(c);$('newTag').focus();toast('标签已添加');
+}
+function supplementDialog(c) {
+ const missing=c.missing || ['正确的交易流水','疑似重复记录的核实依据'];
+ openDialog('待补证清单','<p class="small muted">'+c.name+' · '+period+'</p><ul class="simple-list">'+missing.map(s=>'<li class="flex spread"><span>'+escapeHtml(s)+'</span>'+badge('blocked','待补充')+'</li>').join('')+'</ul><div class="status-note">人工核实记录已保留。必须补充来源证据并重新校验，才能解除阻断；本 Demo 不模拟一键放行。</div>');
+}
+function processingDialog(c) {
+ const d=derive(c),r=runtime(c);
+ openDialog('处理记录','<div class="context-note">'+STAGES[d.active]+' · '+(d.blockers?'等待补证，处理暂停':d.pending.length?'等待人工核实':d.active===1?'正在分析':'等待下一步操作')+'</div><ul class="simple-list">'+
+ d.stages.map((s,i)=>'<li class="flex spread"><span>'+STAGES[i]+'</span>'+badge(s.status)+'</li>').join('')+'</ul>'+
+ '<div class="records">'+escapeHtml(r.log.length?r.log.join('\n'):'本期演示范围已建立。所有操作仅记录在本机。')+'</div>');
+}
+function runQuery() {
+ const c=currentCompany(),d=derive(c);
+ state.query=$('objectQuery').value.trim();
+ if(!state.query){toast('请输入要查询的问题');return;}
+ const prefix=c.short+' · '+period+'：';
+ if(/阻断|缺|补证/.test(state.query)) state.queryResult=prefix+(d.blockers?d.blockers+' 组阻断。缺口：'+(c.missing || ['疑似重复交易的核实依据']).join('、'):'当前未发现证据阻断。');
+ else if(/资料|文件/.test(state.query)) state.queryResult=prefix+'有效资料 '+d.files.length+' 份。'+d.files.join('、');
+ else if(/凭证|交付|归档/.test(state.query)) state.queryResult=prefix+'凭证 '+d.count+' 张，已复核 '+d.reviewed+' 张，已交付 '+d.delivered+' 张。';
+ else if(/付款|差额/.test(state.query) && c.id==='juxianda') state.queryResult=prefix+'已匹配付款 8,732.00 元，发票 17,570.00 元，差额 8,838.00 元尚未解释。';
+ else state.queryResult=prefix+'本地演示仅支持资料、阻断、凭证和已收录的付款问题，不会调用模型或补造答案。';
+ $('queryResult').textContent=state.queryResult;$('queryResult').hidden=false;
+}
+document.addEventListener('click',event=>{
+ const el=event.target.closest('[data-action]');
+ if(!el || el.disabled) return;
+ const action=el.dataset.action,c=currentCompany(),r=runtime(c),d=derive(c);
+ event.preventDefault();
+ if(action==='open-menu') return openMenu();
+ if(action==='close-menu') return closeMenu();
+ if(action==='close-dialog') return closeDialog();
+ if(action==='company') return selectCompany(el.dataset.id);
+ if(action==='clear-search' || action==='tag-search') {state.search=action==='clear-search'?'':el.dataset.tag;$('companySearch').value=state.search;renderCompanies();return;}
+ if(action==='tags') {tagDraft='';return tagDialog(companies.find(x=>x.id===el.dataset.id));}
+ if(action==='add-tag') return addTag();
+ if(action==='delete-tag') {
+  const company=companies.find(x=>x.id===dialogCompany);
+  tagDraft=$('newTag').value;company.tags=company.tags.filter(t=>t!==el.dataset.tag);
+  persist();renderCompanies();tagDialog(company);toast('标签已删除');return;
+ }
+ if(action==='simulate-alert') {
+  const target=companies.find(x=>x.id==='luhai'),rr=runtime(target);
+  if(rr.alert) {toast('陆海精密的演示阻断已存在');return;}
+  rr.alert=true;rr.unread=true;rr.log.push('新增疑似重复流水，分析暂停。');state.alertDismissed=false;persist();
+  renderCompanies();renderAlert();
+  if(c.id===target.id) {r.view.stage=null;renderContext(c);renderMain();}
+  toast('陆海精密新增阻断，当前企业不变');return;
+ }
+ if(action==='dismiss-alert') {state.alertDismissed=true;renderAlert();return;}
+ if(action==='reset-dialog') return openDialog('重置演示办理记录','<p>将清除演示企业的核实备注、暂缓、上传、复核和归档记录。企业标签保留。</p>',button('close-dialog','取消')+button('reset','确认重置'));
+ if(action==='reset') {
+  for(const company of companies) runtimes[scopeKey(company)]=emptyRuntime();
+  state.selectedId='juxianda';state.tab='current';state.historyPeriod=null;state.query='';state.queryResult=null;state.alertDismissed=false;state.search='';$('companySearch').value='';
+  persist();closeDialog();closeMenu(false);render();toast('演示办理记录已重置，企业标签保留');return;
+ }
+ if(action==='tab' || action==='back-current' || action==='open-archive') {
+  const fromVouchers=state.tab==='vouchers';
+  state.tab=action==='tab'?el.dataset.tab:action==='back-current'?'current':'archive';
+  state.historyPeriod=null;renderContext(c);renderMain();
+  if(fromVouchers && state.tab==='current') {window.scrollTo(0,voucherReturnScroll);document.querySelector('[data-action="all-vouchers"]')?.focus({preventScroll:true});}
+  return;
+ }
+ if(action==='toggle-stages') {state.mobileStages=!state.mobileStages;renderMain();return;}
+ if(action==='stage' || action==='return-step') {
+  if(chooseStage(c,action==='return-step'?d.active:Number(el.dataset.stage))) {state.mobileStages=false;renderMain();}
+  return;
+ }
+ if(action==='all-vouchers') {
+  voucherReturnScroll=window.scrollY;state.tab='vouchers';renderContext(c);renderMain();
+  window.scrollTo(0,0);$('voucherListTitle').focus({preventScroll:true});return;
+ }
+ if(action==='files-dialog') return openDialog('本批资料',renderFiles(c,d));
+ if(action==='validation-dialog') return openDialog('本期校验结果',renderValidation(c,d));
+ if(action==='resume' || action==='resume-task') {
+  if(action==='resume') r.deferred=[];
+  else {r.deferred=r.deferred.filter(id=>id!==el.dataset.id);r.view.taskId=el.dataset.id;}
+  persist();renderMain();return;
+ }
+ if(action==='confirm' || action==='review') {
+  if(event.detail>1) return;
+  const changed=action==='confirm'?recordTask(c,el.dataset.id):reviewVoucher(c,el.dataset.id);
+  if(!changed) return;
+  render();
+  const title=$('currentTaskTitle');if(title) title.focus({preventScroll:true});
+  toast(action==='confirm'?(derive(c).pending.length?'核实已记录，已进入下一项':derive(c).blockers?'核实记录已齐备，证据阻断仍保留':'核实已记录，下一步执行校验'):'凭证复核已记录');return;
+ }
+ if(action==='defer') {if(deferTask(c,el.dataset.id)){render();toast('事项已暂缓，未计入完成数');}return;}
+ if(action==='supplement') return supplementDialog(c);
+ if(action==='processing-details') return processingDialog(c);
+ if(action==='source') {
+  const t=d.tasks.find(t=>t.id===el.dataset.task);
+  if(t) openDialog('来源定位','<p>'+escapeHtml(t.source)+'</p><div class="records">'+escapeHtml(t.reason)+'</div><p class="small muted" style="margin-top:12px">此处展示演示资料的定位信息，不读取或上传本机原始文件。</p>');
+  return;
+ }
+ if(action==='objects-dialog') return openDialog('本期业务对象',renderObjects(c,d));
+ if(action==='upload-dialog') return openDialog('添加本地演示资料','<p class="small muted">'+c.short+' · '+period+' · 不上传真实文件</p><ul class="simple-list">'+['银行流水.xlsx','进项发票.xlsx','销项发票.xlsx','费用明细.xlsx'].map(f=>'<li>✓ '+f+'</li>').join('')+'</ul>',button('close-dialog','取消')+button('upload','接收 4 份演示资料'));
+ if(action==='simulate-analysis') {
+  if(changeStep(c,'analysis')) {render();toast('本批演示分析已完成');}
+  else toast(d.blockers?'当前仍有阻断，不能推进分析':!d.hasFiles?'请先接收本期资料':'当前没有待推进的分析');
+  return;
+ }
+ const stepAction={upload:'upload',validate:'validate',generate:'generate','archive-current':'archive'}[action];
+ if(stepAction) {
+  if(changeStep(c,stepAction)) {if($('dialog').open) closeDialog();render();toast({upload:'已接收 4 份演示资料，进入资料分析',validate:'演示校验通过，可以生成草稿',generate:'已生成演示草稿，请逐张复核',archive:'本地演示归档完成，未写入外部系统'}[stepAction]);}
+  return;
+ }
+ if(action==='voucher-dialog') {const v=currentVouchers(c).find(v=>v.id===el.dataset.id);if(v) openVoucherDialog(c,period,v,v.reviewed?'complete':'waiting',v.reviewed?'已复核':'待复核');return;}
+ if(action==='history-period') {state.historyPeriod=el.dataset.period;renderMain();return;}
+ if(action==='history-archive') {state.tab='archive';state.historyPeriod=el.dataset.period;renderContext(c);renderMain();return;}
+ if(action==='archive-voucher') {
+  const p=archivePeriods(c).find(p=>p.period===state.historyPeriod);
+  const v=p && vouchersFor(c,p.period,p.count,p.total).find(v=>v.id===el.dataset.id);
+  if(v) openVoucherDialog(c,p.period,v,p.complete?'complete':'waiting',p.complete?'已归档':'已交付');
+  return;
+ }
+ if(action==='query-submit') return runQuery();
+ if(action==='clear-archive-search') return searchArchive(true);
+});
+document.addEventListener('input',event=>{
+ const el=event.target;
+ if(el.id==='companySearch'){state.search=el.value;renderCompanies();}
+ if(el.id==='confirmationNote'){runtime(currentCompany()).draftNotes[el.dataset.task]=el.value;persist();}
+ if(el.id==='objectQuery') state.query=el.value;
+ if(el.id==='archiveStartDate' || el.id==='archiveEndDate') {$('archiveStartDate').setCustomValidity('');$('archiveSearchError').hidden=true;}
+});
+document.addEventListener('change',event=>{
+ if(event.target.id==='archivePeriod'){state.historyPeriod=event.target.value;renderMain();}
+ if(event.target.id==='auxConfirmed'){
+  const c=currentCompany(),r=runtime(c);r.auxConfirmed=event.target.checked;persist();
+  const review=document.querySelector('[data-action="review"]');if(review) review.disabled=!event.target.checked;
+ }
+});
+document.addEventListener('submit',event=>{if(event.target.id==='tagForm'){event.preventDefault();addTag();}if(event.target.id==='queryForm'){event.preventDefault();runQuery();}if(event.target.id==='archiveSearchForm'){event.preventDefault();searchArchive();}});
+document.addEventListener('keydown',event=>{
+ if(!$('sidebar').classList.contains('open') || $('dialog').open) return;
+ if(event.key==='Escape'){event.preventDefault();closeMenu();}
+ if(event.key==='Tab'){
+  const nodes=[...$('sidebar').querySelectorAll('button,input,summary')].filter(el=>el.getClientRects().length);
+  const first=nodes[0],last=nodes[nodes.length-1];
+  if(event.shiftKey && document.activeElement===first){event.preventDefault();last.focus();}
+  else if(!event.shiftKey && document.activeElement===last){event.preventDefault();first.focus();}
+ }
+});
+window.addEventListener('resize',()=>{if(window.innerWidth>960) closeMenu(false);});
+runtime(currentCompany()).view.stage=null;
+render();
+persist();
+</script>
+</body>
+</html>

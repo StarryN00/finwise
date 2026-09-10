@@ -1,0 +1,1 @@
+"""External accounting-system adapters."""

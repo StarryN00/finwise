@@ -1,0 +1,27 @@
+services:
+  finwise:
+    build:
+      context: ..
+      dockerfile: deploy/Dockerfile
+    env_file:
+      - path: ./staging.env
+        required: false
+    environment:
+      FINWISE_DATABASE_PATH: /var/lib/finwise/finwise.db
+      FINWISE_STORAGE_PATH: /var/lib/finwise/artifacts
+      FINWISE_REQUIRE_AUTH: "true"
+      FINWISE_ENVIRONMENT: staging
+      FINWISE_AGENT_MODE: gateway
+      FINWISE_AGENT_PROVIDER: deepseek
+      FINWISE_AGENT_MODEL: deepseek-chat
+      FINWISE_DEEPSEEK_BASE_URL: https://api.deepseek.com
+    ports:
+      - "${FINWISE_BIND:-0.0.0.0}:${FINWISE_PORT:-8766}:8766"
+    volumes:
+      - finwise_staging_db:/var/lib/finwise
+      - finwise_staging_artifacts:/var/lib/finwise/artifacts
+    restart: unless-stopped
+
+volumes:
+  finwise_staging_db:
+  finwise_staging_artifacts:

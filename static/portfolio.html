@@ -1,0 +1,122 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1" />
+  <title>FinWise · 企业总览</title>
+  <style>
+    :root { --bg:#f3f6fa; --surface:#fff; --ink:#172b49; --muted:#667892; --line:#d9e2ef; --blue:#1769e0; --blue-pale:#eaf2ff; --red:#c43d48; --red-pale:#fff0f1; --green:#18794e; --green-pale:#eaf7f0; --yellow:#9a6700; --yellow-pale:#fff7df; }
+    * { box-sizing:border-box; }
+    body { margin:0; background:var(--bg); color:var(--ink); font:14px/1.6 -apple-system,BlinkMacSystemFont,"Segoe UI","PingFang SC","Microsoft YaHei",sans-serif; }
+    button,input { font:inherit; }
+    button { cursor:pointer; }
+    .topbar { height:68px; display:flex; align-items:center; justify-content:space-between; padding:0 30px; background:#fff; border-bottom:1px solid var(--line); }
+    .brand { display:flex; align-items:center; gap:10px; font-size:18px; font-weight:700; letter-spacing:.01em; }
+    .mark { width:30px; height:30px; display:grid; place-items:center; border-radius:8px; background:var(--ink); color:#dceaff; font-weight:800; }
+    .top-actions { display:flex; align-items:center; gap:14px; color:var(--muted); font-size:12px; }
+    .button { border:1px solid var(--line); border-radius:7px; background:#fff; color:var(--ink); padding:8px 13px; }
+    .button.primary { color:#fff; border-color:var(--blue); background:var(--blue); }
+    .layout { max-width:1440px; min-height:calc(100vh - 68px); display:grid; grid-template-columns:340px minmax(0,1fr); margin:0 auto; }
+    .sidebar { padding:24px 18px; background:#f8fafc; border-right:1px solid var(--line); }
+    .side-title { display:flex; justify-content:space-between; align-items:baseline; margin:0 8px 16px; }
+    .side-title h1 { margin:0; font-size:18px; }
+    .side-title span { color:var(--muted); font-size:12px; }
+    .search { width:100%; padding:10px 12px; border:1px solid var(--line); border-radius:7px; background:#fff; color:var(--ink); outline:none; }
+    .search:focus { border-color:var(--blue); box-shadow:0 0 0 3px rgba(23,105,224,.1); }
+    .filter-row { display:flex; gap:7px; margin:10px 0 16px; overflow:auto; }
+    .filter { white-space:nowrap; padding:6px 10px; border:1px solid var(--line); border-radius:99px; background:#fff; color:var(--muted); font-size:12px; }
+    .filter.active { color:var(--blue); border-color:#a9c7f8; background:var(--blue-pale); }
+    .company-list { display:grid; gap:8px; }
+    .company { width:100%; display:grid; grid-template-columns:1fr auto; gap:8px; text-align:left; padding:13px 12px; border:1px solid transparent; border-radius:8px; background:transparent; color:var(--ink); }
+    .company:hover { background:#fff; border-color:var(--line); }
+    .company.selected { background:#fff; border-color:#8db6f7; box-shadow:inset 3px 0 var(--blue); }
+    .company > span { min-width:0; }
+    .company-name, .company-meta, .company-next { display:block; }
+    .company-name { min-width:0; overflow:hidden; text-overflow:ellipsis; white-space:nowrap; font-weight:650; }
+    .company-meta { margin-top:3px; color:var(--muted); font:12px/1.5 ui-monospace,SFMono-Regular,Menlo,monospace; overflow:hidden; text-overflow:ellipsis; white-space:normal; overflow-wrap:anywhere; }
+    .company-next { margin-top:7px; color:var(--muted); font-size:12px; }
+    .company-right { display:flex; flex-direction:column; align-items:flex-end; gap:7px; }
+    .badge { display:inline-flex; align-items:center; white-space:nowrap; padding:3px 7px; border-radius:5px; font-size:11px; font-weight:650; }
+    .badge.red { color:var(--red); background:var(--red-pale); }.badge.yellow { color:var(--yellow); background:var(--yellow-pale); }.badge.green { color:var(--green); background:var(--green-pale); }.badge.blue { color:var(--blue); background:var(--blue-pale); }
+    .pending { color:var(--muted); font-size:12px; }
+    .empty { padding:24px 10px; color:var(--muted); text-align:center; }
+    .main { padding:34px 42px 60px; min-width:0; }
+    .context { display:flex; justify-content:space-between; align-items:flex-start; gap:18px; padding-bottom:22px; border-bottom:1px solid var(--line); }
+    .eyebrow { color:var(--muted); font-size:11px; letter-spacing:.08em; }
+    .context h2 { margin:7px 0 2px; font-size:25px; line-height:1.25; }
+    .context p { margin:0; color:var(--muted); }
+    .context-right { display:flex; flex-direction:column; align-items:flex-end; gap:8px; }
+    .period { color:var(--ink); font-weight:700; }
+    .notice { display:none; margin:18px 0 0; padding:11px 14px; border:1px solid #f1c7ca; border-radius:7px; color:var(--red); background:var(--red-pale); }
+    .notice.show { display:block; }
+    .metrics { display:grid; grid-template-columns:repeat(4,1fr); gap:10px; margin:24px 0; }
+    .metric { padding:17px 18px; border:1px solid var(--line); border-radius:8px; background:#fff; }
+    .metric strong { display:block; font:700 25px/1.1 ui-monospace,SFMono-Regular,Menlo,monospace; }
+    .metric span { display:block; margin-top:6px; color:var(--muted); font-size:12px; }
+    .panel { border:1px solid var(--line); border-radius:8px; background:#fff; }
+    .panel-head { display:flex; justify-content:space-between; align-items:center; padding:16px 18px; border-bottom:1px solid var(--line); }
+    .panel-head h3 { margin:0; font-size:16px; }
+    .panel-head span { color:var(--muted); font-size:12px; }
+    .panel-body { padding:18px; }
+    .focus { display:grid; grid-template-columns:minmax(0,1fr) 220px; gap:18px; }
+    .focus h3 { margin:3px 0 8px; font-size:21px; }
+    .focus p { margin:0; color:var(--muted); }
+    .focus-aside { padding-left:18px; border-left:1px solid var(--line); }
+    .focus-aside strong { display:block; margin-top:5px; font-size:16px; }
+    .blocker-list { display:grid; gap:8px; margin-top:17px; }
+    .blocker { padding:10px 12px; border-left:3px solid var(--red); background:var(--red-pale); }
+    .blocker strong { display:block; font-size:13px; }.blocker span { color:#82434a; font-size:12px; }
+    .group-list { display:grid; gap:0; }.group-row { display:grid; grid-template-columns:minmax(0,1fr) auto; gap:16px; align-items:center; padding:13px 0; border-bottom:1px solid #edf1f6; }.group-row:last-child { border-bottom:0; }.group-title { font-weight:650; }.group-meta { margin-top:3px; color:var(--muted); font-size:12px; }.group-status { text-align:right; }.history-list { display:grid; gap:0; }.history-row { display:flex; justify-content:space-between; gap:14px; padding:11px 0; border-bottom:1px solid #edf1f6; }.history-row:last-child { border-bottom:0; }.history-row strong { display:block; }.history-row span { color:var(--muted); font-size:12px; }
+    .login-box { display:none; margin-top:18px; padding:14px; border:1px solid var(--line); border-radius:8px; background:#fff; }.login-box.show { display:grid; gap:8px; }.login-box input { width:100%; padding:8px 9px; border:1px solid var(--line); border-radius:6px; }.login-box small { color:var(--muted); }
+    .muted { color:var(--muted); }.mono { font-family:ui-monospace,SFMono-Regular,Menlo,monospace; }
+    @media (max-width:900px) { .layout { grid-template-columns:1fr; }.sidebar { border-right:0; border-bottom:1px solid var(--line); }.company-list { grid-template-columns:repeat(2,minmax(0,1fr)); }.main { padding:24px 18px 40px; }.context { flex-direction:column; }.context-right { align-items:flex-start; }.metrics { grid-template-columns:repeat(2,1fr); } }
+    @media (max-width:560px) { .topbar { padding:0 16px; }.top-actions span { display:none; }.company-list { grid-template-columns:1fr; }.main { padding:20px 14px 34px; }.metrics { gap:7px; }.metric { padding:13px; }.metric strong { font-size:20px; }.focus { grid-template-columns:1fr; }.focus-aside { padding:12px 0 0; border-left:0; border-top:1px solid var(--line); }.panel-head,.panel-body { padding:14px; } }
+  </style>
+</head>
+<body>
+  <header class="topbar">
+    <div class="brand"><span class="mark">F</span><span>FinWise</span><span class="eyebrow">企业总览</span></div>
+    <div class="top-actions"><span id="authState">本地受控环境</span><a class="button" href="operator.html">进入期间工作台</a><button id="refresh" class="button">刷新</button></div>
+  </header>
+  <div class="layout">
+    <aside class="sidebar">
+      <div class="side-title"><h1>企业列表</h1><span id="scopeCount">0 个范围</span></div>
+      <input id="search" class="search" placeholder="搜索企业、执照编号、账套或期间" autocomplete="off" />
+      <div class="filter-row"><button class="filter active" data-filter="all">全部</button><button class="filter" data-filter="blocker">需关注</button><button class="filter" data-filter="ready">可处理</button></div>
+      <div id="companies" class="company-list"><div class="empty">正在读取授权范围…</div></div>
+      <div id="loginBox" class="login-box"><small>当前需要登录后查看授权企业</small><input id="username" placeholder="用户名" autocomplete="username" /><input id="password" type="password" placeholder="密码" autocomplete="current-password" /><button id="login" class="button primary">登录</button></div>
+    </aside>
+    <main class="main">
+      <div id="notice" class="notice" role="status"></div>
+      <section class="context"><div><div class="eyebrow">当前企业</div><h2 id="companyName">尚未选择企业</h2><p id="companyScope" class="mono">请从左侧企业列表选择处理范围</p></div><div class="context-right"><span id="companyStatus" class="badge blue">等待读取</span><span id="period" class="period">—</span><span id="nextAction" class="muted">—</span></div></section>
+      <section class="metrics"><div class="metric"><strong id="blockers">0</strong><span>阻断业务组</span></div><div class="metric"><strong id="cards">0</strong><span>待确认事项</span></div><div class="metric"><strong id="facts">0</strong><span>事实记录</span></div><div class="metric"><strong id="deliverable">0</strong><span>可交付业务组</span></div></section>
+      <section class="panel"><div class="panel-head"><h3>当前需要处理</h3><span id="baseline">基线状态：—</span></div><div class="panel-body focus"><div><div class="eyebrow">下一步</div><h3 id="focusTitle">选择一个企业查看任务</h3><p id="focusSummary">当前页面只读取服务端已经授权的企业范围，不写入账务数据。</p><div id="blockerList" class="blocker-list"></div></div><div class="focus-aside"><div class="eyebrow">当前 Run</div><strong id="runStatus">尚未运行</strong><div class="muted" id="runMeta">—</div></div></div></section>
+      <section class="panel" style="margin-top:16px"><div class="panel-head"><h3>采购业务组</h3><span id="groupSummary">—</span></div><div id="groups" class="panel-body group-list"><div class="empty">选择企业后显示业务组</div></div></section>
+      <section class="panel" style="margin-top:16px"><div class="panel-head"><h3>往期数据与已归档凭证</h3><span>只读查看，不改变本期任务</span></div><div id="history" class="panel-body"><div class="empty">选择企业后显示历史期间和外部已回执凭证</div></div></section>
+    </main>
+  </div>
+  <script>
+    const API_BASE = location.protocol === 'file:' ? 'http://127.0.0.1:8766' : '';
+    const state = { items: [], selected: null, filter: 'all', csrf: '' };
+    const $ = id => document.getElementById(id);
+    const labels = { OPEN:'期间开放', DRAFT:'基线草稿', CONFIRMED:'已确认', BLOCKED:'已阻断', SUSPENDED:'暂挂待补证', READY:'可处理', LOCKED:'已锁账', ARCHIVED:'已归档', SUCCEEDED:'已完成', RUNNING:'处理中', PAUSED:'已暂停' };
+    function esc(value) { return String(value ?? '').replace(/[&<>"']/g, c => ({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[c])); }
+    function statusText(value) { return labels[value] || '待核验'; }
+    function statusClass(item) { return item.blockers?.length ? 'red' : item.deliverable_groups ? 'green' : item.pending_confirmation_cards ? 'yellow' : 'blue'; }
+    function headers() { const value = {'Content-Type':'application/json'}; if (state.csrf) value['X-CSRF-Token'] = state.csrf; return value; }
+    async function request(path, options = {}) { const response = await fetch(API_BASE + path, {...options, headers:{...headers(), ...(options.headers || {})}}); let body = {}; try { body = await response.json(); } catch (_) {} if (!response.ok) { const error = new Error(body.error?.message || `请求失败（${response.status}）`); error.status = response.status; throw error; } return body; }
+    const companyName = item => item.display_context?.company_name || (item.scope.legal_entity_id === 'kunshan-juxianda' ? '聚贤达' : item.scope.legal_entity_id);
+    const licenseNumber = item => item.display_context?.business_license_number || '营业执照编号待补充';
+    const ledgerName = item => item.display_context?.ledger_name || '主账套';
+    function visibleItems() { const term = $('search').value.trim().toLowerCase(); return state.items.filter(item => { const s = item.scope; const text = [companyName(item),licenseNumber(item),ledgerName(item),s.legal_entity_id,s.ledger_id,s.accounting_period_id].join(' ').toLowerCase(); const match = !term || text.includes(term); const filter = state.filter === 'all' || (state.filter === 'blocker' ? item.blockers?.length : item.deliverable_groups || item.pending_confirmation_cards === 0); return match && filter; }); }
+    function renderList() { const list = visibleItems(); $('companies').innerHTML = list.length ? list.map((item, index) => { const original = state.items.indexOf(item); const s=item.scope; return `<button class="company ${state.selected===original?'selected':''}" data-index="${original}"><span><span class="company-name">${esc(companyName(item))}</span><span class="company-meta" title="营业执照编号：${esc(licenseNumber(item))}">${esc(licenseNumber(item))}</span><span class="company-next">${esc(s.accounting_period_id)} · ${esc(item.next_action)}</span></span><span class="company-right"><span class="badge ${statusClass(item)}">${esc(item.blockers?.length ? '阻断' : item.pending_confirmation_cards ? '待确认' : item.deliverable_groups ? '可处理' : '处理中')}</span><span class="pending">${item.blockers?.length || item.pending_confirmation_cards || 0} 项</span></span></button>`; }).join('') : '<div class="empty">没有符合条件的企业</div>'; document.querySelectorAll('.company').forEach(button => button.addEventListener('click', () => select(Number(button.dataset.index)))); $('scopeCount').textContent = `${state.items.length} 个范围`; }
+    function renderDetail(item) { if (!item) return; const s=item.scope; $('companyName').textContent=companyName(item); $('companyScope').textContent=`账套 ${ledgerName(item)} · ${s.accounting_period_id}`; $('period').textContent=`${s.accounting_period_id} · ${statusText(item.period.status)}`; $('companyStatus').textContent=item.blockers?.length?'已阻断':item.pending_confirmation_cards?'待确认':item.deliverable_groups?'可处理':'处理中'; $('companyStatus').className=`badge ${statusClass(item)}`; $('nextAction').textContent=`下一步：${item.next_action}`; $('blockers').textContent=item.blockers?.length||0; $('cards').textContent=item.pending_confirmation_cards||0; $('facts').textContent=item.counts?.facts||0; $('deliverable').textContent=item.deliverable_groups||0; $('baseline').textContent=`基线状态：${statusText(item.baseline.status)} · ${item.baseline.validation.status==='VALID'?'当前有效':'待核验'}`; $('runStatus').textContent=item.current_run?statusText(item.current_run.status):'尚未运行'; $('runMeta').textContent=item.current_run?`第 ${item.current_run.attempt} 次 · ${item.current_run.model_version}`:'当前期间还没有处理 Run'; $('focusTitle').textContent=item.next_action; $('focusSummary').textContent=item.blockers?.length?'有业务组被证据或确定性校验阻断，先处理缺口，安全业务组不受影响。':item.pending_confirmation_cards?'存在需要人工确认的规则候选，确认前不会生成可交付凭证。':item.deliverable_groups?'已有业务组满足当前交付门禁，可进入复核。':'当前范围还没有可交付业务组，请先接收并核验原始资料。'; $('blockerList').innerHTML=(item.blockers||[]).map(b=>`<div class="blocker"><strong>${esc(statusText(b.status))}</strong><span>${esc(b.reason)} · 缺口：${esc((b.missing_evidence||[]).join('、')||'待查看对象详情')}</span></div>`).join(''); $('groupSummary').textContent=`${item.counts?.groups||0} 组 · ${item.counts?.reconciliation_checks||0} 项校验`; loadGroups(s); loadHistory(s); }
+    async function loadGroups(scope) { try { const data=await request('/api/v1/workbench',{method:'POST',body:JSON.stringify({scope})}); $('groups').innerHTML=data.groups?.length?data.groups.map(g=>`<div class="group-row"><div><div class="group-title">${esc(g.data?.business_identity||'采购业务组')}</div><div class="group-meta">${esc(g.data?.missing_evidence?.length?'缺少：'+g.data.missing_evidence.join('、'):'已保留来源、关系和版本')}</div></div><div class="group-status"><span class="badge ${g.status==='BLOCKED'||g.status==='SUSPENDED'?'red':g.status==='READY'?'green':'yellow'}">${esc(statusText(g.status))}</span></div></div>`).join(''):'<div class="empty">当前期间还没有采购业务组</div>'; } catch (error) { $('groups').innerHTML=`<div class="empty">${esc(error.message)}</div>`; } }
+    async function loadHistory(scope) { try { const data=await request('/api/v1/history',{method:'POST',body:JSON.stringify({scope})}); const periods=(data.periods||[]).map(item=>`<div class="history-row"><span><strong>${esc(item.scope.accounting_period_id)}</strong><span>${esc(statusText(item.period.status))} · ${item.counts.groups||0} 个业务组 · ${item.counts.facts||0} 条事实</span></span><span class="badge ${item.period.status==='ARCHIVED'||item.period.status==='LOCKED'?'green':'blue'}">${esc(statusText(item.period.status))}</span></div>`).join(''); const vouchers=(data.archived_vouchers||[]).map(item=>`<div class="history-row"><span><strong>已归档凭证 · ${esc(item.voucher.object_id)}</strong><span>导出批次 ${esc(item.export.object_id)} · v${item.voucher.version}</span></span><span class="badge green">外部已回执</span></div>`).join(''); $('history').innerHTML=`<div class="eyebrow">历史期间</div><div class="history-list">${periods||'<div class="empty">暂无已授权历史期间</div>'}</div><div class="eyebrow" style="margin-top:16px">归档凭证</div><div class="history-list">${vouchers||'<div class="empty">当前范围暂无外部已回执凭证</div>'}</div>`; } catch(error) { $('history').innerHTML=`<div class="empty">${esc(error.message)}</div>`; } }
+    function select(index) { state.selected=index; renderList(); renderDetail(state.items[index]); }
+    async function load() { try { const session=await request('/api/v1/auth/me'); state.csrf=session.csrf_token||''; const data=await request('/api/v1/portfolio'); state.items=data.scopes||[]; state.selected=state.items.length?0:null; renderList(); renderDetail(state.items[0]); $('notice').className='notice'; $('authState').textContent='已读取授权范围'; } catch (error) { $('notice').textContent=error.message; $('notice').className='notice show'; $('loginBox').classList.toggle('show',error.status===401); $('authState').textContent=error.status===401?'需要登录':'读取失败'; $('companies').innerHTML='<div class="empty">暂时无法读取授权范围</div>'; } }
+    async function login() { try { const result=await request('/api/v1/auth/login',{method:'POST',body:JSON.stringify({username:$('username').value,password:$('password').value})}); state.csrf=result.csrf_token; $('password').value=''; $('loginBox').classList.remove('show'); await load(); } catch(error) { $('notice').textContent=error.message; $('notice').className='notice show'; } }
+    $('refresh').addEventListener('click',load); $('search').addEventListener('input',renderList); document.querySelectorAll('[data-filter]').forEach(button=>button.addEventListener('click',()=>{state.filter=button.dataset.filter; document.querySelectorAll('[data-filter]').forEach(item=>item.classList.toggle('active',item===button)); renderList();})); $('login').addEventListener('click',login); $('password').addEventListener('keydown',event=>{if(event.key==='Enter')login();}); load();
+  </script>
+</body>
+</html>

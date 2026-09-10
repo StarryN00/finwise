@@ -1,0 +1,174 @@
+// Read-only acceptance of the clean January dataset; no financial commands.
+const assert = require('node:assert/strict');
+const fs = require('node:fs');
+const path = require('node:path');
+const crypto = require('node:crypto');
+const {chromium} = require('playwright');
+const base = process.env.FINWISE_STAGING_URL || 'http://127.0.0.1:8767';
+const out = path.resolve(__dirname, '../output/playwright/january-restart');
+async function main() {
+  if (!process.env.FINWISE_BROWSER_PASSWORD) throw Error('Provide the existing test account password');
+  assert.equal(new URL(base).hostname, '127.0.0.1');
+  fs.mkdirSync(out, {recursive:true});
+  const browser = await chromium.launch({headless:true});
+  const context = await browser.newContext({viewport:{width:1440,height:900}});
+  const page = await context.newPage(), errors = [], writes = [];
+  page.on('pageerror', e => errors.push(e.message));
+  page.on('request', r => {if(r.method() !== 'GET' && /\/(commands|artifacts|agent\/)/.test(new URL(r.url()).pathname)) writes.push(r.url());});
+  try {
+    await page.goto(base + '/static/operator.html');
+    await page.locator('#username').fill('juxianda-staging');
+    await page.locator('#password').fill(process.env.FINWISE_BROWSER_PASSWORD);
+    await page.locator('#loginForm button').click();
+    await page.locator('#currentTask').waitFor();
+    assert.equal(await page.locator('[data-scope]').count(), 1);
+    assert.match(await page.locator('.context').innerText(), /2026-01/);
+    assert.doesNotMatch(await page.locator('#scopeList').innerText(), /2026-03/);
+    const session = await (await context.request.get(base + '/api/v1/auth/me')).json();
+    const portfolio = await (await context.request.get(base + '/api/v1/portfolio')).json();
+    assert.equal(portfolio.scopes.length, 1);
+    const scope = portfolio.scopes[0].scope;
+    assert.equal(scope.accounting_period_id, '2026-01');
+    const request = {headers:{'X-CSRF-Token':session.csrf_token}, data:{scope}};
+    const overview = await (await context.request.post(base + '/api/v1/workbench', request)).json();
+    assert.equal(overview.artifacts.length, 17);
+    assert.equal(overview.data_readiness.categories[0].file_count, 2);
+    assert.equal(overview.data_readiness.counts.records, 204);
+    assert.equal(overview.data_readiness.model_coverage.real_successful_calls, 0);
+    assert.equal(overview.baseline.status, 'DRAFT');
+    const historical = overview.historical_preparation;
+    assert.equal(historical.status, 'NEEDS_REVIEW');
+    assert.equal(historical.data.result.entry_count, 2472);
+    assert.equal(historical.data.result.voucher_count, 607);
+    assert.equal(historical.data.result.passed_checks, 1139);
+    assert.equal(historical.data.result.issues.length, 2);
+    assert.deepEqual(historical.data.result.issues.map(i=>i.code), ['UNMAPPED_ACCOUNT','UNMAPPED_ACCOUNT']);
+    assert.deepEqual(historical.data.result.issues.map(i=>i.evidence.rows.length),[11,7]);
+    assert.equal(historical.data.result.issues[0].evidence.summary.debit_negative,'-1248211.00');
+    assert.equal(historical.data.result.issues[1].evidence.summary.debit_negative,'-846668.00');
+    assert.equal(overview.groups.length, 0);assert.equal(overview.vouchers.length, 0);
+    assert(!overview.artifacts.some(a => a.data.filename.includes('3月') || a.data.observed_period === '2026-03'));
+    const taskText=await page.locator('#currentTask').innerText();
+    assert.match(taskText,/处理历史账表核对问题/);
+    assert.match(taskText,/2472 条分录、607 张历史凭证/);
+    assert.match(taskText,/2501003/);assert.match(taskText,/2501004/);
+    assert.doesNotMatch(taskText,/还缺 2 类核对来源|添加期初余额资料|待补充/);
+    assert.equal(await page.locator('#currentTask .primary').count(),1);
+    assert.equal(await page.locator('[data-action="confirm-historical"]').count(),0);
+    await page.screenshot({path:path.join(out,'january-1440.png')});
+    await page.locator('#currentTask [data-action="historical-details"]').click();
+    await page.locator('#historicalTitle').waitFor();
+    await page.getByText('期末余额 → 期初候选',{exact:true}).click();
+    const historicalText=await page.locator('#workspace').innerText();
+    assert.match(historicalText,/237/);assert.match(historicalText,/19,586,868.35/);
+    assert.match(historicalText,/34,428,429.53/);assert.match(historicalText,/2501003/);
+    assert.equal(await page.locator('dialog').isVisible(),false);
+    assert.equal(await page.locator('.history-issue').count(),1);
+    assert.equal(await page.locator('[data-history-index]').count(),2);
+    await page.locator('[data-history-index="1"]').click();
+    assert.match(await page.locator('.history-issue').innerText(),/2501004/);
+    await page.locator('[data-history-index="0"]').click();
+    assert.equal(await page.locator('[name="historicalRoute"]').count(),3);
+    const firstIssue=page.locator('.history-issue').first();
+    assert.match(await firstIssue.innerText(),/记-075/);
+    assert.match(await firstIssue.innerText(),/-1,248,211.00/);
+    assert.match(await firstIssue.innerText(),/建议怎么处理/);
+    assert.equal(await firstIssue.locator('.history-entry-table tbody tr').count(),11);
+    await firstIssue.locator('[data-action="history-source"]').first().click();
+    await page.getByRole('heading',{name:'问题来源与原始数据'}).waitFor();
+    assert.match(await page.locator('#dialogBody').innerText(),/第2451行/);
+    assert.match(await page.locator('#dialogBody').innerText(),/2701/);
+    assert.match(await page.locator('#dialogBody').innerText(),/2801/);
+    await page.screenshot({path:path.join(out,'historical-source-context.png')});
+    await page.getByRole('button',{name:'查看原件详情与下载'}).click();
+    await page.getByRole('link',{name:'下载原始文件'}).waitFor();
+    await page.keyboard.press('Escape');
+    assert.equal(await firstIssue.locator('[data-action="history-source"]').first().evaluate(e=>e===document.activeElement),true);
+    await page.screenshot({path:path.join(out,'historical-preparation-1440.png')});
+    for(const width of [1040,390]) {
+      await page.setViewportSize({width,height:width===390?844:900});
+      assert(await page.evaluate(()=>document.documentElement.scrollWidth<=innerWidth));
+      assert.equal(await firstIssue.locator('.history-entry-table').isVisible(),true);
+      await page.screenshot({path:path.join(out,`historical-issue-${width}.png`)});
+      await firstIssue.locator('.history-entry-table [data-action="history-source"]').first().click();
+      await page.getByRole('heading',{name:'问题来源与原始数据'}).waitFor();
+      await page.keyboard.press('Escape');
+    }
+    await page.setViewportSize({width:1440,height:900});
+    await page.locator('[data-action="return-current"]').click();
+    await page.locator('[data-action="baseline-files"]').click();
+    assert.equal(await page.locator('#receivedFiles tbody tr').count(),2);
+    assert.match(await page.locator('#receivedFiles').innerText(),/序时账_2025年01月至2025年12月.xls/);
+    assert.match(await page.locator('#receivedFiles').innerText(),/余额表_2025年01月至2025年12月.xls/);
+    assert.equal(await page.locator('dialog').isVisible(),false);
+    await page.locator('[data-action="return-files"]').click();
+    assert.equal(await page.locator('[data-action="baseline-files"]').evaluate(e=>e===document.activeElement),true);
+    const progress=await page.locator('.overall').innerText();
+    await page.locator('#sourceStage').focus();await page.keyboard.press('Enter');
+    assert.equal(await page.locator('#receivedFiles tbody tr').count(),17);
+    assert.equal(await page.locator('#receivedTitle').evaluate(e=>e===document.activeElement),true);
+    await page.screenshot({path:path.join(out,'received-files-1440.png')});
+    for(const [filter,count] of [['baseline',2],['business',14],['unassigned',1],['all',17]]) {
+      await page.locator(`[data-files-filter="${filter}"]`).click();
+      assert.equal(await page.locator('#receivedFiles tbody tr').count(),count);
+      assert.equal(await page.locator(`[data-files-filter="${filter}"]`).getAttribute('aria-pressed'),'true');
+    }
+    await page.locator('[data-action="return-files"]').click();
+    assert.equal(await page.locator('#sourceStage').evaluate(e=>e===document.activeElement),true);
+    assert.equal(await page.locator('.overall').innerText(),progress);
+    await page.locator('[data-category="baseline"]').click();
+    const detail = await page.locator('.category-detail').innerText();
+    assert.match(detail, /序时账_2025年01月至2025年12月.xls/);
+    assert.match(detail, /余额表_2025年01月至2025年12月.xls/);
+    assert.match(detail, /2 份原件/);assert.match(detail, /有问题待核实/);
+    await page.screenshot({path:path.join(out,'historical-originals.png')});
+    await page.locator('.category-detail [data-object]').first().click();
+    const original = overview.artifacts.find(a=>a.data.filename.startsWith('序时账_2025'));
+    const downloadEvent = page.waitForEvent('download');
+    await page.getByRole('link',{name:'下载原始文件'}).click();
+    const download = await downloadEvent;assert.equal(await download.failure(),null);
+    assert.equal(crypto.createHash('sha256').update(fs.readFileSync(await download.path())).digest('hex'),original.data.sha256);
+    await page.keyboard.press('Escape');await page.locator('[data-action="return-task"]').click();
+    await page.reload();await page.locator('#currentTask').waitFor();
+    assert.match(await page.locator('.context').innerText(), /2026-01/);
+    await page.locator('[data-action="history"]').click();
+    await page.getByText('没有可查看的往期授权数据。',{exact:true}).waitFor();
+    await page.locator('[data-action="return-current"]').click();
+    await page.setViewportSize({width:390,height:844});
+    assert(await page.evaluate(()=>document.documentElement.scrollWidth<=innerWidth));
+    await page.screenshot({path:path.join(out,'january-390.png')});
+    const mainAction=await page.locator('#currentTask .primary').boundingBox();
+    assert(mainAction.y+mainAction.height<=844,'mobile primary is visible');
+    await page.locator('#mobileFiles').click();
+    assert.equal(await page.locator('#receivedFiles tbody tr').count(),17);
+    assert(await page.evaluate(()=>document.documentElement.scrollWidth<=innerWidth));
+    await page.screenshot({path:path.join(out,'received-files-390.png')});
+    await page.locator('[data-files-filter="baseline"]').click();
+    await page.locator('#receivedFiles [data-object]').first().click();
+    await page.getByRole('link',{name:'下载原始文件'}).waitFor();
+    await page.keyboard.press('Escape');
+    assert.equal(await page.locator('#receivedFiles tbody tr').count(),2);
+    await page.locator('[data-action="return-files"]').click();
+    await page.locator('[data-action="stages"]').click();await page.locator('#sourceStage').click();
+    await page.locator('[data-action="return-files"]').click();
+    assert.equal(await page.locator('#sourceStage').evaluate(e=>e===document.activeElement),true);
+    await page.locator('[data-action="stages"]').click();
+    await page.setViewportSize({width:1040,height:900});
+    assert(await page.evaluate(()=>document.documentElement.scrollWidth<=innerWidth));
+    await page.screenshot({path:path.join(out,'january-1040.png')});
+    await page.setViewportSize({width:390,height:844});
+    await page.locator('#openSidebar').click();assert.equal(await page.locator('[data-scope]').count(),1);
+    await page.keyboard.press('Escape');assert.equal(await page.locator('#main').evaluate(e=>e.inert),false);
+    assert.deepEqual(writes,[]);assert.deepEqual(errors,[]);
+    fs.writeFileSync(path.join(out,'report.json'), JSON.stringify({status:'PASS',scope,files:17,historical_files:2,
+      records:204,model_calls:0,business_groups:0,vouchers:0,financial_mutations:writes,
+      historical_preparation:{status:historical.status,version:historical.version,entries:2472,vouchers:607,passed_checks:1139,issues:2},
+      checks:['January only','history separate','original download hash','no March or prior grants',
+        'historical preparation retained','two unmapped accounts require review','no premature confirmation',
+        'issue amounts directly visible','negative entries and related voucher context','source modal and original download','read-only advice and mobile table containment',
+        'received files instead of duplicate upload','source stage opens full file list','file category filters',
+        'keyboard entry and return focus','refresh restore','desktop/mobile','drawer focus','no financial writes','no JS errors']},null,2));
+    console.log('PASS: January scope, history originals, download hash, isolation, desktop/mobile; no financial writes');
+  } finally {await browser.close();}
+}
+main().catch(e=>{console.error(e);process.exitCode=1;});

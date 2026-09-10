@@ -1,0 +1,39 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>FinWise · 期间工作台</title>
+  <link rel="stylesheet" href="operator.css?v=material-guidance-9">
+  <script src="operator-historical.js?v=guided-decision-2" defer></script>
+  <script src="operator-materials.js?v=material-guidance-8" defer></script>
+  <script src="operator-problem-review.js?v=issue-triage-2" defer></script>
+  <script src="operator-material-navigation.js?v=material-guidance-8" defer></script>
+  <script src="operator-bank-periods.js?v=bank-period-1" defer></script>
+  <script src="operator-material-guidance.js?v=material-guidance-8" defer></script>
+  <script src="operator-decision.js?v=material-guidance-8" defer></script>
+  <script src="operator-bills.js?v=guided-decision-2" defer></script>
+  <script src="operator-invoice-review.js?v=guided-decision-2" defer></script>
+  <script src="operator-accounts.js?v=guided-decision-2" defer></script>
+  <script src="operator-mapping.js?v=guided-decision-2" defer></script>
+  <script src="operator-parse-plans.js?v=structure-plan-1" defer></script>
+  <script src="operator.js?v=material-guidance-4" defer></script>
+</head>
+<body>
+  <header class="topbar"><div class="brand"><span class="mark">F</span> FinWise <span class="muted small">期间工作台</span></div><div class="actions"><span id="authState" class="muted small">需要登录</span><a href="portfolio.html" class="button secondary">企业总览</a><button id="logout" class="text hidden">退出</button></div></header>
+  <div class="layout">
+    <aside id="sidebar" class="sidebar" aria-label="企业与期间"><div class="row"><h2>处理范围</h2><button id="closeSidebar" class="text mobile-only" aria-label="关闭企业列表">关闭</button></div><label class="sr-only" for="search">搜索企业、执照编号、账套或期间</label><input id="search" type="search" placeholder="搜索企业、执照编号、账套或期间"><div id="scopeList" class="scope-list"></div>
+      <form id="loginForm" class="login"><h3>登录工作台</h3><label>用户名<input id="username" autocomplete="username" required></label><label>密码<input id="password" type="password" autocomplete="current-password" required></label><button class="primary" type="submit">登录</button></form>
+      <p class="side-note">仅显示账号有权访问的企业与期间。</p>
+    </aside>
+    <button id="scrim" class="scrim hidden" aria-label="关闭企业列表" tabindex="-1"></button>
+    <main id="main" class="main">
+      <div id="notice" role="status" aria-live="polite" class="notice hidden"></div>
+      <button id="openSidebar" class="secondary mobile-only">选择企业与期间</button>
+      <div id="workspace"><div class="empty">登录后选择企业，查看本期处理结果。</div></div>
+    </main>
+  </div>
+  <dialog id="dialog" aria-labelledby="dialogTitle"><div class="dialog-head"><h2 id="dialogTitle">详情</h2><button id="closeDialog" class="secondary" aria-label="关闭详情">关闭</button></div><div id="dialogBody"></div></dialog>
+  <input id="baselineFile" class="hidden" type="file" accept=".xls,.xlsx">
+</body>
+</html>
