@@ -17,13 +17,14 @@ const delay=ms=>new Promise(r=>setTimeout(r,ms));
   const g=guided(page),settle=g.settle,click=async action=>{if(action==='material-defer')return g.choose('defer_material_issue');if(['material-save-defer','material-verify'].includes(action))return g.finish();if(action==='material-cancel-defer')return g.choose('supplement');if(action==='material-supplement'){await g.choose('supplement');await page.locator('[data-guide="open"]').click();return settle();}await page.locator(`[data-action="${action}"]`).first().click();await settle();};
   const counts=()=>page.evaluate(()=>state.overview.material_review.counts);
   await page.goto(base+'/static/operator.html');await page.locator('#username').fill('plan-author');await page.locator('#password').fill('IssuePlanTest!2026');await page.locator('#loginForm button').click();await page.locator('#currentTask').waitFor();
-  await page.locator('[data-scope]').filter({hasText:'方案核对甲'}).click();await settle();await click('issues');
-  const taxGroup=()=>page.locator('.mat-issue-group').filter({hasText:'3 项待办'}).first();
+  await page.locator('[data-scope]').filter({hasText:'方案核对甲'}).click();await settle();
+  await click('material-open-task');await click('material-return-list');
+  const taxGroup=()=>page.locator('.mat-issue-group').filter({hasText:'业务期间待核对'}).first();
   await check('overview contains only group list; click opens full detail at top',async()=>{
    assert.equal(await page.locator('.mat-task').count(),0);await taxGroup().getByRole('button',{name:'进入处理'}).click();
    assert.equal(await page.locator('#materialWorkbench').getAttribute('data-screen'),'detail');assert.equal(await page.locator('.mat-overview,.mat-issue-groups').count(),0);
-   assert.match(await page.locator('.mat-detail-context').innerText(),/本组共 3 项，涉及 3 份原件/);assert.equal(await page.evaluate(()=>window.scrollY),0);
-   assert.equal(await page.locator('#materialWorkbench .primary:visible').count(),1);assert.equal(await page.locator('.decision-summary').count(),0);assert.notEqual(await page.locator('.decision-source').getAttribute('open'),null);assert(await page.locator('.decision-key-table').isVisible());
+   assert.match(await page.locator('.mat-detail-context').innerText(),/本组共 2 项，涉及 2 份原件/);assert.equal(await page.evaluate(()=>window.scrollY),0);
+   assert.equal(await page.locator('#materialWorkbench .primary:visible').count(),0);assert(await page.locator('[data-guide="option"]:visible').count()>=2);assert.equal(await page.locator('.decision-summary').count(),0);assert.notEqual(await page.locator('.decision-source').getAttribute('open'),null);assert(await page.locator('.decision-key-table').isVisible());
   });
   await check('back/forward restore list position and selected group',async()=>{
    const selected=await page.evaluate(()=>materialUI.selected);await page.goBack();await page.locator('.mat-issue-groups').waitFor();
@@ -33,7 +34,7 @@ const delay=ms=>new Promise(r=>setTimeout(r,ms));
    for(const [width,height] of [[1440,900],[1040,900],[390,844]]){
     await page.setViewportSize({width,height});await page.evaluate(()=>scrollTo(0,0));assert(await page.evaluate(()=>document.documentElement.scrollWidth<=innerWidth));
     await page.screenshot({path:path.join(OUT,`detail-${width}.png`),fullPage:true});
-    const action=page.locator('#materialWorkbench .primary');await action.scrollIntoViewIfNeeded();assert(await action.isVisible());
+    const action=page.locator('[data-guide="option"]').first();await action.scrollIntoViewIfNeeded();assert(await action.isVisible());
    }
    await page.setViewportSize({width:1440,height:900});
   });
@@ -60,8 +61,8 @@ const delay=ms=>new Promise(r=>setTimeout(r,ms));
   await check('save targets one task, moves within group, and stops at group summary',async()=>{
    const before=await counts();await click('material-save-defer');assert.equal((await counts()).deferred,before.deferred+1);assert.equal((await counts()).needs_review,before.needs_review);
    assert.match(await page.locator('.mat-detail-context').innerText(),/本组第 2 项/);assert.match(await page.locator('.mat-inline-feedback').innerText(),/仍待补充/);
-   await click('material-skip');assert.match(await page.locator('.mat-detail-context').innerText(),/本组第 3 项/);await click('material-skip');
-   assert.equal(await page.locator('#materialWorkbench').getAttribute('data-screen'),'summary');assert.match(await page.locator('.mat-group-totals').innerText(),/已记录待补/);assert.match(await page.locator('.mat-group-totals').innerText(),/暂未处理/);
+   await click('material-skip');
+   assert.equal(await page.locator('#materialWorkbench').getAttribute('data-screen'),'summary');assert.match(await page.locator('.mat-group-totals').innerText(),/等待外部资料或条件/);assert.match(await page.locator('.mat-group-totals').innerText(),/暂未处理/);
    assert.equal((await counts()).source_verified,0);assert.equal((await counts()).accounting_usable,0);await page.screenshot({path:path.join(OUT,'group-summary-1440.png'),fullPage:true});
    await page.reload();await page.locator('[data-screen="summary"]').waitFor();await click('material-next-group');assert.equal(await page.locator('#materialWorkbench').getAttribute('data-screen'),'detail');
   });

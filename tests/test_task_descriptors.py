@@ -32,6 +32,9 @@ def test_descriptor_profiles_are_serializable_and_bind_exact_inputs(scope, kind,
     primary = result['options'][0]
     assert primary['id'] == expected
     assert primary['completion'] and primary['requires'] and primary['not_effects']
+    assert primary['execution_type'] in {'COMMAND', 'NAVIGATION'}
+    assert primary['confirmation_label'] and primary['success_label']
+    assert primary['post_submit_owner'] in {'SYSTEM', 'EXTERNAL', 'NONE'}
     assert result['scope']['legal_entity_id'] == scope['legal_entity_id']
     assert result['scope']['artifact'] == {'id': 'a', 'version': 2, 'sha256': 'file-hash'}
     assert result['scope']['records'][0]['version'] == 3
@@ -69,8 +72,12 @@ def test_projection_is_additive_and_does_not_change_existing_tasks_counts_or_gat
     for overview in (current, previous):
         for task in overview['material_review']['tasks']:
             task.pop('triage')
+            task.pop('handling', None)
         overview['material_review']['counts'].pop('human_issue_tasks')
         overview['material_review']['counts'].pop('system_issue_tasks')
+        overview['material_review']['counts'].pop('selected_processing_tasks', None)
+        overview['material_review'].pop('flow', None)
+        overview['material_review'].pop('next_step', None)
         overview['problem_review'].pop('triage_tasks')
     assert current == previous
 

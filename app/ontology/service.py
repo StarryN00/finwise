@@ -1813,6 +1813,64 @@ class OntologyService:
             "ledger_name": name if name and name != scope.ledger_id else "主账套",
         }
 
+    @staticmethod
+    def _workbench_next_step(progress, material_review, current_artifacts, blockers, cards, vouchers,
+                             groups, baseline_validation):
+        """One server-owned next step shared by the home and material views."""
+        prerequisite = progress.get('prerequisite') or {}
+        if prerequisite.get('status') == 'ACTION_REQUIRED':
+            return {'version': 'workbench-next-step-v1', 'state': 'NEEDS_DECISION', 'owner': 'USER',
+                    'title': '先处理期初与历史衔接', 'explanation': prerequisite.get('summary') or '期初事项需要你处理。',
+                    'task_id': None, 'action': {'kind': 'HISTORICAL', 'label': '处理期初事项'}}
+        material_step = (material_review.get('flow') or {}).get('next_step')
+        if material_step and material_step.get('owner') == 'USER':
+            return {'version': 'workbench-next-step-v1', **material_step}
+        if not current_artifacts:
+            return {'version': 'workbench-next-step-v1', 'state': 'NEEDS_INPUT', 'owner': 'USER',
+                    'title': '接收本期业务资料', 'explanation': '本期还没有业务原件，请添加需要办理的资料。',
+                    'task_id': None, 'action': {'kind': 'UPLOAD', 'label': '添加本期资料'}}
+        # A system-owned material issue can still change the available business
+        # actions. Do not send the user into downstream tools while it is open.
+        if material_step and material_step.get('owner') in {'SYSTEM', 'EXTERNAL'}:
+            waiting = []
+            flow_counts = (material_review.get('flow') or {}).get('counts') or {}
+            if flow_counts.get('system_processing'):
+                waiting.append(f"系统处理中 {flow_counts['system_processing']} 项")
+            if flow_counts.get('system_check'):
+                waiting.append(f"系统检查中 {flow_counts['system_check']} 项")
+            if flow_counts.get('waiting_external'):
+                waiting.append(f"等待外部 {flow_counts['waiting_external']} 项")
+            if prerequisite.get('status') != 'VALID':
+                waiting.append('期初衔接尚未通过')
+            return {'version': 'workbench-next-step-v1', **material_step,
+                    'title': '你当前无需操作',
+                    'explanation': '；'.join(waiting) + '。条件变化后，系统会给出下一项明确操作。',
+                    'waiting': waiting, 'action': None}
+        if baseline_validation.get('status') != 'VALID':
+            return {'version': 'workbench-next-step-v1', 'state': 'WAITING_EXTERNAL', 'owner': 'EXTERNAL',
+                    'title': '你当前无需操作',
+                    'explanation': '期初与历史衔接仍在等待，不需要重复提交；当前资料结果已保留。',
+                    'task_id': None, 'waiting': ['期初衔接尚未通过'], 'action': None}
+        if blockers:
+            return {'version': 'workbench-next-step-v1', 'state': 'NEEDS_INPUT', 'owner': 'USER',
+                    'title': '处理业务校验阻断', 'explanation': f'还有 {len(blockers)} 组业务校验未通过。',
+                    'task_id': None, 'action': {'kind': 'BLOCKERS', 'label': '查看阻断依据'}}
+        if cards:
+            return {'version': 'workbench-next-step-v1', 'state': 'READY_TO_CONFIRM', 'owner': 'USER',
+                    'title': '复核待确认事项', 'explanation': f'还有 {len(cards)} 项业务规则等待确认。',
+                    'task_id': None, 'action': {'kind': 'CONFIRMATION_CARDS', 'label': '进入业务确认'}}
+        if vouchers:
+            return {'version': 'workbench-next-step-v1', 'state': 'READY_TO_CONFIRM', 'owner': 'USER',
+                    'title': '复核本期凭证', 'explanation': '资料和业务校验已进入凭证复核阶段。',
+                    'task_id': None, 'action': {'kind': 'VOUCHERS', 'label': '进入凭证复核'}}
+        if groups:
+            return {'version': 'workbench-next-step-v1', 'state': 'NEEDS_DECISION', 'owner': 'USER',
+                    'title': '继续业务校验', 'explanation': '资料问题已处理完，可以继续核对业务对象。',
+                    'task_id': None, 'action': {'kind': 'GROUPS', 'label': '进入业务校验'}}
+        return {'version': 'workbench-next-step-v1', 'state': 'COMPLETED', 'owner': 'NONE',
+                'title': '你当前无需操作', 'explanation': '当前没有需要你处理的事项。',
+                'task_id': None, 'waiting': [], 'action': None}
+
     def workbench(self, scope: Scope, *, _problem_review: bool = True, actor_id: str | None = None) -> dict[str, Any]:
         period = self.store.get_object(self._period_object_id(scope), scope)
         baseline = self.store.get_object(self._baseline_object_id(scope), scope)
@@ -1949,6 +2007,8 @@ class OntologyService:
         if _problem_review:
             material_review, review = self.problem_review.project(scope, material_review, artifacts, facts)
             material_review = self.material_guidance.project(scope,material_review,actor_id=actor_id)
+        material_review['next_step'] = self._workbench_next_step(
+            progress, material_review, current_artifacts, blockers, cards, vouchers, groups, baseline_validation)
         return {
             "scope": scope.model_dump(), "display_context": self.display_context(scope), "period": period, "baseline": baseline,
             "baseline_validation": baseline_validation, "current_run": current_run, "latest_run_only": True,

@@ -51,19 +51,25 @@ function operatorMaterialIsSystemTask(t) {
   return !!t?.triage && (t.triage.version !== 'issue-triage-v1' || t.triage.route !== 'HUMAN');
 }
 function materialCounts() {
-  const m=state.overview?.material_review?.counts||{}, tasks=state.overview?.material_review?.tasks, c=readiness()?.counts||{}, usable=readiness()?.usable_results||[];
-  const allHuman=Array.isArray(tasks) ? tasks.filter(t=>t.kind!=='VERIFY'&&!t.deferred&&!operatorMaterialIsSystemTask(t)) : null;
-  const selected=allHuman ? allHuman.filter(operatorRecordedMaterialOpinion).length : (m.selected_processing_tasks??0);
-  const pendingHuman=m.human_issue_tasks==null ? (allHuman ? allHuman.length-selected : 0) : Math.max(0,Number(m.human_issue_tasks||0)-selected);
+  const review=state.overview?.material_review||{},m=review.counts||{},flow=review.flow?.counts||{},tasks=review.tasks,c=readiness()?.counts||{},usable=readiness()?.usable_results||[];
+  const unresolved=(tasks||[]).filter(t=>t.kind!=='VERIFY'&&!t.deferred);
+  const opinionTasks=unresolved.filter(t=>operatorRecordedMaterialOpinion(t));
+  const systemTasks=unresolved.filter(t=>operatorMaterialIsSystemTask(t));
+  const humanTasks=unresolved.filter(t=>!operatorMaterialIsSystemTask(t)&&!operatorRecordedMaterialOpinion(t));
   return {files:m.files??c.files??0, records:m.records??c.records??0,
     system_checked:m.system_checked??(m.awaiting_verification??0)+(m.source_verified??0),
     issue_confirmed:m.issue_confirmed??0, invoice_amount_confirmed:m.invoice_amount_confirmed??0, business_confirmed:m.business_confirmed??0, bill_confirmed:m.bill_confirmed??0,
     source_verified:m.source_verified??0, needs_review:m.needs_review??c.needs_review??0,
     period_exceptions:m.period_exceptions??c.period_exceptions??0,other_period:m.other_period??0,
     issue_tasks:m.issue_tasks??0, deferred:m.deferred??0,
-    selected_processing_tasks:selected,
-    human_issue_tasks:pendingHuman,
-    system_issue_tasks:m.system_issue_tasks??(tasks||[]).filter(t=>t.kind!=='VERIFY'&&!t.deferred&&operatorMaterialIsSystemTask(t)).length,
+    selected_processing_tasks:flow.system_processing??m.selected_processing_tasks??opinionTasks.length,
+    human_issue_tasks:flow.user_total??(m.human_issue_tasks!==undefined?Math.max(0,m.human_issue_tasks-(m.selected_processing_tasks===undefined?opinionTasks.length:0)):humanTasks.length),
+    system_issue_tasks:flow.system_check??m.system_issue_tasks??systemTasks.length,
+    needs_decision:flow.needs_decision??0,needs_input:flow.needs_input??0,ready_to_confirm:flow.ready_to_confirm??0,user_action:flow.user_action??m.human_issue_tasks??0,
+    system_processing:flow.system_processing??(tasks?opinionTasks.length:m.selected_processing_tasks??0),
+    system_check:flow.system_check??m.system_issue_tasks??systemTasks.length,
+    system_total:flow.system_total??(tasks?systemTasks.length+opinionTasks.length:(m.system_issue_tasks??0)+(m.selected_processing_tasks??0)),waiting_external:flow.waiting_external??m.deferred??0,
+    completed:flow.completed??0,failed:flow.failed??0,stale:flow.stale??0,
     accounting_usable:m.accounting_usable??usable.length,
     file_states:m.file_states||{}};
 }
@@ -194,7 +200,7 @@ function renderPrerequisite(){
 function renderResults() {
   const r=readiness(),c=materialCounts(),model=r.model_coverage||{};
   const drill=(text,value,filter)=>`<button class="result-value" data-action="material-open-filter" data-filter="${filter}"><strong>${value}</strong><span>${text}</span></button>`;
-  return `<aside class="result-summary" aria-label="本期资料成果"><section class="panel pad"><div class="row"><h2>本期资料成果</h2><span class="small muted">${c.records} 条记录</span></div><div class="result-grid"><div class="result-metric">${drill('系统提取检查通过',c.system_checked,'results')}<p class="small muted">未检出提取问题，不代表人工核实</p></div><div class="result-metric">${drill('其中人工已核实',c.source_verified,'verified')}<p class="small muted">是系统检查通过记录的子集</p></div><div class="result-metric">${drill('需核对',c.needs_review,'issues')}<p class="small muted">字段或提取结果问题</p></div><div class="result-metric">${drill('期间待确认',c.period_exceptions,'period')}<p class="small muted">原件仍保留在当前范围</p></div><div class="result-metric">${drill('待人工处理',c.human_issue_tasks,'all')}<p class="small muted">当前仍需用户选择处理方式；系统待检查 ${c.system_issue_tasks} 项</p></div><div class="result-metric">${drill('已选择处理方式',c.selected_processing_tasks,'selected')}<p class="small muted">意见已记录，尚未执行；问题仍保留</p></div><div class="result-metric">${drill('其他期间归属',c.other_period,'other-period')}<p class="small muted">不计本期发生额；接续仍需确认</p></div><div class="result-metric">${drill('已记录待补',c.deferred,'deferred')}<p class="small muted">已留痕，问题仍保留</p></div></div><p class="small muted result-equation">系统检查通过 ${c.system_checked} + 需核对 ${c.needs_review} + 期间待确认 ${c.period_exceptions} + 人工归属确认且无剩余资料问题 ${c.business_confirmed||0} + 金额核对已处理且无剩余资料问题 ${c.issue_confirmed||0} + 其他期间归属 ${c.other_period||0} = ${c.records} 条记录；已选择处理方式 ${c.selected_processing_tasks} 项、任务、文件和账务可用分别统计。</p><button class="text" data-action="material-open-filter" data-filter="results">进入资料办理，查看原件与提取值 →</button></section><section class="panel pad result-usable"><div class="row"><h2>账务可用</h2>${badge(`${c.accounting_usable} 条`,c.accounting_usable?'green':'')}</div><p class="small muted">沿用基线、业务和证据校验结果，不把资料提取或人工核实直接当成账务可用。</p><button class="text" data-action="material-open-filter" data-filter="usable">查看账务可用依据</button><div class="record-note"><strong>处理记录</strong><p>${model.real_successful_calls||0} 次业务建议真实调用 · 调用时涉及 ${model.historical_fact_count||0} 条事实</p><button class="text" data-action="records">查看模型与格式识别记录</button></div></section></aside>`;
+  return `<aside class="result-summary" aria-label="本期资料办理状态"><section class="panel pad"><div class="row"><h2>办理状态</h2><span class="small muted">${c.records} 条资料记录</span></div><div class="result-grid flow-result-grid"><div class="result-metric">${drill('待你处理',c.user_action,'all')}<p class="small muted">现在需要你选择或补充</p></div><div class="result-metric">${drill('待确认执行',c.ready_to_confirm,'ready')}<p class="small muted">方案已明确，等待最终确认</p></div><div class="result-metric">${drill('系统处理中',c.system_processing,'system')}<p class="small muted">另有系统检查 ${c.system_check} 项；你当前无需操作</p></div><div class="result-metric">${drill('等待外部',c.waiting_external,'deferred')}<p class="small muted">原因已记录，不重复提交</p></div><div class="result-metric">${drill('已完成',c.completed,'results')}<p class="small muted">已形成明确处理或核实结果</p></div></div><p class="small muted result-equation">资料记录口径：系统检查通过 ${c.system_checked} 条，其中人工核实 ${c.source_verified} 条；仍需核对 ${c.needs_review} 条、期间待确认 ${c.period_exceptions} 条。事项状态与记录数量分别统计。</p><button class="text" data-action="material-open-filter" data-filter="results">查看资料成果与来源 →</button></section><section class="panel pad result-usable"><div class="row"><h2>账务可用</h2>${badge(`${c.accounting_usable} 条`,c.accounting_usable?'green':'')}</div><p class="small muted">沿用基线、业务和证据校验结果，不把资料提取或人工核实直接当成账务可用。</p><button class="text" data-action="material-open-filter" data-filter="usable">查看账务可用依据</button><div class="record-note"><strong>处理记录</strong><p>${model.real_successful_calls||0} 次业务建议真实调用 · 调用时涉及 ${model.historical_fact_count||0} 条事实</p><button class="text" data-action="records">查看模型与格式识别记录</button></div></section></aside>`;
 }
 function historicalActionable() {
   const job=state.overview?.historical_preparation,status=job?.status;
@@ -211,6 +217,18 @@ function historyCanWaitForCurrent() {
 }
 function currentTask() {
   const d=state.overview,r=readiness();
+  const next=d.material_review?.next_step;
+  if(next?.version==='workbench-next-step-v1'){
+    const kind=next.action?.kind;
+    if(kind==='HISTORICAL')return 'baseline';
+    if(kind==='UPLOAD')return 'upload';
+    if(kind==='MATERIAL_TASK')return 'guided-material';
+    if(kind==='BLOCKERS')return 'blockers';
+    if(kind==='CONFIRMATION_CARDS')return 'cards';
+    if(kind==='VOUCHERS')return 'vouchers';
+    if(kind==='GROUPS')return 'groups';
+    if(!next.action)return 'guided-wait';
+  }
   if(d.historical_preparation&&d.baseline_validation.status!=='VALID'&&historicalActionable())return 'baseline';
   const currentFiles=d.artifacts.filter(a=>a.status!=='ARCHIVED'&&a.data.observed_period===scope().accounting_period_id);
   if(!currentFiles.length)return 'upload';
@@ -266,11 +284,18 @@ function renderComparison(c) {
 }
 function renderTask() {
   const task=currentTask(),d=state.overview,r=readiness();
+  const next=d.material_review?.next_step;
+  if(task==='guided-material')return taskShell(next.title,`<p>${esc(next.explanation)}</p><div class="goal"><b>现在要做</b>进入对应问题，核对源数据并完成这一项明确操作。</div>`,`<button type="button" class="primary" data-action="material-open-task" data-task="${esc(next.task_id)}">${esc(next.action?.label||'进入处理')}</button>`,badge(next.state==='READY_TO_CONFIRM'?'待确认执行':next.state==='NEEDS_INPUT'?'待补充信息':'待你处理','yellow'));
+  if(task==='guided-wait'){
+    const waiting=Array.isArray(next?.waiting)&&next.waiting.length?`<ul>${next.waiting.map(item=>`<li>${esc(item)}</li>`).join('')}</ul>`:'';
+    const secondary=materialCounts().system_total?'<button type="button" class="secondary" data-action="material-open-filter" data-filter="system">查看系统处理中事项</button>':materialCounts().waiting_external?'<button type="button" class="secondary" data-action="material-open-filter" data-filter="deferred">查看等待事项</button>':'';
+    return taskShell('你当前无需操作',`<p>${esc(next?.explanation||'当前没有需要你处理的事项。')}</p>${waiting}<div class="goal"><b>下一步</b>条件变化后，系统会在这里给出唯一的明确操作，无需反复检查各个功能入口。</div>`,secondary,badge(next?.owner==='SYSTEM'?'系统处理中':next?.owner==='EXTERNAL'?'等待外部':'当前无待办','blue'));
+  }
   if(task==='baseline')return renderBaseline();
   if(task==='upload')return taskShell('接收本期业务资料','<p>当前尚未接收本期业务原件。</p><div class="goal"><b>需要提供</b>本期发票、银行与票据、薪酬及税费资料；期初衔接资料单独归类。</div><p class="small muted">保存后按资料类型提取，提取完成不表示已核实。</p>',primary('upload','添加本期资料',readonly()));
   if(task==='analysis')return taskShell('完成资料提取','<p>部分原件尚未解析或解析失败。请先选择正确的资料类型，查看提取结果和具体错误。</p><div class="goal"><b>完成条件</b>本批资料完成提取，缺失字段和期间例外保留待核对。</div>',primary('artifacts','查看待提取资料'));
-  if(task==='issues')return taskShell('处理待人工事项',`<p>当前有 ${materialCounts().human_issue_tasks} 项需要人工选择处理方式，另有 ${materialCounts().selected_processing_tasks} 项已选择处理方式、${materialCounts().system_issue_tasks} 项系统待检查。</p><p>仍有 ${r.counts.needs_review} 条提取结果需核对、${r.counts.period_exceptions} 条期间例外；记录数与任务数分别统计。请按具体问题核对业务事实，不将系统识别疑点直接当成客户补证。</p>`,primary('issues','查看待人工处理与来源'));
-  if(task==='selected-issues')return taskShell('处理意见已记录，等待下一步',`<p>当前没有新的人工选择事项。</p><p>已有 ${materialCounts().selected_processing_tasks} 项处理方式已记录，但尚未执行；原问题、资料核实和账务门禁仍保留。${materialCounts().system_issue_tasks?`另有 ${materialCounts().system_issue_tasks} 项系统待检查，用户无需处理。`:''}</p><div class="goal"><b>下一步</b>查看已选择处理方式，确认哪些可以继续执行，哪些需要补充依据或等待系统检查。</div>`,`<button type="button" class="primary" data-action="material-open-filter" data-filter="selected">查看已选择处理方式</button>`,badge('等待下一步','blue'));
+  if(task==='issues')return taskShell('处理待你确认的事项',`<p>当前有 ${materialCounts().human_issue_tasks} 项需要你选择处理方式或补充确认信息。</p><p>仍有 ${r.counts.needs_review} 条提取结果需核对、${r.counts.period_exceptions} 条期间例外；记录数与任务数分别统计。</p>`,primary('issues','查看待你处理的事项'));
+  if(task==='selected-issues')return taskShell('你当前无需操作',`<p>已有 ${materialCounts().system_processing} 项由系统继续整理；原问题、资料核实和账务门禁仍保留。</p><div class="goal"><b>下一步</b>系统形成可执行方案后，会给出明确的确认动作。</div>`,`<button type="button" class="secondary" data-action="material-open-filter" data-filter="system">查看系统处理中事项</button>`,badge('系统处理中','blue'));
   if(task==='system-issues')return taskShell('系统问题待检查','<p>当前系统事项尚未通过，不需要在此确认或上传。请查看来源、检查结果及明确下一步；其他业务门禁保持。</p>','<button type="button" class="primary" data-action="material-open-filter" data-filter="system">查看系统待检查事项</button>');
   if(task==='blockers')return taskShell('补齐阻断业务的证据',`<div class="issue-banner red">${d.blockers.length} 组业务尚不能继续</div>${d.blockers.map(b=>`<p>${esc(b.reason)}；缺少 ${(b.missing_evidence||[]).map(label).map(esc).join('、')||'有效校验依据'}。</p>`).join('')}<div class="goal"><b>完成条件</b>补齐对应业务证据，确认归属，再通过确定性校验。上传本身不会解除阻断。</div>`,primary('blockers','查看补证清单'));
   if(task==='cards')return taskShell('审阅候选规则',`<p>${d.pending_confirmation_cards.length} 项建议待审阅。模型建议仅供参考，应先核对来源和适用范围。</p><div class="goal"><b>完成条件</b>经有权人员审阅并通过原有规则门禁，才生成正式规则。</div>`,primary('cards','查看待审阅事项'));

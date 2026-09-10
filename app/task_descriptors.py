@@ -69,6 +69,10 @@ class OptionDescriptor(BaseModel):
                 'confirm_bill_business', 'confirm_statement_account', 'defer_material_issue', 'confirm_bank_period']
     label: str
     submit_label: str = ''
+    execution_type: Literal['COMMAND', 'NAVIGATION'] = 'COMMAND'
+    confirmation_label: str = ''
+    success_label: str = ''
+    post_submit_owner: Literal['SYSTEM', 'EXTERNAL', 'NONE'] = 'NONE'
     fields: list[FieldDescriptor] = Field(default_factory=list)
     requires: list[str] = Field(default_factory=list)
     completion: str
@@ -148,6 +152,26 @@ OPTION_STEPS = {
         dict(id='note', prompt='是否需要补充核实备注？没有可以直接继续。', fields=['note']),
     ],
     'defer_material_issue': [dict(id='reason', prompt='目前为什么无法继续处理？记录后问题仍保留。', fields=['reason'])],
+}
+
+
+OPTION_EXECUTION = {
+    'supplement': dict(execution_type='NAVIGATION', confirmation_label='选择补充资料',
+                       success_label='补充资料已接收，等待系统检查', post_submit_owner='SYSTEM'),
+    'parse': dict(execution_type='NAVIGATION', confirmation_label='选择识别方式',
+                  success_label='资料识别已发起', post_submit_owner='SYSTEM'),
+    'verify_source_values': dict(execution_type='COMMAND', confirmation_label='确认所选记录已核对',
+                                 success_label='所选记录已完成资料核实', post_submit_owner='NONE'),
+    'confirm_invoice_amount': dict(execution_type='COMMAND', confirmation_label='确认本张发票金额已核对',
+                                   success_label='本张发票金额核对已完成', post_submit_owner='NONE'),
+    'confirm_bill_business': dict(execution_type='COMMAND', confirmation_label='确认票据业务与科目',
+                                  success_label='票据业务与科目已确认', post_submit_owner='NONE'),
+    'confirm_statement_account': dict(execution_type='COMMAND', confirmation_label='确认本份流水所属银行',
+                                      success_label='本份流水所属银行已确认', post_submit_owner='NONE'),
+    'defer_material_issue': dict(execution_type='COMMAND', confirmation_label='记录暂无法确认原因',
+                                 success_label='原因已记录，等待外部资料或条件', post_submit_owner='EXTERNAL'),
+    'confirm_bank_period': dict(execution_type='COMMAND', confirmation_label='确认所选流水归属目标期间',
+                                success_label='所选流水期间归属已确认', post_submit_owner='NONE'),
 }
 
 
@@ -365,6 +389,11 @@ def describe_task(task, scope, artifact, records, bank=None):
                             completion='补充资料后仍须通过对应检查。', effects=['追加保存补充资料'], not_effects=common))
     for item in options:
         item['steps'] = OPTION_STEPS.get(item['id'], [])
+        item.update(OPTION_EXECUTION[item['id']])
+        if item['id'] == 'confirm_bank_period':
+            target = task.get('bank_period', {}).get('target_period', '目标期间')
+            item['confirmation_label'] = f'确认所选流水归属 {target}'
+            item['success_label'] = f'所选流水已确认归属 {target}'
     binding = dict(scope.model_dump(), artifact={'id': artifact['object_id'], 'version': artifact['version'], 'sha256': artifact['data'].get('sha256')},
                    records=[dict(id=r['object_id'], version=r['version'], source_anchor=r.get('source_anchor')) for r in records])
     rule = task['reason'].replace('bank_account_ref：', '所属银行：', 1)

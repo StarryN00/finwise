@@ -255,24 +255,38 @@ def test_workbench_guidance_history_filters_private_results_by_actor(client, sco
     assert len(calls) == call_count
 
 
-def test_save_only_does_not_enqueue_and_actor_projection_is_private(client, scope, monkeypatch):
+def test_saved_opinion_enqueues_system_resolution_and_actor_projection_is_private(client, scope, monkeypatch):
     body = request_for(client, scope)
+    configure(client.app.state.service, monkeypatch, agent_mode='gateway')
     calls = install(client, monkeypatch)
     helper = MaterialGuidance(client.app.state.service)
     s = Scope(**scope)
     request = GuidanceRequest(**body, user_text='把这两笔放到2月')
     result = helper.save_opinion(request, 'alice', 'accountant')
-    assert result['status'] == 'SAVED_NOT_EXECUTED'
+    assert result['status'] == 'WAITING_SYSTEM'
     assert result['object']['object_type'] == 'MaterialGuidanceOpinion'
     assert result['object']['data']['binding']['artifact']['version']
+    assert result['job']['object_type'] == JOB_TYPE and result['job']['status'] == 'QUEUED'
+    assert result['job']['data']['opinion_id'] == result['object']['object_id']
     assert helper.save_opinion(request, 'alice', 'accountant') == result
-    assert not calls and helper.store.list_objects(JOB_TYPE, s) == []
+    assert not calls and helper.store.list_objects(JOB_TYPE, s) == [result['job']]
     assert helper.store.list_objects('MaterialGuidanceWatch', s) == []
     material = view(client, scope)['material_review']
     mine = helper.project(s, material, 'alice')
     card = next(t for t in mine['tasks'] if t['id'] == body['task_id'])
     assert card['material_opinions'][0]['text'] == request.user_text
     assert card['material_opinions'][0]['valid'] is True
+    assert card['handling']['state'] == 'WAITING_SYSTEM' and card['handling']['owner'] == 'SYSTEM'
+    assert mine['flow']['counts']['system_processing'] == 1
+    assert mine['flow']['counts']['system_check'] == 0
+    assert mine['flow']['next_step']['task_id'] != body['task_id']
+    assert helper.process_one() and len(calls) == 1
+    ready = helper.project(s, material, 'alice')
+    ready_card = next(t for t in ready['tasks'] if t['id'] == body['task_id'])
+    assert ready_card['handling']['state'] == 'NEEDS_INPUT'
+    assert ready_card['handling']['owner'] == 'USER'
+    assert ready_card['handling']['option_id'] == 'confirm_invoice_amount'
+    assert ready['flow']['counts']['needs_input'] >= 1
     assert all(not t.get('material_opinions') for t in helper.project(s, mine, 'bob')['tasks'])
     assert all('material_opinions' not in t for t in helper.project(s, mine)['tasks'])
     with pytest.raises(PermissionDenied):

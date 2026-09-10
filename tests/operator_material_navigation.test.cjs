@@ -21,11 +21,12 @@ test('stale result entry gives feedback and never substitutes another file',()=>
 test('normal verification records are not counted as an exception queue',()=>{
  const a=app();a.materialState().filter='all';assert.equal(a.currentMaterialTask(),undefined);
 });
-test('saved processing opinions have a separate selected status and leave the issue unresolved',()=>{
+test('saved processing opinions belong to the system queue and leave the issue unresolved',()=>{
  const a=issueApp(),m=a.state.overview.material_review,ui=a.materialState();m.tasks[0].material_opinions=[{valid:true,status:'SAVED_NOT_EXECUTED',text:'按原交易日期归属二月'}];
+ m.tasks[0].handling={version:'material-handling-v1',state:'WAITING_SYSTEM',owner:'SYSTEM',label:'等待系统整理',explanation:'意见已记录，系统正在整理可执行方案。',option_id:null,action_label:''};
  ui.filter='all';assert.deepEqual(a.materialTasks(true).map(t=>t.id),['other','b']);
  ui.filter='selected';assert.deepEqual(a.materialTasks(true).map(t=>t.id),['a']);assert.equal(a.materialRecordedOpinion(m.tasks[0]).text,'按原交易日期归属二月');
- a.openMaterialDetail('a');assert.equal(a.materialEntryStatus(a.materialState().group.entries[0]),'opinion_recorded');
+ a.openMaterialDetail('a');assert.equal(a.materialEntryStatus(a.materialState().group.entries[0]),'system');
 });
 test('issue grouping is read-only and keeps task, file and unique-record counts separate',()=>{
  const a=app(),m=a.state.overview.material_review;

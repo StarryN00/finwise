@@ -29,9 +29,12 @@ const delay=ms=>new Promise(r=>setTimeout(r,ms));
   };
   const snapshot=()=>page.evaluate(()=>({counts:state.overview.material_review.counts,records:state.overview.material_review.records,artifacts:state.overview.artifacts,scope:scope()}));
   await page.goto(base+'/static/operator.html');await page.locator('#username').fill('plan-author');await page.locator('#password').fill('IssuePlanTest!2026');await page.locator('#loginForm button').click();await page.locator('#currentTask').waitFor();
-  await page.locator('[data-scope]').filter({hasText:'方案核对甲'}).click();await g.settle();await page.locator('[data-action="issues"]').click();await g.settle();
-  const open=async()=>{await page.locator('.mat-issue-group').filter({hasText:'红字或零金额'}).getByRole('button',{name:/进入处理|查看处理记录/}).click();await g.settle();};
+  await page.locator('[data-scope]').filter({hasText:'方案核对甲'}).click();await g.settle();
+  await page.locator('[data-action="material-open-task"]').click();await g.settle();
+  await page.locator('[data-action="material-return-list"]').click();await g.settle();
+  const open=async()=>{await page.locator('.mat-issue-group').filter({hasText:'发票金额待核对'}).getByRole('button',{name:/进入处理|查看状态/}).click();await g.settle();};
   await open();const baseline=await snapshot(),identity=await page.evaluate(()=>({scope:scope(),task_id:currentMaterialTask().id,descriptor_hash:currentMaterialTask().descriptor.fingerprint}));
+  await g.choose('confirm_invoice_amount');
   const draft='人工草稿：客户退货依据尚待核对，不自动采用建议。';await page.locator('#materialNote').fill(draft);
   await check('analysis is user initiated, Scope/task/fingerprint-bound and never auto-applies',async()=>{
    assert.equal(requests.length,0);assert.equal(commands.length,0);await ask();const body=requests[0];

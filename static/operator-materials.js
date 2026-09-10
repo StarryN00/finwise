@@ -7,22 +7,25 @@ function materialState(){
   return materialUI;
 }
 function materialCanWrite(){return !readonly()&&['operator','accountant','admin'].includes(state.role);}
-function materialSystemTask(t){return !!t?.triage&&(t.triage.version!=='issue-triage-v1'||t.triage.route!=='HUMAN');}
+function materialHandling(t){return typeof decisionHandling==='function'?decisionHandling(t):t?.handling||null;}
+function materialSystemTask(t){const h=materialHandling(t);return h?h.owner==='SYSTEM':!!t?.triage&&(t.triage.version!=='issue-triage-v1'||t.triage.route!=='HUMAN');}
+function materialUserTask(t){const h=materialHandling(t);return h?h.owner==='USER':!t?.deferred&&!materialSystemTask(t);}
+function materialExternalTask(t){const h=materialHandling(t);return h?h.owner==='EXTERNAL':!!t?.deferred;}
 function materialRecordedOpinion(t){return (Array.isArray(t?.material_opinions)?t.material_opinions:[]).find(o=>o?.valid===true&&(o.status==='SAVED_NOT_EXECUTED'||o.data?.status==='SAVED_NOT_EXECUTED'||typeof o.text==='string'||typeof o.data?.text==='string'))||null;}
-function materialHumanIssueTasks(){return (state.overview.material_review?.tasks||[]).filter(t=>t.kind!=='VERIFY'&&!t.deferred&&!materialSystemTask(t));}
+function materialHumanIssueTasks(){return (state.overview.material_review?.tasks||[]).filter(t=>t.kind!=='VERIFY'&&materialUserTask(t));}
 function materialTasks(includeSkipped=false){
   const ui=materialState(),m=state.overview.material_review,records=m.records||[];
   return m.tasks.filter(t=>{
-    const opinion=!!materialRecordedOpinion(t);
-    if(ui.filter==='deferred')return t.deferred;
-    if(t.deferred||(!includeSkipped&&ui.skipped.has(t.id)))return false;
+    const handling=materialHandling(t),user=materialUserTask(t),system=materialSystemTask(t),external=materialExternalTask(t);
+    if(ui.filter==='deferred')return external;
+    if((external&&!['issues'].includes(ui.filter))||(!includeSkipped&&ui.skipped.has(t.id)))return false;
     if(ui.filter==='VERIFY')return t.kind==='VERIFY';
-    if(ui.filter==='system')return t.kind!=='VERIFY'&&materialSystemTask(t);
+    if(ui.filter==='system'||ui.filter==='selected')return t.kind!=='VERIFY'&&system;
+    if(ui.filter==='ready')return t.kind!=='VERIFY'&&user&&['NEEDS_INPUT','READY_TO_CONFIRM'].includes(handling?.state);
     if(ui.filter==='period')return t.kind!=='VERIFY'&&t.record_ids.some(id=>records.find(r=>r.object_id===id)?.state==='PERIOD_EXCEPTION');
     if(ui.filter==='issues')return t.kind!=='VERIFY';
-    if(ui.filter==='selected')return t.kind!=='VERIFY'&&!materialSystemTask(t)&&opinion;
-    if(materialSystemTask(t))return false;
-    return t.kind!=='VERIFY'&&!opinion;
+    if(system||external)return false;
+    return t.kind!=='VERIFY'&&user;
   });
 }
 function currentMaterialTask(){const ui=materialState();if(ui.screen==='detail')return state.overview.material_review.tasks.find(t=>t.id===ui.selected);if(ui.screen==='summary')return undefined;const tasks=materialTasks();return tasks.find(t=>t.id===ui.selected)||tasks[0];}
@@ -41,8 +44,9 @@ function renderMaterialIssueGroups(){
   if(!groups.length)return '';
   return `<section class="mat-issue-groups" aria-labelledby="materialListTitle"><div class="row"><h3 id="materialListTitle" tabindex="-1">按问题查看</h3><span class="small muted">${groups.length} 类问题</span></div>${groups.map(g=>{
     const first=g.tasks.find(t=>!ui.skipped.has(t.id))||g.tasks[0];
-    const selected=g.tasks.filter(materialRecordedOpinion).length,pending=g.tasks.length-selected,status=[pending?`${pending} 项待处理`:'',selected?`${selected} 项已选择处理方式`:''].filter(Boolean).join(' · ');
-    return `<article class="mat-issue-group"><div><strong>${esc(g.title)}</strong><p class="small muted">${status} · ${g.fileIds.size} 份原件 · ${g.recordIds.size} 条记录</p><p class="small">${esc(g.tasks.map(t=>t.filename).filter((v,i,a)=>a.indexOf(v)===i).join('、'))}</p></div><button class="text" data-action="material-select-group" data-task="${esc(first?.id||'')}">${selected===g.tasks.length?'查看已选方案':first?.deferred?'查看处理记录':'进入处理'} →</button></article>`;
+    const counts={};for(const task of g.tasks){const h=materialHandling(task),label=h?.label||'待处理';counts[label]=(counts[label]||0)+1;}
+    const status=Object.entries(counts).map(([label,count])=>`${label} ${count} 项`).join(' · '),owner=materialHandling(first)?.owner;
+    return `<article class="mat-issue-group"><div><strong>${esc(g.title)}</strong><p class="small muted">${status} · ${g.fileIds.size} 份原件 · ${g.recordIds.size} 条记录</p><p class="small">${esc(g.tasks.map(t=>t.filename).filter((v,i,a)=>a.indexOf(v)===i).join('、'))}</p></div><button class="text" data-action="material-select-group" data-task="${esc(first?.id||'')}">${owner==='USER'?'进入处理':'查看状态'} →</button></article>`;
   }).join('')}</section>`;
 }
 const materialFieldLabels={employer_housing_fund:'单位公积金',employee_housing_fund:'个人公积金',invoice_status:'发票状态',payment_total:'付款金额',transaction_date:'交易日期',transaction_id:'交易流水号',balance:'账户余额',bank_account_ref:'本方账户',invoice_no:'发票号码',date:'业务日期',invoice_date:'开票日期',tax_amount:'税额',invoice_total:'价税合计',net_amount:'不含税金额',period:'业务期间',aggregation_level:'汇总层级',insurance_type:'险种',employer_amount:'单位应缴',employee_amount:'个人应缴',total:'合计',employer_base:'单位基数',employee_base:'个人基数',people_count:'人数',payment_status:'缴费状态',actual_salary:'实发工资',basic_salary:'基本工资',person_name:'姓名',person_id:'个人编号',period_ref:'费款所属期',employee_social:'个人社保',employer_social:'单位社保',housing_fund:'公积金',acceptance_no:'票据包号',sub_range:'子票区间',issue_date:'出票日期',maturity_date:'到期日期',status:'票据状态',issuer:'出票人',payee:'收款人',endorser:'背书人',endorsee:'被背书人',register_kind:'资料性质',receipt_total:'收款金额',summary:'摘要',currency:'币种',bank_account_origin:'账户来源',start_period:'起始期间',end_period:'截止期间',seller_name:'销售方',buyer_name:'购买方',seller_tax_id:'销方识别号',buyer_tax_id:'购方识别号',counterparty:'对方名称',counterparty_account:'对方账户',note:'附言',base:'缴费基数',arrival_date:'到账日期',acceptance_type:'票据类型',transaction_type:'业务类型',account:'账号',entry_date:'入账日期',income:'收入',expense:'支出',tax:'税额'};
@@ -69,7 +73,7 @@ function renderMaterialTask(){
     const all=m.records.filter(r=>r.state==='SOURCE_VERIFIED');ui.page=Math.min(ui.page,Math.max(0,Math.ceil(all.length/5)-1));const page=all.slice(ui.page*5,ui.page*5+5);
     return `<section class="panel pad"><h3 id="materialTaskTitle" tabindex="-1">资料已核实 · ${all.length} 条</h3><p>原件与提取值已核对，不等于账务可用。</p>${page.map(r=>materialComparison(r)).join('')||'<p>尚无人工核实记录；提取结果已保留，可从待核实事项开始。</p>'}${materialPager(all.length)}</section>`;
   }
-  if(!t)return `<section class="panel pad"><h3 id="materialTaskTitle" tabindex="-1">${ui.filter==='selected'?'当前没有已选择处理方式的事项':m.counts.files?'本轮暂无其他待处理事项':'接收本期资料'}</h3><p>${ui.filter==='selected'?'已提交的处理意见会保留在“已选择处理方式”中；它们尚未执行，也不会直接变成账务可用。':m.counts.files?`系统提取检查通过 ${m.counts.system_checked??m.counts.awaiting_verification+m.counts.source_verified} 条；人工已核实 ${m.counts.source_verified} 条。${m.counts.deferred?`另有 ${m.counts.deferred} 项等待补充，已保留原因。`:''}历史期初与业务门禁继续保留。`:'本期尚无业务原件，请添加发票、银行与票据或薪酬税费资料。'}</p>${m.counts.files?`<button class="secondary" data-action="material-filter" data-filter="results">查看已有成果</button>${ui.skipped.size?'<button class="text" data-action="material-resume">继续查看暂未处理的事项</button>':''}`:primary('upload','添加本期资料',!materialCanWrite())}</section>`;
+  if(!t){const empty={ready:['当前没有待确认执行的事项','系统形成可执行方案后，会在这里给出明确的确认动作。'],system:['当前没有系统处理中事项','系统整理、复核和检查任务会集中显示在这里。'],deferred:['当前没有等待外部的事项','暂无法确认且已记录原因的事项会显示在这里。']}[ui.filter]||[m.counts.files?'你当前无需处理其他资料事项':'接收本期资料',m.counts.files?'系统会在“现在要做”中给出下一项明确操作。':'本期尚无业务原件，请添加发票、银行与票据或薪酬税费资料。'];return `<section class="panel pad"><h3 id="materialTaskTitle" tabindex="-1">${empty[0]}</h3><p>${empty[1]}</p>${m.counts.files?`<button class="secondary" data-action="material-filter" data-filter="results">查看已有成果</button>${ui.skipped.size?'<button class="text" data-action="material-resume">继续查看暂未处理的事项</button>':''}`:primary('upload','添加本期资料',!materialCanWrite())}</section>`;}
   ui.selected=t.id;storage('finwise.material.task.'+ui.key,t.id);
   return renderDecisionTask(t);
 }
@@ -83,6 +87,13 @@ function renderMaterialResults(){
   return `<section class="panel pad"><h3 id="materialTaskTitle" tabindex="-1">已有成果</h3><p class="muted">系统检查与人工核实分别留痕；账务可用仍由基线、业务与证据校验决定。</p><div class="mat-result-summary"><div><strong>${c.system_checked??c.awaiting_verification+c.source_verified} 条</strong><span>系统提取检查通过</span><small>未检出提取问题，不代表人工核实</small></div><div><strong>${c.source_verified} 条</strong><span>人工已核实</span><button class="text" data-action="material-filter" data-filter="verified">查看核实记录</button></div><div><strong>${c.accounting_usable} 条</strong><span>账务可用</span><small>业务及基线校验通过</small></div></div><div class="table-wrap"><table><thead><tr><th>资料</th><th>提取检查通过</th><th>人工已核实</th><th>查看与核实</th></tr></thead><tbody>${files.map(id=>{const records=m.records.filter(r=>r.source_artifact_id===id),passed=records.filter(r=>['SOURCE_VERIFIED','AWAITING_VERIFICATION'].includes(r.state)),task=m.tasks.find(t=>t.artifact_id===id&&t.kind==='VERIFY');return `<tr><td>${esc(records[0].filename)}</td><td>${passed.length} / ${records.length} 条</td><td>${passed.filter(r=>r.state==='SOURCE_VERIFIED').length} 条</td><td>${task?`<button class="text" data-action="material-filter" data-filter="VERIFY" data-task="${esc(task.id)}">查看提取值并核实</button>`:objectButton(id,'查看原件')}${typeof mappingButton==='function'?mappingButton(fileById(id)):''}</td></tr>`;}).join('')||'<tr><td colspan="4">暂无已提取资料</td></tr>'}</tbody></table></div></section>`;
 }
 function materialPager(count){const ui=materialState();return count>5?`<nav class="mat-pager"><button class="secondary" data-action="material-page" data-page="${ui.page-1}" ${ui.page===0?'disabled':''}>上一页</button><span>第 ${ui.page+1} / ${Math.ceil(count/5)} 页 · ${count} 条</span><button class="secondary" data-action="material-page" data-page="${ui.page+1}" ${(ui.page+1)*5>=count?'disabled':''}>下一页</button></nav>`:'';}
+function materialNextStepPanel(){
+  const next=state.overview.material_review?.next_step;if(!next)return '';
+  const actions={HISTORICAL:'historical-details',UPLOAD:'upload',BLOCKERS:'groups',CONFIRMATION_CARDS:'cards',VOUCHERS:'vouchers',GROUPS:'groups'};
+  const action=next.action?.kind==='MATERIAL_TASK'?`<button type="button" class="primary" data-action="material-open-task" data-task="${esc(next.task_id)}">${esc(next.action.label)}</button>`:next.action?`<button type="button" class="primary" data-action="${actions[next.action.kind]||'refresh'}">${esc(next.action.label)}</button>`:'';
+  const stateLabel=next.owner==='USER'?(next.state==='READY_TO_CONFIRM'?'待确认执行':'待你处理'):next.owner==='SYSTEM'?'系统处理中':next.owner==='EXTERNAL'?'等待外部':'当前无待办';
+  return `<section class="panel pad now-next ${next.owner==='USER'?'needs-user':'no-user-action'}" aria-label="现在要做"><div class="row"><div><span class="small muted">现在要做</span><h2>${esc(next.title)}</h2></div>${badge(stateLabel,next.owner==='USER'?'yellow':'blue')}</div><p>${esc(next.explanation)}</p>${action?`<div class="actions">${action}</div>`:'<p class="small muted">状态变化后，这里会自动显示下一项明确操作。</p>'}</section>`;
+}
 function renderMaterialWorkbench(){
   if(typeof scheduleProblemReviewPoll==='function')scheduleProblemReviewPoll();
   const m=state.overview.material_review;
@@ -90,23 +101,22 @@ function renderMaterialWorkbench(){
   const c=m.counts,ui=materialState(),history=historicalIssueFlow(),month=Number(scope().accounting_period_id.slice(-2));
   if(ui.screen==='detail')return renderMaterialDetail();
   if(ui.screen==='summary')return renderMaterialGroupResult();
-  const opinionTasks=materialHumanIssueTasks().filter(materialRecordedOpinion),pendingHumanTasks=materialHumanIssueTasks().filter(t=>!materialRecordedOpinion(t)),opinionCount=opinionTasks.length,issues=pendingHumanTasks.length;
+  const flow=m.flow?.counts||{},issues=flow.user_action??materialHumanIssueTasks().length,ready=flow.ready_to_confirm??0,systemIssues=flow.system_processing??c.selected_processing_tasks??0,systemChecks=flow.system_check??c.system_issue_tasks??0,external=flow.waiting_external??c.deferred??0;
   const isResult=['results','usable','VERIFY','verified','bank-periods','other-period'].includes(ui.filter),allIssueCount=materialHumanIssueTasks().length;
-  const systemIssues=c.system_issue_tasks??m.tasks.filter(t=>t.kind!=='VERIFY'&&!t.deferred&&materialSystemTask(t)).length;
-  const current=materialTasks(true)[0],tabs=[['all',`待人工处理 ${issues} 项`],['selected',`已选择处理方式 ${opinionCount} 项`],['system',`系统待检查 ${systemIssues} 项`],['issues',`全部问题 ${allIssueCount} 项`],['results','已有成果']];
+  const current=materialTasks(true)[0],tabs=[['all',`待你处理 ${issues} 项`],['ready',`待确认执行 ${ready} 项`],['system',`系统处理中 ${systemIssues} 项 · 系统检查 ${systemChecks} 项`],['deferred',`等待外部 ${external} 项`],['issues',`全部问题 ${m.tasks.filter(t=>t.kind!=='VERIFY').length} 项`],['results',`已完成 ${flow.completed??0}`]];
   return `<div id="materialWorkbench"><button class="text return-link" data-action="return-current">← 返回期间工作台</button>
+  ${materialNextStepPanel()}
   <section class="panel pad mat-history"><div class="row"><strong>历史处理交接</strong><button class="text" data-action="historical-details">查看历史处理记录</button></div><p>${history.done?`${history.count} 项处理意见已记录，其中 ${history.plans.filter(p=>p?.status==='UNAVAILABLE_RECORDED').length} 项暂无法补充。`:'历史资料仍有未完成的核对事项。'}${state.overview.baseline_validation.status==='VALID'?'期初已通过原有校验。':'期初余额仍待核实，不能据此放行账务。'}</p></section>
   <section class="panel pad mat-overview"><div class="row"><h2 tabindex="-1">${month}月资料概览</h2><span>${c.files} 份本期原件 · ${c.records} 条提取记录</span></div>
   <p class="small muted">已提取 ${c.file_states.extracted||0} 份${c.file_states.failed?` · 识别失败 ${c.file_states.failed} 份`:''}${c.file_states.pending?` · 待识别 ${c.file_states.pending} 份`:''}；另有历史 ${readiness().categories[0].file_count} 份、归属待确认 ${c.unassigned_files} 份。</p>
   <div class="mat-categories">${m.categories.map(cat=>`<div><strong>${esc(cat.name)}</strong><p>${cat.file_count} 份资料 · ${cat.record_count} 条记录</p><small>需核对 ${m.records.filter(r=>r.category_id===cat.id&&['NEEDS_REVIEW','PERIOD_EXCEPTION'].includes(r.state)).length} 条</small></div>`).join('')}</div>
-  <div class="mat-overview-status"><span>系统提取检查通过 <b>${c.system_checked??c.awaiting_verification+c.source_verified}</b> 条</span><span>需核对问题 <b>${c.needs_review+c.period_exceptions}</b> 条</span>${opinionCount?`<span>已选择处理方式 <b>${opinionCount}</b> 项</span>`:''}${c.invoice_amount_confirmed?`<span>红字／零金额已处理 <b>${c.invoice_amount_confirmed}</b> 条</span>`:''}${c.bill_confirmed?`<span>票据人工补充确认 <b>${c.bill_confirmed}</b> 条（独立口径）</span>`:''}${c.deferred?`<span>已记录待补 <b>${c.deferred}</b> 项</span>`:''}</div>
+  <div class="mat-overview-status"><span>待你处理 <b>${issues}</b> 项</span><span>待确认执行 <b>${ready}</b> 项</span><span>系统处理中 <b>${systemIssues}</b> 项</span><span>系统检查 <b>${systemChecks}</b> 项</span><span>等待外部 <b>${external}</b> 项</span><span>已完成 <b>${flow.completed??0}</b> 条记录</span></div>
   <details class="small muted mat-method"><summary>查看统计口径</summary>记录数去重：系统提取检查通过 ${c.awaiting_verification+c.source_verified} 条（其中人工核实 ${c.source_verified} 条）＋字段问题 ${c.needs_review} 条＋期间问题 ${c.period_exceptions} 条＋人工归属确认且无剩余资料问题 ${c.business_confirmed||0} 条＋金额核对已处理且无剩余资料问题 ${c.issue_confirmed||0} 条＋其他期间归属 ${c.other_period||0} 条＝${c.records} 条。任务按原件与问题聚合，不能与记录数相加。账务可用 ${c.accounting_usable} 条单独统计。明确补证缺口 ${c.supplement_issues} 项；其他问题待核对后判定。</details></section>
   ${typeof renderProblemReviewOverview==='function'?renderProblemReviewOverview():''}
   ${typeof renderMaterialGuidanceOverview==='function'?renderMaterialGuidanceOverview():''}
   ${state.overview.bank_periods?'<section class="panel pad"><h3>跨期流水交接</h3><p>本期已确认其他期间归属 '+(state.overview.bank_periods.counts?.confirmed_other_period||0)+' 条（含仍有其他问题的记录）；其中无剩余资料问题 '+(c.other_period||0)+' 条。转入来源引用独立展示，不计作本期提取事实、原件核实或账务可用。</p><button type="button" class="secondary" data-action="material-filter" data-filter="bank-periods">查看转出与接续</button><button type="button" class="text" data-action="material-filter" data-filter="other-period">查看其他期间归属记录</button></section>':''}
-  <nav class="mat-filters" aria-label="资料办理导航">${tabs.map(([id,text])=>`<button class="secondary" data-action="material-filter" data-filter="${id}" aria-pressed="${id==='results'?['results','usable','verified'].includes(ui.filter):id==='system'?ui.filter==='system':id==='issues'?['issues','period'].includes(ui.filter):id==='selected'?ui.filter==='selected':['all','deferred'].includes(ui.filter)}">${text}</button>`).join('')}<button class="secondary" data-action="material-files">全部资料</button></nav>
+  <nav class="mat-filters" aria-label="资料办理导航">${tabs.map(([id,text])=>`<button class="secondary" data-action="material-filter" data-filter="${id}" aria-pressed="${id==='results'?['results','usable','verified'].includes(ui.filter):id==='issues'?['issues','period'].includes(ui.filter):ui.filter===id}">${text}</button>`).join('')}<button class="secondary" data-action="material-files">全部资料</button></nav>
   ${!isResult?`<div class="mat-view-modes" role="group" aria-label="待办查看方式"><span class="small muted">查看方式</span><button class="text" data-action="material-mode" data-mode="issues" aria-pressed="${ui.viewMode==='issues'}">按问题查看</button><button class="text" data-action="material-mode" data-mode="files" aria-pressed="${ui.viewMode==='files'}">按原件查看</button></div>`:''}
-  ${!isResult&&c.deferred?`<div class="mat-subfilters"><button class="text" data-action="material-filter" data-filter="all" aria-pressed="${ui.filter!=='deferred'}">可继续处理 ${issues} 项</button><button class="text" data-action="material-filter" data-filter="deferred" aria-pressed="${ui.filter==='deferred'}">已记录待补 ${c.deferred} 项</button></div>`:''}
   ${!isResult?(ui.viewMode==='issues'?renderMaterialIssueGroups():renderMaterialFileGroups()):''}
   ${isResult||!current?renderMaterialTask():''}${isResult&&typeof billResults==='function'?billResults():''}${isResult&&typeof invoiceAmountResults==='function'?invoiceAmountResults():''}<nav class="secondary-nav"><button class="text" data-action="records">处理记录</button><button class="text" data-action="refresh">刷新状态</button></nav></div>`;
 }
@@ -116,6 +126,7 @@ function installMaterialActions(){
   if(typeof installBankPeriodActions==='function')installBankPeriodActions();
   if(typeof installMaterialGuidanceActions==='function')installMaterialGuidanceActions();
   actions['material-open']=openMaterialWorkbench;
+  actions['material-open-task']=b=>{state.view='materials';state.category=null;closeDialog();openMaterialDetail(b.dataset.task,b);};
   actions['material-locate']=b=>{const t=currentMaterialTask();if(t)openMaterialDetail(t.id,b);};
   actions['material-files']=b=>showArtifacts('all',b);
   actions['material-open-filter']=b=>{const ui=materialState();state.view='materials';state.category=null;ui.screen='list';ui.filter=b.dataset.filter||'all';ui.selected='';ui.page=0;closeDialog();materialSaveNavigation(true);render();$('materialTaskTitle')?.focus({preventScroll:true});};

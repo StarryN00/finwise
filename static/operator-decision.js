@@ -17,7 +17,9 @@ function decisionValidShape(d){
   if(!d||d.version!=='decision-v1'||typeof d.title!=='string'||!d.why||!['facts','rule','recommendation','origin'].every(k=>typeof d.why[k]==='string')||!Array.isArray(d.why.evidence)||!d.scope||!Array.isArray(d.options)||!d.options.length||!Array.isArray(d.steps)||d.steps.length)return false;
   return d.options.slice(1).every(o=>['defer_material_issue','supplement'].includes(o.id))&&new Set(d.options.map(o=>o.id)).size===d.options.length&&d.options.every(o=>{
     const a=Object.hasOwn(decisionAdapters,o.id)&&decisionAdapters[o.id];
-    return a&&typeof o.label==='string'&&(o.submit_label===undefined||typeof o.submit_label==='string')&&typeof o.completion==='string'&&typeof o.available==='boolean'&&typeof o.unavailable_reason==='string'&&strings(o.requires)&&strings(o.effects)&&strings(o.not_effects)&&Array.isArray(o.fields)&&o.fields.length===Object.keys(a.fields).length&&new Set(o.fields.map(f=>f.name)).size===o.fields.length&&decisionStepsValid(o)&&o.fields.every(f=>{
+    const execution=o.execution_type||( ['parse','supplement'].includes(o.id)?'NAVIGATION':'COMMAND');
+    const owner=o.post_submit_owner||'NONE';
+    return a&&typeof o.label==='string'&&(o.submit_label===undefined||typeof o.submit_label==='string')&&['COMMAND','NAVIGATION'].includes(execution)&&(o.confirmation_label===undefined||typeof o.confirmation_label==='string')&&(o.success_label===undefined||typeof o.success_label==='string')&&['SYSTEM','EXTERNAL','NONE'].includes(owner)&&typeof o.completion==='string'&&typeof o.available==='boolean'&&typeof o.unavailable_reason==='string'&&strings(o.requires)&&strings(o.effects)&&strings(o.not_effects)&&Array.isArray(o.fields)&&o.fields.length===Object.keys(a.fields).length&&new Set(o.fields.map(f=>f.name)).size===o.fields.length&&decisionStepsValid(o)&&o.fields.every(f=>{
       if(!Object.hasOwn(a.fields,f.name)||typeof f.label!=='string'||typeof f.required!=='boolean')return false;
       if(f.component==='textarea')return ['materialNote','materialReason'].includes(a.fields[f.name])&&Number.isInteger(f.max_length)&&f.max_length>0&&f.max_length<=2000&&typeof f.placeholder==='string';
       if(f.component!=='slot'||a.fields[f.name]!==f.slot||!Object.hasOwn(decisionProperties,f.slot))return false;
@@ -26,6 +28,9 @@ function decisionValidShape(d){
     });
   });
 }
+function decisionExecution(o){return o.execution_type||(['parse','supplement'].includes(o.id)?'NAVIGATION':'COMMAND');}
+function decisionConfirmationLabel(o){return o.confirmation_label||o.submit_label||o.label;}
+function decisionSuccessLabel(o){return o.success_label||o.completion||'本项处理结果已更新。';}
 function decisionPropertyMap(field){return Object.fromEntries(field.properties.map(p=>[p.name,p]));}
 function decisionBound(t){
   try{
@@ -96,6 +101,10 @@ function decisionField(t,o,f){
 }
 
 function decisionIdentity(t){return JSON.stringify([state.user?.user_id,scope(),t.id,t.input_token,t.descriptor.fingerprint||t.descriptor,t.triage]);}
+function decisionHandling(t){
+  const h=t?.handling,states=['NEEDS_DECISION','NEEDS_INPUT','READY_TO_CONFIRM','RUNNING','WAITING_SYSTEM','WAITING_EXTERNAL','COMPLETED','FAILED','STALE'];
+  return h&&h.version==='material-handling-v1'&&states.includes(h.state)&&['USER','SYSTEM','EXTERNAL','NONE'].includes(h.owner)&&typeof h.label==='string'&&typeof h.explanation==='string'?h:null;
+}
 function decisionRequiresChoice(t){return !!(t.bank_period||t.material_guidance||t.personal_material_guidance||Object.hasOwn(t,'material_opinions'));}
 function decisionRecordedOpinion(t){return (Array.isArray(t?.material_opinions)?t.material_opinions:[]).find(o=>o?.valid===true&&(o.status==='SAVED_NOT_EXECUTED'||o.data?.status==='SAVED_NOT_EXECUTED'||typeof o.text==='string'||typeof o.data?.text==='string'))||null;}
 function decisionRemember(t){
@@ -105,7 +114,7 @@ function decisionRemember(t){
 function decisionGuide(t){
   const d=materialDraft(t),key=decisionIdentity(t);
   if(!d.decision){try{d.decision=JSON.parse(sessionStorage.getItem('finwise.material.guide.'+materialState().key+'.'+t.id)||'null');if(d.decision?.agent)d.decision.agent.busy=false;if(d.decision?.custom)d.decision.custom.busy=false;}catch{}}
-  if(!d.decision||d.decision.key!==key)d.decision={key,option:t.descriptor.options[0].id,step:0,reviewed:'',agent:null,chosen:false};
+  if(!d.decision||d.decision.key!==key){const h=decisionHandling(t),seed=h?.owner==='USER'&&['NEEDS_INPUT','READY_TO_CONFIRM'].includes(h.state)&&t.descriptor.options.some(o=>o.id===h.option_id&&o.available)?h.option_id:null;d.decision={key,option:seed||t.descriptor.options[0].id,step:0,reviewed:'',agent:null,chosen:!!seed};}
   if(d.defer)d.decision.option='defer_material_issue';
   if(!t.descriptor.options.some(o=>o.id===d.decision.option))d.decision.option=t.descriptor.options[0].id;
   return d.decision;
@@ -171,7 +180,7 @@ function decisionValidateStep(t,o,index,form){
   for(const el of section?.querySelectorAll('input,select,textarea')||[]){if(!el.disabled&&!el.checkValidity()){el.reportValidity();return false;}}
   return true;
 }
-function decisionReady(t){return !!t&&!decisionSystemTask(t)&&decisionValid(t.descriptor)&&decisionBound(t)&&materialTaskIsCurrent(t)&&materialCanWrite();}
+function decisionReady(t){const h=decisionHandling(t);return !!t&&!decisionSystemTask(t)&&(!h||h.owner==='USER')&&decisionValid(t.descriptor)&&decisionBound(t)&&materialTaskIsCurrent(t)&&materialCanWrite();}
 function decisionShowStep(){render();document.querySelector?.('.decision-chat [data-current-question]')?.focus({preventScroll:true});}
 function decisionChoose(t,id,preserveSuggestion=false){
   if(!decisionReady(t))return;
@@ -198,7 +207,7 @@ function decisionCanSubmit(t){
 function decisionOpen(t){
   if(!decisionReady(t))return;
   if(decisionRequiresChoice(t)&&decisionGuide(t).chosen!==true)return;
-  const o=decisionOption(t);if(!o.available||o.fields.length||!['parse','supplement'].includes(o.id))return;
+  const o=decisionOption(t);if(!o.available||decisionExecution(o)!=='NAVIGATION'||o.fields.length||!['parse','supplement'].includes(o.id))return;
   // The old parse action can write immediately; enter its existing confirmation dialog instead.
   if(o.id==='parse')openParseDialog(fileById(t.artifact_id));
   else actions['material-supplement']?.();
@@ -206,6 +215,7 @@ function decisionOpen(t){
 function decisionCommit(t,form){
   if(!decisionCanSubmit(t)){notify('回答或依据已变化，请重新核对摘要。',true);return;}
   const o=decisionOption(t),a=decisionAdapters[o.id];
+  if(decisionExecution(o)!=='COMMAND'||!a){notify('当前处理方式不能在这里执行，请重新选择。',true);return;}
   const sections=[...(form?.querySelectorAll?.('[data-guide-step]')||[])],disabled=sections.map(s=>s.disabled);
   try{
     sections.forEach(s=>s.disabled=false);
@@ -268,17 +278,24 @@ function decisionSuggestionRecorded(t,g,d,triage,recorded){
   const choice=g.suggestionChoice||{},channel=choice.channel||'auto',response=typeof materialGuidanceResponse==='function'?materialGuidanceResponse(t,channel):null,candidates=typeof materialGuidanceCandidates==='function'?materialGuidanceCandidates(t,response):[],candidate=candidates[choice.index],option=candidate?.option_id?t.descriptor.options.find(o=>o.id===candidate.option_id):null;
   const label=typeof materialGuidanceLabel==='function'&&candidate?materialGuidanceLabel(candidate,option,choice.index):option?.label||'已提交的处理意见';
   const opinionText=recorded?.text||recorded?.data?.text||recorded?.data?.reason||'';
-  return '<section class="panel mat-task decision-chat" data-task-id="'+esc(t.id)+'"><div class="focus-head"><h3 id="materialTaskTitle" tabindex="-1">'+esc(triage?.title||decisionPresentation(t)?.type_label||d.title)+'</h3><p class="decision-explanation">'+esc(triage?.explanation||decisionPresentation(t)?.explanation||d.why.rule)+'</p><small>'+esc(t.filename||d.why.facts)+'</small></div><div class="pad">'+decisionEvidence(t)+(typeof renderProblemReviewDetail==='function'?renderProblemReviewDetail(t):'')+'<section class="decision-handling decision-recorded" aria-label="已选择的处理方式"><h4 tabindex="-1" data-current-question>处理方式已选择</h4><p><strong>已选择：</strong>'+esc(label)+'</p>'+(opinionText?'<p><strong>记录内容：</strong>'+esc(opinionText)+'</p>':'')+'<p>处理建议已记录；本次只保存了处理意见，没有执行财务处理；原问题仍保留，后续审核条件也没有改变。</p><p class="small muted">下一步：继续处理“待人工处理”中的其他事项。已选择的事项可在“已选择处理方式”中查看；如需解决当前问题，请补充必要依据或重新确认可执行方式。</p><p class="notice" role="status">'+esc(choice.message||'处理意见已提交并记录，尚未执行。')+'</p><div class="actions"><button type="button" class="primary" data-action="material-return-list">返回问题列表</button></div></section></div></section>';
+  return '<section class="panel mat-task decision-chat" data-task-id="'+esc(t.id)+'"><div class="focus-head"><h3 id="materialTaskTitle" tabindex="-1">'+esc(triage?.title||decisionPresentation(t)?.type_label||d.title)+'</h3><p class="decision-explanation">'+esc(triage?.explanation||decisionPresentation(t)?.explanation||d.why.rule)+'</p><small>'+esc(t.filename||d.why.facts)+'</small></div><div class="pad">'+decisionEvidence(t)+(typeof renderProblemReviewDetail==='function'?renderProblemReviewDetail(t):'')+'<section class="decision-handling decision-recorded" aria-label="系统处理状态"><h4 tabindex="-1" data-current-question>意见已记录，系统正在整理</h4><p><strong>你的意见：</strong>'+esc(label)+'</p>'+(opinionText?'<p>'+esc(opinionText)+'</p>':'')+'<p>目前没有需要你继续确认的内容。系统形成可执行方案后，会重新显示明确的确认动作。</p><p class="small muted">原问题和后续审核条件继续保留；这不是人工核实或账务完成。</p><p class="notice" role="status">'+esc(choice.message||'你的操作已完成，等待系统整理。')+'</p><div class="actions"><button type="button" class="secondary" data-action="material-return-list">返回问题列表</button></div></section></div></section>';
+}
+function decisionWaitingTask(t,d,triage,h){
+  const title=triage?.title||decisionPresentation(t)?.type_label||d.title;
+  const waiting=h.owner==='SYSTEM'?'系统负责下一步':h.owner==='EXTERNAL'?'等待外部资料或条件':'本项无需继续处理';
+  return '<section class="panel mat-task decision-chat" data-task-id="'+esc(t.id)+'"><div class="focus-head"><h3 id="materialTaskTitle" tabindex="-1">'+esc(title)+'</h3><p class="decision-explanation">'+esc(triage?.explanation||decisionPresentation(t)?.explanation||d.why.rule)+'</p><small>'+esc(t.filename||d.why.facts)+'</small></div><div class="pad">'+decisionEvidence(t)+(typeof renderProblemReviewDetail==='function'?renderProblemReviewDetail(t):'')+'<section class="decision-handling decision-waiting" aria-label="当前处理状态"><p class="small muted">'+esc(waiting)+'</p><h4 tabindex="-1" data-current-question>'+esc(h.label)+'</h4><p>'+esc(h.explanation)+'</p><div class="goal"><b>你现在要做什么</b>'+esc(h.owner==='USER'?'按提示继续办理。':'你当前无需操作。状态变化后，系统会给出明确的确认动作。')+'</div><div class="actions"><button type="button" class="secondary" data-action="material-return-list">返回问题列表</button></div></section></div></section>';
 }
 function renderDecisionTask(t){
   const d=t.descriptor;
   if(!decisionValid(d)||!decisionBound(t))return '<section class="panel pad"><h3 id="materialTaskTitle" tabindex="-1">任务契约暂不支持或依据已变化</h3><p>请刷新或升级服务后重新核对。本项未执行。</p><button type="button" class="text" data-action="material-return-list">返回问题列表</button></section>';
   const triage=decisionTriage(t);
+  const handling=decisionHandling(t);
+  if(handling&&handling.owner!=='USER')return decisionWaitingTask(t,d,triage,handling);
   if(decisionSystemTask(t))return '<section class="panel mat-task decision-chat" data-task-id="'+esc(t.id)+'"><div class="focus-head"><h3 id="materialTaskTitle" tabindex="-1">'+esc(triage?.title||'分流契约待检查')+'</h3><p class="decision-explanation">'+esc(triage?.explanation||'当前分流契约无法识别，请刷新后核对；本项未执行。')+'</p><small>'+esc(t.filename||d.why.facts)+'</small></div><div class="pad"><p class="small muted">下方初筛提示为原始规则记录，不是当前人工待办结论。</p>'+decisionEvidence(t)+(typeof renderProblemSourceAudit==='function'?renderProblemSourceAudit(triage?.source_audit):'')+('<section aria-label="系统已核对的数据"><h4>系统已核对的数据</h4>'+(typeof renderProblemReviewChecks==='function'?renderProblemReviewChecks(triage?.checks||[],true):'')+'</section>')+'<section class="decision-handling"><h4>下一步</h4><p>'+esc(triage?.next_action||'返回问题列表，交由系统检查负责人核对后刷新。')+'</p><p class="small muted">系统待检查不代表通过；不要求你在此确认、暂缓或补充上传。其他人工待办仍可继续处理。</p>'+(typeof renderProblemReviewDetail==='function'&&t.problem_review?renderProblemReviewDetail(t,true):'')+(t.deferred?'<p class="record-note">原暂缓记录：'+esc(t.response?.data?.reason||'原因已记录')+'</p>':'')+'<button type="button" class="secondary" data-action="material-return-list">返回问题列表</button></section></div></section>';
   const g=decisionGuide(t),o=decisionOption(t),a=decisionAdapters[o.id],steps=decisionSteps(t,o),draft=materialDraft(t);
   const recorded=decisionRecordedOpinion(t);
   if(decisionRequiresChoice(t)&&(g.suggestionChoice?.submitted===true||recorded)&&g.chosen!==true)return decisionSuggestionRecorded(t,g,d,triage,recorded);
-  if(decisionRequiresChoice(t)&&g.chosen!==true)return '<section class="panel mat-task decision-chat" data-task-id="'+esc(t.id)+'"><div class="focus-head"><h3 id="materialTaskTitle" tabindex="-1">'+esc(triage?.title||decisionPresentation(t)?.type_label||d.title)+'</h3><p class="decision-explanation">'+esc(triage?.explanation||decisionPresentation(t)?.explanation||d.why.rule)+'</p></div><div class="pad">'+decisionEvidence(t)+(typeof renderProblemReviewDetail==='function'?renderProblemReviewDetail(t):'')+decisionAgentPanel(t)+'<section class="decision-handling"><h4 tabindex="-1" data-current-question>请选择处理方式</h4><p>未默认选择任何方案。选择只进入逐步核对，不会自动提交。</p><nav class="decision-options" aria-label="选择处理方式">'+d.options.map(x=>'<button type="button" class="secondary" data-guide="option" data-option="'+esc(x.id)+'" aria-pressed="false" '+(!x.available||!materialCanWrite()?'disabled':'')+'>'+esc(x.label)+'</button>').join('')+'</nav></section></div></section>';
+  if(decisionRequiresChoice(t)&&g.chosen!==true)return '<section class="panel mat-task decision-chat" data-task-id="'+esc(t.id)+'"><div class="focus-head"><h3 id="materialTaskTitle" tabindex="-1">'+esc(triage?.title||decisionPresentation(t)?.type_label||d.title)+'</h3><p class="decision-explanation">'+esc(triage?.explanation||decisionPresentation(t)?.explanation||d.why.rule)+'</p></div><div class="pad">'+decisionEvidence(t)+(typeof renderProblemReviewDetail==='function'?renderProblemReviewDetail(t):'')+decisionAgentPanel(t)+'<section class="decision-handling"><h4 tabindex="-1" data-current-question>请选择处理方式</h4><p>未默认选择任何方案。选择只进入逐步核对，不会自动提交。</p><nav class="decision-options" aria-label="选择处理方式">'+d.options.map(x=>'<button type="button" class="secondary" data-guide="option" data-option="'+esc(x.id)+'" aria-pressed="false" '+(!x.available||!materialCanWrite()?'disabled':'')+'>'+esc(x.label)+'</button>').join('')+'</nav><div class="mat-actionbar"><button type="button" class="text" data-action="material-skip">先看下一项</button></div></section></div></section>';
   g.step=Math.max(0,Math.min(g.step,steps.length));
   if(!steps.length)g.reviewed='';
   if(g.reviewed&&g.reviewed!==decisionAnswerHash(t,o)){g.reviewed='';g.step=Math.min(g.step,steps.length-1);}
@@ -288,12 +305,12 @@ function renderDecisionTask(t){
   const result=(d.options.some(x=>x.fields.some(f=>f.slot==='bill_business'))?billDecisionSource(t):'')+(bankField?bankDecisionSource(t,bankField):'');
   const answers=steps.slice(0,g.step).map((s,i)=>'<article class="decision-answer"><div><small>'+esc(s.title)+'</small><p>'+esc(s.fields.length?s.fields.map(f=>decisionValue(t,o,f)).join('；'):o.label)+'</p></div><button type="button" class="text" data-guide="edit" data-step="'+i+'">修改</button></article>').join('');
   const fields=steps.map((s,i)=>'<fieldset data-guide-step="'+i+'" '+(i!==g.step?'hidden disabled':disabled&&!s.fields.some(f=>f.slot==='record_selection')?'disabled':'')+'><legend tabindex="-1" '+(i===g.step?'data-current-question':'')+'>'+esc(s.title)+'</legend>'+(s.explanation?'<p>'+esc(s.explanation)+'</p>':'')+s.fields.map(f=>decisionField(t,o,f)).join('')+'</fieldset>').join('');
-  const button=paused?'<button type="button" class="primary" data-guide="resume">继续：'+esc(o.label)+'</button>':!steps.length?'<button type="button" class="primary" data-guide="open" '+(disabled?'disabled':'')+'>'+(o.id==='parse'?'选择识别方式 →':'选择补充资料 →')+'</button>':summary?'<button type="button" class="primary" data-guide="commit" '+(disabled?'disabled':'')+'>'+esc(o.submit_label||o.label)+' · 明确提交</button>':'<button type="button" class="primary" data-guide="next" '+(disabled?'disabled':'')+'>下一步：'+esc(g.step+1===steps.length?'核对提交摘要':steps[g.step+1].title)+'</button>';
+  const button=paused?'<button type="button" class="primary" data-guide="resume">继续：'+esc(o.label)+'</button>':!steps.length?'<button type="button" class="primary" data-guide="open" '+(disabled?'disabled':'')+'>'+esc(decisionConfirmationLabel(o))+'</button>':summary?'<button type="button" class="primary" data-guide="commit" '+(disabled?'disabled':'')+'>'+esc(decisionConfirmationLabel(o))+'</button>':'<button type="button" class="primary" data-guide="next" '+(disabled?'disabled':'')+'>下一步：'+esc(g.step+1===steps.length?'确认执行内容':steps[g.step+1].title)+'</button>';
   return '<section class="panel mat-task decision-chat" data-task-id="'+esc(t.id)+'" data-decision-version="decision-v1"><div class="focus-head"><h3 id="materialTaskTitle" tabindex="-1">'+esc(triage?.title||presentation?.type_label||d.title)+'</h3><p class="decision-explanation">'+esc(triage?.explanation||presentation?.explanation||'当前尚未提供具体问题解释，请先核对下方原值和来源；不能据此判断客户缺少资料。')+'</p><p class="small">'+esc(d.why.facts)+'</p><small>办理期间：'+esc(d.scope.accounting_period_id)+'</small></div><div class="pad">'+decisionEvidence(t)+(typeof renderProblemReviewDetail==='function'?renderProblemReviewDetail(t):'')+result+'<section class="decision-handling"><h4 '+(!steps.length?'tabindex="-1" data-current-question':'')+'>接下来怎么处理</h4><div class="decision-question"><p>'+esc(triage?.next_action||d.why.recommendation)+'</p>'+list('需要明确的问题',triage?.questions||[])+list('系统规则',[d.why.rule])+'</div>'+
     '<nav class="decision-options" aria-label="选择处理方式">'+d.options.map(x=>'<button type="button" class="secondary" data-guide="option" data-option="'+esc(x.id)+'" '+(!x.available||!materialCanWrite()?'disabled':'')+' aria-pressed="'+(x.id===o.id)+'">'+esc(x.label)+'</button>').join('')+'</nav>'+answers+
     (t.deferred?'<div class="record-note">'+esc(t.response?.data.reason)+'</div>':'')+
     '<form id="'+a.form+'" data-artifact="'+esc(t.artifact_id)+'" novalidate>'+fields+
-    (summary?'<div class="decision-summary"><h4 tabindex="-1" data-current-question>确认提交摘要</h4><p>'+esc(o.label)+' · '+esc(t.filename||d.why.facts)+'</p><p class="mat-completion"><strong>本项完成条件</strong> '+esc(o.completion)+'</p>'+list('处理影响（说明）',o.effects)+list('不包含的影响',o.not_effects)+'</div>':'')+
+    (summary?'<div class="decision-summary"><h4 tabindex="-1" data-current-question>确认执行内容</h4><p><strong>'+esc(o.label)+'</strong> · '+esc(t.filename||d.why.facts)+'</p><p class="mat-completion">'+esc(o.completion)+'</p>'+list('执行后',o.effects)+list('不会改变',o.not_effects)+'</div>':'')+
     (o.unavailable_reason?'<p class="issue-banner">'+esc(o.unavailable_reason)+'</p>':'')+
     '<div class="mat-actionbar">'+button+(g.step?'<button type="button" class="text" data-guide="back">上一步</button>':'')+'<button type="button" class="text" data-action="material-skip">先看下一项</button></div></form>'+
     list('执行条件',o.requires)+decisionAgentPanel(t)+'</section></div></section>';

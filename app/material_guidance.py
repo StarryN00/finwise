@@ -4,6 +4,7 @@ from __future__ import annotations
 import math
 import re
 import time
+from collections import Counter
 from copy import deepcopy
 from typing import Any, Literal, Optional
 
@@ -152,6 +153,24 @@ def validate_candidates(value, task, packet):
     return candidates
 
 
+def mapped_candidate(task, response):
+    """Return only an option declared and currently available by the server."""
+    if not isinstance(response, dict) or response.get('status') != 'PROPOSED':
+        return None
+    options = {o['id']: o for o in task['descriptor']['options'] if o.get('available')}
+    candidates = response.get('candidates') or ([response.get('suggestion')] if response.get('suggestion') else [])
+    for candidate in candidates:
+        option_id = candidate.get('option_id') if isinstance(candidate, dict) else None
+        if option_id in options:
+            return candidate, options[option_id]
+    return None
+
+
+def option_needs_input(option):
+    return any(field.get('required') or any(prop.get('required') for prop in field.get('properties', []))
+               for field in option.get('fields', []))
+
+
 # Only categorical source information crosses the Gateway. No filenames, names,
 # account identifiers, original cells, notes, invoice numbers or exact amounts.
 SAFE_FIELDS = {'period', 'business_period', 'invoice_date', 'transaction_date', 'tax_rate',
@@ -270,12 +289,17 @@ def guidance(service, request: GuidanceRequest, actor_id: str, role: str):
                 'model_binding': config, 'fingerprint': fingerprint, 'opinion_hash': digest(request.user_text),
                 'opinion_status': 'SAVED_NOT_EXECUTED' if request.user_text else 'NONE'}
         if request.user_text:
-            opinion_id = 'guidance-opinion-' + digest([request.scope.model_dump(), actor_id, request.request_id])
-            try:
-                opinion = store.get_object(opinion_id, request.scope)
-                if opinion['data'].get('request_hash') != digest(request.model_dump()):
-                    raise VersionConflict('请求编号已用于另一条处理意见')
-            except KeyError:
+            # A queued personal job normally already owns the opinion. Reuse it
+            # instead of creating a second receipt when the worker calls the
+            # Gateway with its own request id.
+            opinion = next((o for o in reversed(store.list_objects('MaterialGuidanceOpinion', request.scope))
+                            if o['data'].get('actor_id') == actor_id
+                            and o['data'].get('task_id') == task['id']
+                            and o['data'].get('descriptor_hash') == request.descriptor_hash
+                            and o['data'].get('text') == request.user_text), None)
+            opinion_id = opinion['object_id'] if opinion else 'guidance-opinion-' + digest(
+                [request.scope.model_dump(), actor_id, request.request_id])
+            if opinion is None:
                 store.create_initial_object('MaterialGuidanceOpinion', request.scope,
                     {'actor_id': actor_id, 'task_id': task['id'], 'descriptor_hash': request.descriptor_hash,
                      'text': request.user_text, 'request_hash': digest(request.model_dump()),
@@ -364,7 +388,11 @@ class MaterialGuidance:
         return guidance(self.service, request, actor_id, role)
 
     def save_opinion(self, request, actor_id, role):
-        """Save only. Saving an opinion is not consent to enqueue or call a model."""
+        """Save the opinion and hand it to a durable system-resolution job.
+
+        This still authorizes no financial action. The worker may only map the
+        text to an option already declared by the current task descriptor.
+        """
         self._authorize(role)
         if not request.user_text.strip():
             raise PreconditionFailed('请填写处理意见')
@@ -388,7 +416,29 @@ class MaterialGuidance:
                     status='SAVED_NOT_EXECUTED', created_by=actor_id, object_id=receipt_id)
                 self.store.add_audit('MATERIAL_GUIDANCE_OPINION_SAVED', actor_id, request.scope,
                                     object_id=receipt_id, after={'status': 'SAVED_NOT_EXECUTED'}, reason=BOUNDARY)
-            return {'object': receipt, 'status': 'SAVED_NOT_EXECUTED', 'message': BOUNDARY}
+            fingerprint = task_fingerprint(self.service, request.scope, task)
+            # Keep the opinion actor-owned, but make the durable mapping job a
+            # shared state of this immutable opinion receipt.
+            job_id = 'guidance-job-' + digest([fingerprint, 'PERSONAL', receipt['object_id']])
+            try:
+                job = self.store.get_object(job_id, request.scope)
+            except KeyError:
+                job = self.store.create_initial_object(JOB_TYPE, request.scope,
+                    {'task_id': task['id'], 'descriptor_hash': task['descriptor']['fingerprint'],
+                     'fingerprint': fingerprint, 'binding': deepcopy(task['descriptor']['scope']),
+                     'requested_by': actor_id, 'audience': 'PERSONAL', 'attempt': 0,
+                     'opinion_id': receipt['object_id'], 'boundary': BOUNDARY},
+                    status='QUEUED', created_by=actor_id, object_id=job_id)
+                self.store.add_audit('MATERIAL_GUIDANCE_QUEUED', actor_id, request.scope, object_id=job_id,
+                                    after={'task_id': task['id'], 'fingerprint': fingerprint,
+                                           'opinion_id': receipt['object_id']}, reason=BOUNDARY)
+            else:
+                if (job['data'].get('task_id') != task['id'] or
+                    job['data'].get('opinion_id') != receipt['object_id'] or
+                    job['data'].get('fingerprint') != fingerprint):
+                    raise VersionConflict('处理意见已绑定其他事项版本')
+            return {'object': receipt, 'job': job, 'status': 'WAITING_SYSTEM',
+                    'message': '意见已记录并转交系统整理；尚未执行任何财务处理。'}
 
     def retry(self, scope, job_id, actor_id, role):
         self._authorize(role)
@@ -397,8 +447,8 @@ class MaterialGuidance:
             job = self.store.get_object(job_id, scope)
             if job['object_type'] != JOB_TYPE or job['status'] != 'FAILED':
                 raise PreconditionFailed('只能重试失败的建议任务')
-            if job['data'].get('audience') == 'PERSONAL' and job['data']['requested_by'] != actor_id and role != 'admin':
-                raise PermissionDenied('不能重试他人的意见建议')
+            # The opinion text remains private. Retrying its system mapping is a
+            # task-level operation and still cannot execute a financial action.
             request = GuidanceRequest(scope=scope, stage=STAGE, task_id=job['data']['task_id'],
                 descriptor_hash=job['data']['descriptor_hash'], request_id=job_id)
             task, _ = current_task(self.service, request)
@@ -475,6 +525,42 @@ class MaterialGuidance:
                     self.store.add_audit('MATERIAL_GUIDANCE_QUEUED', actor_id, scope, object_id=identity,
                                         after={'task_id': task['id'], 'fingerprint': fingerprint}, reason=BOUNDARY)
                 jobs.append(job)
+            # Explicit period-level enqueue doubles as the controlled upgrade
+            # path for opinions saved before durable PERSONAL jobs existed.
+            # Workbench reads and service restarts never execute this migration.
+            if task_id is None and not user_text:
+                task_index = {task['id']: task for task in wb['material_review']['tasks']}
+                personal_jobs = [job for job in self.store.list_objects(JOB_TYPE, scope)
+                                 if job['data'].get('audience') == 'PERSONAL']
+                linked_opinions = {job['data'].get('opinion_id') for job in personal_jobs}
+                for opinion in self.store.list_objects('MaterialGuidanceOpinion', scope):
+                    task = task_index.get(opinion['data'].get('task_id'))
+                    if (not task or opinion['object_id'] in linked_opinions or task.get('deferred')
+                            or opinion['data'].get('descriptor_hash') != task['descriptor']['fingerprint']
+                            or not any(option.get('available') for option in task['descriptor']['options'])):
+                        continue
+                    artifact = next((item for item in wb['artifacts'] if item['object_id'] == task['artifact_id']), None)
+                    if not artifact or artifact['status'] != 'ACTIVE' or not self.service.materials.source_valid(artifact):
+                        continue
+                    fingerprint = task_fingerprint(self.service, scope, task)
+                    identity = 'guidance-job-' + digest([fingerprint, 'PERSONAL', opinion['object_id']])
+                    data = {'task_id': task['id'], 'descriptor_hash': task['descriptor']['fingerprint'],
+                            'fingerprint': fingerprint, 'binding': deepcopy(task['descriptor']['scope']),
+                            'requested_by': opinion['data'].get('actor_id') or actor_id,
+                            'audience': 'PERSONAL', 'attempt': 0, 'opinion_id': opinion['object_id'],
+                            'boundary': BOUNDARY}
+                    try:
+                        job = self.store.get_object(identity, scope)
+                    except KeyError:
+                        job = self.store.create_initial_object(JOB_TYPE, scope, data, status='QUEUED',
+                                                               created_by=actor_id, object_id=identity)
+                        self.store.add_audit('MATERIAL_GUIDANCE_QUEUED', actor_id, scope,
+                                             object_id=identity,
+                                             after={'task_id': task['id'], 'fingerprint': fingerprint,
+                                                    'opinion_id': opinion['object_id'], 'migration': True},
+                                             reason=BOUNDARY)
+                    linked_opinions.add(opinion['object_id'])
+                    jobs.append(job)
             if task_id is not None and not jobs:
                 raise PreconditionFailed('事项不可分析、已暂缓或原件失效')
             if not user_text:
@@ -591,6 +677,7 @@ class MaterialGuidance:
             task.pop('material_guidance', None)
             task.pop('personal_material_guidance', None)
             task.pop('material_opinions', None)
+            task.pop('handling', None)
         all_jobs = self.store.list_objects(JOB_TYPE, scope)
         jobs = [j for j in all_jobs if j['data'].get('audience', 'AUTO') == 'AUTO']
         try:
@@ -620,42 +707,232 @@ class MaterialGuidance:
                 response = {'status': 'FAILED', 'suggestion': None, 'candidates': [], 'message': '建议处理已超时，尚未执行。'}
             task['material_guidance'] = {**response, 'job_id': job['object_id'], 'job_version': job['version'], 'valid': valid,
                                          'descriptor_hash': job['data']['descriptor_hash'], 'boundary': BOUNDARY}
-        if actor_id is not None:
-            # Never replace the auto card. Actor-owned opinion drafts are a
-            # separate channel and are absent from actor-less shared workbenches.
-            opinions = [o for o in self.store.list_objects('MaterialGuidanceOpinion', scope) if o['data']['actor_id'] == actor_id]
-            for task in projected['tasks']:
-                task['material_opinions'] = []
-                for opinion in opinions:
-                    if opinion['data']['task_id'] != task['id']:
-                        continue
-                    valid = opinion['data']['descriptor_hash'] == task['descriptor']['fingerprint']
-                    try:
-                        artifact = self.store.get_object(task['artifact_id'], scope)
-                        bound = task['descriptor']['scope']['artifact']
-                        valid = (valid and artifact['status'] == 'ACTIVE' and artifact['version'] == bound['version']
-                                 and self.service.materials.source_valid(artifact))
-                    except KeyError:
-                        valid = False
-                    task['material_opinions'].append({**deepcopy(opinion), 'valid': valid,
+        # The opinion text is private, but the existence and outcome of its
+        # system-resolution job belong to the shared material task. Otherwise
+        # two operators would see different owners for the same item.
+        all_opinions = self.store.list_objects('MaterialGuidanceOpinion', scope)
+        personal_jobs = [job for job in all_jobs if job['data'].get('audience') == 'PERSONAL']
+        for task in projected['tasks']:
+            shared_opinions, own_opinions = [], []
+            for opinion in all_opinions:
+                if opinion['data'].get('task_id') != task['id']:
+                    continue
+                valid = opinion['data'].get('descriptor_hash') == task['descriptor']['fingerprint']
+                try:
+                    artifact = self.store.get_object(task['artifact_id'], scope)
+                    bound = task['descriptor']['scope']['artifact']
+                    valid = (valid and artifact['status'] == 'ACTIVE' and artifact['version'] == bound['version']
+                             and self.service.materials.source_valid(artifact))
+                except KeyError:
+                    valid = False
+                shared_opinions.append({'object_id': opinion['object_id'], 'valid': valid})
+                if actor_id is not None and opinion['data'].get('actor_id') == actor_id:
+                    own_opinions.append({**deepcopy(opinion), 'valid': valid,
                         'actor_id': actor_id, 'text': opinion['data']['text'], 'boundary': BOUNDARY})
-                personal = [j for j in all_jobs if j['data'].get('audience') == 'PERSONAL'
-                            and j['data']['requested_by'] == actor_id and j['data']['task_id'] == task['id']]
-                if personal:
-                    job = personal[-1]
-                    valid = period_open and not task.get('deferred') and job['data']['fingerprint'] == task_fingerprint(self.service, scope, task)
-                    try:
-                        artifact = self.store.get_object(task['artifact_id'], scope)
-                        bound = task['descriptor']['scope']['artifact']
-                        valid = (valid and artifact['status'] == 'ACTIVE' and artifact['version'] == bound['version']
-                                 and artifact['data'].get('sha256') == bound.get('sha256') and self.service.materials.source_valid(artifact))
-                    except KeyError:
-                        valid = False
-                    response = deepcopy(job['data'].get('response') or {'status': job['status'], 'candidates': [], 'suggestion': None})
-                    if not valid or job['status'] == 'STALE':
-                        response = {'status': 'STALE', 'candidates': [], 'suggestion': None}
-                    elif job['status'] == 'RUNNING' and clock_seconds() >= job['data']['expires_at']:
-                        response = {'status': 'FAILED', 'candidates': [], 'suggestion': None}
-                    task['personal_material_guidance'] = {**response, 'job_id': job['object_id'], 'job_version': job['version'], 'valid': valid,
-                        'opinion_status': 'SAVED_NOT_EXECUTED', 'descriptor_hash': job['data']['descriptor_hash'], 'boundary': BOUNDARY}
+            valid_opinion_ids = {item['object_id'] for item in shared_opinions if item['valid']}
+            task['material_opinion_status'] = {
+                'valid_count': len(valid_opinion_ids),
+                'has_resolution_job': any(job['data'].get('task_id') == task['id']
+                                          and job['data'].get('opinion_id') in valid_opinion_ids
+                                          for job in personal_jobs),
+            }
+            if actor_id is not None:
+                task['material_opinions'] = own_opinions
+            personal = [job for job in personal_jobs if job['data'].get('task_id') == task['id']]
+            if not personal:
+                continue
+            fingerprint = task_fingerprint(self.service, scope, task)
+            current = [job for job in personal if job['data'].get('fingerprint') == fingerprint]
+            job = (current or personal)[-1]
+            valid = bool(current) and period_open and not task.get('deferred')
+            try:
+                artifact = self.store.get_object(task['artifact_id'], scope)
+                bound = task['descriptor']['scope']['artifact']
+                valid = (valid and artifact['status'] == 'ACTIVE' and artifact['version'] == bound['version']
+                         and artifact['data'].get('sha256') == bound.get('sha256')
+                         and self.service.materials.source_valid(artifact))
+            except KeyError:
+                valid = False
+            response = deepcopy(job['data'].get('response') or {'status': job['status'], 'candidates': [], 'suggestion': None})
+            if not valid or job['status'] == 'STALE':
+                response = {'status': 'STALE', 'candidates': [], 'suggestion': None,
+                            'message': '依据已变化，旧建议不可采用。'}
+            elif job['status'] == 'RUNNING' and clock_seconds() >= job['data']['expires_at']:
+                response = {'status': 'FAILED', 'candidates': [], 'suggestion': None,
+                            'message': '系统整理已超时，尚未执行任何处理。'}
+            task['personal_material_guidance'] = {
+                **response, 'job_id': job['object_id'], 'job_version': job['version'], 'valid': valid,
+                'opinion_status': 'SAVED_NOT_EXECUTED',
+                'descriptor_hash': job['data']['descriptor_hash'], 'boundary': BOUNDARY,
+            }
+        for task in projected['tasks']:
+            task['handling'] = self._handling(task, period_open)
+        completed_records = sum(row.get('state') in {'SOURCE_VERIFIED', 'BUSINESS_CONFIRMED', 'ISSUE_CONFIRMED', 'OTHER_PERIOD'}
+                                for row in projected.get('records', []))
+        status_counts = Counter(task['handling']['state'] for task in projected['tasks'])
+        user_status_counts = Counter(task['handling']['state'] for task in projected['tasks']
+                                     if task['handling']['owner'] == 'USER')
+        system_checks = [task for task in projected['tasks']
+                         if task['handling']['owner'] == 'SYSTEM'
+                         and (task.get('triage') or {}).get('route') == 'SYSTEM']
+        system_processing = [task for task in projected['tasks']
+                             if task['handling']['owner'] == 'SYSTEM'
+                             and (task.get('triage') or {}).get('route') != 'SYSTEM']
+        user_states = {'NEEDS_DECISION', 'NEEDS_INPUT', 'FAILED', 'STALE'}
+        task_counts = {
+            'needs_decision': user_status_counts['NEEDS_DECISION'],
+            'needs_input': user_status_counts['NEEDS_INPUT'],
+            'ready_to_confirm': user_status_counts['READY_TO_CONFIRM'],
+            'user_action': sum(user_status_counts[state] for state in user_states),
+            'user_total': sum(user_status_counts[state] for state in user_states) + user_status_counts['READY_TO_CONFIRM'],
+            'running': status_counts['RUNNING'],
+            'waiting_system': status_counts['WAITING_SYSTEM'],
+            'system_processing': len(system_processing),
+            'system_check': len(system_checks),
+            'system_total': len(system_processing) + len(system_checks),
+            'waiting_external': status_counts['WAITING_EXTERNAL'],
+            'failed': status_counts['FAILED'],
+            'stale': status_counts['STALE'],
+            'completed': status_counts['COMPLETED'],
+        }
+        projected['flow'] = {
+            'version': 'material-handling-v1',
+            # counts stays as a compatibility view. task_counts is the
+            # mutually-exclusive work-state partition; record_counts uses 条.
+            'counts': {**task_counts, 'completed_records': completed_records},
+            'task_counts': task_counts,
+            'record_counts': {'completed': completed_records,
+                              'total': len(projected.get('records', []))},
+            'next_step': self._material_next_step(projected['tasks'], task_counts),
+        }
+        # Compatibility counters keep old callers stable while ensuring a saved
+        # opinion is no longer presented as unfinished user work.
+        issue_tasks = [task for task in projected['tasks'] if task['kind'] != 'VERIFY' and not task.get('deferred')]
+        system_check_ids = {task['id'] for task in system_checks}
+        system_processing_ids = {task['id'] for task in system_processing}
+        projected['counts'].update(
+            human_issue_tasks=sum(task['handling']['owner'] == 'USER' for task in issue_tasks),
+            system_issue_tasks=sum(task['id'] in system_check_ids for task in issue_tasks),
+            selected_processing_tasks=sum(task['id'] in system_processing_ids for task in issue_tasks),
+        )
         return projected
+
+    @staticmethod
+    def _handling(task, period_open):
+        """Project one mutually-exclusive owner/state without changing the task."""
+        base = {'version': 'material-handling-v1', 'state': 'NEEDS_DECISION', 'owner': 'USER',
+                'label': '待选择处理方式', 'explanation': '请核对问题和源数据后选择处理方式。',
+                'option_id': None, 'action_label': '选择处理方式'}
+        if task.get('deferred'):
+            return {**base, 'state': 'WAITING_EXTERNAL', 'owner': 'EXTERNAL', 'label': '等待外部资料或条件',
+                    'explanation': '暂无法确认的原因已记录；问题仍保留，你当前无需重复处理。',
+                    'action_label': ''}
+        if not period_open:
+            return {**base, 'state': 'WAITING_EXTERNAL', 'owner': 'EXTERNAL', 'label': '等待期间开放',
+                    'explanation': '当前期间不可写入，已有问题和意见继续保留。', 'action_label': ''}
+        triage = task.get('triage') or {}
+        if triage.get('route') == 'SYSTEM':
+            review = task.get('problem_review') or {}
+            if review.get('status') == 'QUEUED':
+                return {**base, 'state': 'WAITING_SYSTEM', 'owner': 'SYSTEM', 'label': '等待系统复核',
+                        'explanation': '复核任务已进入系统队列；完成前不需要你处理。', 'action_label': ''}
+            if review.get('status') == 'RUNNING':
+                return {**base, 'state': 'RUNNING', 'owner': 'SYSTEM', 'label': '系统正在复核',
+                        'explanation': '系统正在核对问题是否成立；完成前不需要你处理。', 'action_label': ''}
+            if review.get('status') == 'FAILED':
+                return {**base, 'state': 'FAILED', 'owner': 'SYSTEM', 'label': '系统复核失败',
+                        'explanation': '系统复核未完成，原问题继续保留；可在管理入口重试。', 'action_label': ''}
+            return {**base, 'state': 'WAITING_SYSTEM', 'owner': 'SYSTEM', 'label': '等待系统检查',
+                    'explanation': triage.get('next_action') or '该事项先由系统检查，不要求你盲目补充资料。',
+                    'action_label': ''}
+        personal = task.get('personal_material_guidance')
+        if personal:
+            status = personal.get('status')
+            if personal.get('valid') is False or status == 'STALE':
+                return {**base, 'state': 'STALE', 'owner': 'USER', 'label': '依据已变化，需重新核对',
+                        'explanation': '原件、事实或处理依据已经变化，旧选择不能继续提交。',
+                        'action_label': '重新核对'}
+            if status == 'QUEUED':
+                return {**base, 'state': 'WAITING_SYSTEM', 'owner': 'SYSTEM', 'label': '等待系统整理',
+                        'explanation': '你的意见已记录并进入系统队列；你当前无需处理。',
+                        'action_label': ''}
+            if status == 'RUNNING':
+                return {**base, 'state': 'RUNNING', 'owner': 'SYSTEM', 'label': '系统正在整理',
+                        'explanation': '你的意见已记录，系统正在整理为可执行方案；你当前无需处理。',
+                        'action_label': ''}
+            if status == 'FAILED':
+                return {**base, 'state': 'FAILED', 'owner': 'USER', 'label': '系统整理失败，可重试',
+                        'explanation': personal.get('message') or '意见已保留，本次整理未完成；请查看原因后重试。',
+                        'action_label': '查看原因并重试'}
+            mapped = mapped_candidate(task, personal)
+            if mapped:
+                _, option = mapped
+                state = 'NEEDS_INPUT' if option_needs_input(option) else 'READY_TO_CONFIRM'
+                return {**base, 'state': state, 'owner': 'USER',
+                        'label': '待补充确认信息' if state == 'NEEDS_INPUT' else '待确认执行',
+                        'explanation': '系统已把你的意见整理为现有处理方式；请核对必要信息后明确确认。',
+                        'option_id': option['id'],
+                        'action_label': option.get('confirmation_label') or option.get('submit_label') or option['label']}
+            return {**base, 'state': 'WAITING_SYSTEM', 'owner': 'SYSTEM', 'label': '等待系统整理',
+                    'explanation': '意见已记录，但尚未形成可执行方案；你当前无需处理。', 'action_label': ''}
+        opinion_status = task.get('material_opinion_status') or {}
+        if opinion_status.get('valid_count'):
+            return {**base, 'state': 'WAITING_SYSTEM', 'owner': 'SYSTEM',
+                    'label': '意见已记录，等待系统整理',
+                    'explanation': ('处理意见已记录并进入系统整理；尚未执行财务处理。'
+                                    if opinion_status.get('has_resolution_job')
+                                    else '处理意见已记录，等待受控系统任务整理；尚未执行财务处理。'),
+                    'action_label': ''}
+        automatic = task.get('material_guidance')
+        if automatic:
+            status = automatic.get('status')
+            if automatic.get('valid') is False or status == 'STALE':
+                return {**base, 'state': 'STALE', 'owner': 'USER', 'label': '依据已变化，需重新核对',
+                        'explanation': '旧建议已经失效，请重新核对当前问题和源数据。', 'action_label': '重新核对'}
+            if status == 'QUEUED':
+                return {**base, 'state': 'WAITING_SYSTEM', 'owner': 'SYSTEM', 'label': '等待生成处理建议',
+                        'explanation': '建议任务已进入系统队列；完成前不需要你操作。', 'action_label': ''}
+            if status == 'RUNNING':
+                return {**base, 'state': 'RUNNING', 'owner': 'SYSTEM', 'label': '系统正在生成处理建议',
+                        'explanation': '系统正在整理可选处理方式；完成前不需要你操作。', 'action_label': ''}
+            if status == 'FAILED':
+                return {**base, 'state': 'FAILED', 'owner': 'USER',
+                        'label': '处理建议生成失败，可重试',
+                        'explanation': automatic.get('message') or '自动建议未完成；你可以重试，已有受控处理方式仍保留。',
+                        'action_label': '查看原因并重试'}
+        if not any(option.get('available') for option in task['descriptor']['options']):
+            return {**base, 'state': 'WAITING_SYSTEM', 'owner': 'SYSTEM', 'label': '等待系统处理',
+                    'explanation': '当前没有可执行的处理方式，系统需先完善处理能力。', 'action_label': ''}
+        return base
+
+    @staticmethod
+    def _material_next_step(tasks, counts):
+        priorities = ('READY_TO_CONFIRM', 'NEEDS_DECISION', 'NEEDS_INPUT', 'STALE', 'FAILED')
+        for state in priorities:
+            task = next((item for item in tasks if item['handling']['state'] == state
+                         and item['handling']['owner'] == 'USER'), None)
+            if task:
+                handling = task['handling']
+                action_labels = {'READY_TO_CONFIRM': '进入确认', 'NEEDS_DECISION': '选择处理方式',
+                                 'NEEDS_INPUT': '补充确认信息', 'STALE': '重新核对',
+                                 'FAILED': '查看原因并重试'}
+                return {'state': state, 'owner': 'USER', 'title': handling['label'],
+                        'explanation': handling['explanation'], 'task_id': task['id'],
+                        'action': {'kind': 'MATERIAL_TASK', 'label': action_labels[state],
+                                   'task_id': task['id']}}
+        if counts['system_total']:
+            parts = []
+            if counts['system_processing']:
+                parts.append(f"系统正在整理 {counts['system_processing']} 项")
+            if counts['system_check']:
+                parts.append(f"系统正在检查 {counts['system_check']} 项")
+            return {'state': 'WAITING_SYSTEM', 'owner': 'SYSTEM', 'title': '你当前无需操作',
+                    'explanation': '，'.join(parts) + '；完成后会给出明确的确认动作。',
+                    'task_id': None, 'action': None}
+        if counts['waiting_external']:
+            return {'state': 'WAITING_EXTERNAL', 'owner': 'EXTERNAL', 'title': '你当前无需操作',
+                    'explanation': f"还有 {counts['waiting_external']} 项等待外部资料或条件；已记录原因，无需重复提交。",
+                    'task_id': None, 'action': None}
+        return {'state': 'COMPLETED', 'owner': 'NONE', 'title': '本期资料问题已处理完',
+                'explanation': '当前没有资料问题需要你处理，可以继续后续业务校验。',
+                'task_id': None, 'action': None}

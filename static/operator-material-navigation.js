@@ -27,7 +27,7 @@ function materialNavigationSnapshot(){
 function restoreMaterialNavigation(ui,saved=materialNavStorage(ui.key)){
   ui.screen='list';ui.group=null;ui.listOrigin=null;ui.feedback='';
   if(!saved||saved.key!==ui.key||!['list','detail','summary'].includes(saved.screen))return;
-  ui.screen=saved.screen;ui.filter=['all','selected','issues','system','period','deferred','results','usable','verified','VERIFY','bank-periods','other-period'].includes(saved.filter)?saved.filter:'all';
+  ui.screen=saved.screen;ui.filter=['all','ready','selected','issues','system','period','deferred','results','usable','verified','VERIFY','bank-periods','other-period'].includes(saved.filter)?saved.filter:'all';
   ui.viewMode=saved.viewMode==='files'?'files':'issues';ui.selected=typeof saved.selected==='string'?saved.selected:'';
   ui.page=Number.isInteger(saved.page)?Math.max(0,saved.page):0;
   ui.group=saved.group&&Array.isArray(saved.group.entries)?saved.group:null;ui.listOrigin=saved.listOrigin||null;
@@ -81,7 +81,8 @@ function materialReturnList(push=true,historySnapshot=null){
 }
 function materialEntryStatus(entry){
   const m=state.overview.material_review,t=m.tasks.find(t=>t.id===entry.id);
-  if(t&&!t.deferred&&materialSystemTask(t))return 'system';
+  if(t&&materialSystemTask(t))return 'system';
+  if(t&&materialExternalTask(t))return 'deferred';
   if(entry.outcome==='bank_period_confirmed'&&entry.recordIds.every(id=>m.records.some(r=>r.object_id===id&&r.period_assignment?.valid===true)))return 'bank_period_confirmed';
   if(entry.kind==='INVOICE_AMOUNT'&&state.overview.invoice_amount_review?.confirmations.some(c=>c.valid&&entry.recordIds.includes(c.data.binding.fact_id)&&c.data.binding.fact_version===entry.factVersion&&c.data.binding.artifact_version===entry.artifact_version))return 'invoice_amount_confirmed';
   if(entry.kind==='BILL'){const c=state.overview.bill_review?.confirmations.find(c=>c.valid&&entry.recordIds.includes(c.data.binding.fact_id)&&c.data.binding.fact_version===entry.factVersion);if(c)return c.status==='OPINION'?'bill_opinion':'bill_confirmed';}
@@ -98,6 +99,8 @@ function materialFingerprintMatches(entry,t){return entry.fingerprint===material
 function materialAdvance(t,outcome){
   const ui=materialState(),entry=ui.group?.entries.find(e=>e.id===t.id);
   if(!entry)return;
+  const declaredResult=typeof decisionOption==='function'&&typeof decisionSuccessLabel==='function'
+    ?decisionSuccessLabel(decisionOption(t)):'';
   if(entry.suggestionPlan&&['verified','bank_period_confirmed','invoice_amount_confirmed','bill_confirmed','bill_opinion','linked','deferred'].includes(outcome))entry.suggestionPlan.recorded=true;
   if(outcome==='bank_period_confirmed'){
     const remaining=state.overview.material_review.tasks.find(x=>x.bank_period&&!materialSystemTask(x)&&x.artifact_id===t.artifact_id&&x.artifact_version===t.artifact_version&&x.reason===t.reason&&x.bank_period.target_period===t.bank_period.target_period);
@@ -113,7 +116,7 @@ function materialAdvance(t,outcome){
   }
   entry.outcome=outcome;
   const feedback={bank_period_confirmed:'本事项流水归属已确认；等待目标期间接续，未核实原件或入账。',invoice_amount_confirmed:'本张发票金额核对已完成，已加入已处理记录；其他问题仍保留。',bill_confirmed:'票据业务归属已人工补充确认；拟用科目和其他问题仍按实际条件核对。',bill_opinion:'处理意见已记录，业务归属仍待确认。',verified:'本项资料核实已完成。',deferred:'原因已记录，仍待补充。',skipped:'本项暂未处理，未计入完成。',linked:'所属银行已确认，其他资料问题仍保留。'};
-  ui.feedback=feedback[outcome]||'处理结果已更新。';
+  ui.feedback=declaredResult||feedback[outcome]||'处理结果已更新。';
   // Bank assignment can also legitimately resolve other original tasks in this group.
   if(outcome==='linked')for(const e of ui.group.entries)if(e.reason===t.reason&&state.overview.bank_accounts?.statements.some(s=>s.artifact_id===e.artifact_id&&s.status==='LINKED'))e.outcome='linked';
   const next=ui.group.entries.find(e=>materialEntryStatus(e)==='pending');
@@ -144,14 +147,14 @@ function renderMaterialDetail(){
 }
 function renderMaterialGroupResult(){
   const ui=materialState(),g=ui.group;if(!g)return materialUnavailableDetail();
-  const labels={bank_period_confirmed:'其他期间归属已确认（未入账）',system:'系统待检查（未通过）',invoice_amount_confirmed:'金额核对已处理',bill_confirmed:'人工补充确认',bill_opinion:'意见已记录，仍待确认',opinion_recorded:'已选择处理方式（尚未执行）',verified:'资料已核实',deferred:'已记录待补',skipped:'暂未处理',waiting:'等待系统处理',pending:'仍需处理',changed:'来源或任务已变化',linked:'银行归属已确认'};
+  const labels={bank_period_confirmed:'其他期间归属已确认（未入账）',system:'系统处理中（尚未执行）',invoice_amount_confirmed:'金额核对已处理',bill_confirmed:'人工补充确认',bill_opinion:'意见已记录，仍待确认',opinion_recorded:'系统处理中（尚未执行）',verified:'资料已核实',deferred:'等待外部资料或条件',skipped:'暂未处理',waiting:'系统处理中',pending:'仍需处理',changed:'来源或任务已变化',linked:'银行归属已确认'};
   const statuses=g.entries.map(e=>materialEntryStatus(e)),next=materialNextGroupTask();
   const totals=Object.entries(labels).map(([key,label])=>[label,statuses.filter(s=>s===key).length]).filter(([,n])=>n);
-  return `<div id="materialWorkbench" data-screen="summary"><button class="text return-link" data-action="material-return-list">← 返回问题列表</button><section class="panel pad"><p class="small muted">本组处理结果</p><h2 id="materialDetailTitle" tabindex="-1">${esc(g.title)}</h2><p role="status">本组共 ${g.entries.length} 项。${statuses.includes('deferred')?'暂无法补充的原因已保存，相关问题仍保留。':''}${statuses.includes('opinion_recorded')?'已选择的处理方式仅代表意见已记录，尚未执行。':''}</p><div class="mat-group-totals">${totals.map(([label,n])=>`<div><strong>${n}</strong><span>${label}</span></div>`).join('')}</div>${g.entries.map((e,i)=>`<article class="mat-summary-entry"><div><strong>${esc(e.filename)}</strong><p>${esc(e.title)}</p><span>${labels[statuses[i]]}</span>${statuses[i]==='deferred'?`<p class="small">${esc(state.overview.material_review.tasks.find(t=>t.id===e.id)?.response?.data?.reason||'原因已记录')}</p>`:''}</div>${['skipped','pending','deferred','waiting','bill_opinion','opinion_recorded'].includes(statuses[i])?`<button class="text" data-action="material-revisit" data-task="${esc(e.id)}">${statuses[i]==='deferred'||statuses[i]==='opinion_recorded'?'查看处理记录':'继续本项'} →</button>`:''}</article>`).join('')}${g.entries.map(e=>materialPlanFollowup(e)).join('')}<p class="small muted">资料核实和处理记录已分别保留；期初、业务校验及证据条件仍按当前结果执行。</p><div class="actions mat-summary-actions">${next?`<button class="primary" data-action="material-next-group">${g.kind==='VERIFY'?'核对下一份资料':'处理下一类问题'}</button><button class="text" data-action="material-return-list">返回问题列表</button>`:'<button class="primary" data-action="material-overview">返回资料概览</button>'}</div></section></div>`;
+  return `<div id="materialWorkbench" data-screen="summary"><button class="text return-link" data-action="material-return-list">← 返回问题列表</button><section class="panel pad"><p class="small muted">本组处理结果</p><h2 id="materialDetailTitle" tabindex="-1">${esc(g.title)}</h2><p role="status">本组共 ${g.entries.length} 项。${statuses.includes('deferred')?'暂无法确认的原因已记录，等待外部资料或条件。':''}${statuses.includes('system')||statuses.includes('opinion_recorded')?'你的意见已记录，后续由系统整理；当前无需重复处理。':''}</p><div class="mat-group-totals">${totals.map(([label,n])=>`<div><strong>${n}</strong><span>${label}</span></div>`).join('')}</div>${g.entries.map((e,i)=>`<article class="mat-summary-entry"><div><strong>${esc(e.filename)}</strong><p>${esc(e.title)}</p><span>${labels[statuses[i]]}</span>${statuses[i]==='deferred'?`<p class="small">${esc(state.overview.material_review.tasks.find(t=>t.id===e.id)?.response?.data?.reason||'原因已记录')}</p>`:''}</div>${['skipped','pending','deferred','waiting','bill_opinion','opinion_recorded','system'].includes(statuses[i])?`<button class="text" data-action="material-revisit" data-task="${esc(e.id)}">${['deferred','opinion_recorded','system'].includes(statuses[i])?'查看状态':'继续本项'} →</button>`:''}</article>`).join('')}${g.entries.map(e=>materialPlanFollowup(e)).join('')}<p class="small muted">资料核实和处理记录已分别保留；期初、业务校验及证据条件仍按当前结果执行。</p><div class="actions mat-summary-actions">${next?`<button class="primary" data-action="material-next-group">${g.kind==='VERIFY'?'核对下一份资料':'处理下一类问题'}</button><button class="text" data-action="material-return-list">返回问题列表</button>`:'<button class="primary" data-action="material-overview">返回资料概览</button>'}</div></section></div>`;
 }
 function renderMaterialFileGroups(){
   const groups=new Map();for(const t of materialTasks(true)){if(!groups.has(t.artifact_id))groups.set(t.artifact_id,[]);groups.get(t.artifact_id).push(t);}
-  return `<section class="mat-issue-groups"><h3 id="materialListTitle" tabindex="-1">按原件查看</h3>${[...groups.values()].map(tasks=>{const selected=tasks.filter(materialRecordedOpinion).length,pending=tasks.length-selected,status=[pending?`${pending} 项待处理`:'',selected?`${selected} 项已选择处理方式`:''].filter(Boolean).join(' · ');return `<article class="mat-issue-group"><div><strong>${esc(tasks[0].filename)}</strong><p>${status} · ${new Set(tasks.flatMap(t=>t.record_ids)).size} 条记录</p><p class="small muted">${tasks.map(t=>esc(t.title)).join('；')}</p></div><button class="text" data-action="material-select-file" data-task="${esc(tasks[0].id)}">${selected===tasks.length?'查看已选方案':tasks.every(t=>t.deferred)?'查看处理记录':'进入处理'} →</button></article>`;}).join('')||'<p>当前没有此类事项。</p>'}</section>`;
+  return `<section class="mat-issue-groups"><h3 id="materialListTitle" tabindex="-1">按原件查看</h3>${[...groups.values()].map(tasks=>{const counts={};for(const task of tasks){const label=materialHandling(task)?.label||'待处理';counts[label]=(counts[label]||0)+1;}const status=Object.entries(counts).map(([label,count])=>`${label} ${count} 项`).join(' · '),owner=materialHandling(tasks[0])?.owner;return `<article class="mat-issue-group"><div><strong>${esc(tasks[0].filename)}</strong><p>${status} · ${new Set(tasks.flatMap(t=>t.record_ids)).size} 条记录</p><p class="small muted">${tasks.map(t=>esc(t.title)).join('；')}</p></div><button class="text" data-action="material-select-file" data-task="${esc(tasks[0].id)}">${owner==='USER'?'进入处理':'查看状态'} →</button></article>`;}).join('')||'<p>当前没有此类事项。</p>'}</section>`;
 }
 function materialCaptureFocus(){
   if(state.view!=='materials'||typeof document.querySelectorAll!=='function')return null;

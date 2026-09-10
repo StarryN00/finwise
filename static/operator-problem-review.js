@@ -89,12 +89,12 @@ function renderProblemReviewOverview(){
   const other=p.jobs.filter(j=>!system.includes(j));
   const counts=Object.entries(problemReviewLabels).filter(([k])=>Number.isInteger(p.counts?.[k])&&p.counts[k]>0).map(([k,v])=>'<span>'+v+' <b>'+p.counts[k]+'</b></span>').join('');
   const canRequest=materialCanWrite()&&period?.object_id&&Number.isInteger(period.version)&&!pending;
-  return '<section class="panel pad problem-review" aria-label="问题二次复核概览"><div class="row"><h3>问题二次复核</h3><div class="actions">'+(canRequest?problemReviewButton('request','发起本期问题复核',period):'')+problemReviewButton('refresh','刷新复核状态',period)+'</div></div>'+
+  return '<details class="panel pad problem-review system-tools" aria-label="问题二次复核管理"><summary>问题复核与管理</summary><div class="row"><h3>问题二次复核</h3><div class="actions">'+(canRequest?problemReviewButton('request','发起本期问题复核',period):'')+problemReviewButton('refresh','刷新复核状态',period)+'</div></div>'+
     '<p class="small muted">解析完成后自动复核；也可明确发起本期复核。刷新只读取结果。复核可能调用模型，不自动核实、不改事实、不放行账务。</p>'+
     '<div class="problem-review-counts">'+(counts||'暂无复核记录')+'</div>'+
     (pending?'<p role="status">复核正在排队或处理中，请稍后手动刷新。</p>':'')+
     (system.length?'<details><summary>历史复核分类：系统待检查 · '+system.length+' 项（独立于客户补证）</summary><p class="small muted">这里保留复核记录；当前人工／系统待办以问题列表的分流为准。</p>'+system.map(j=>problemReviewJob(j)).join('')+'</details>':'')+
-    (other.length?'<details><summary>复核结果与历史 · '+other.length+' 项</summary>'+other.map(j=>problemReviewJob(j)).join('')+'</details>':'')+'</section>';
+    (other.length?'<details><summary>复核结果与历史 · '+other.length+' 项</summary>'+other.map(j=>problemReviewJob(j)).join('')+'</details>':'')+'</details>';
 }
 function problemReviewSaveDraft(){const t=currentMaterialTask();if(t)materialSaveDraft(t);}
 async function problemReviewAction(action,button){

@@ -122,6 +122,7 @@ def test_formal_operator_page_connects_real_write_workflows_without_external_ass
     root = Path(__file__).resolve().parents[1]
     page = (root / "static" / "operator.html").read_text(encoding="utf-8")
     script = (root / "static" / "operator.js").read_text(encoding="utf-8")
+    materials = (root / "static" / "operator-materials.js").read_text(encoding="utf-8")
     css = (root / "static" / "operator.css").read_text(encoding="utf-8")
     assert "FinWise · 期间工作台" in page
     assert "/api/v1/artifacts" in script
@@ -132,9 +133,10 @@ def test_formal_operator_page_connects_real_write_workflows_without_external_ass
     assert "confirm_baseline" in script
     assert 'table-wrap' in script and 'statusBadge' in script
     assert '资料结构' in script and '账务可用' in script and 'material-open-filter' in script
-    assert 'selected_processing_tasks' in script and '处理意见已记录，等待下一步' in script
-    assert "badge('等待下一步','blue')" in script
-    assert '其他期间归属 ${c.other_period||0} = ${c.records} 条记录' in script
+    assert 'selected_processing_tasks' in script and '你当前无需操作' in script
+    assert "badge('系统处理中','blue')" in script
+    assert '系统检查 <b>${systemChecks}</b> 项' in materials
+    assert '其他期间归属 ${c.other_period||0} 条' in materials
     assert 'scrollIntoView' not in script and 'DEMO-IMPORT-' not in script
     assert '.problem-review-detail>.row{padding-bottom:12px;margin-bottom:12px}' in css
     assert '.problem-review-job>details,.problem-review-job>button{margin-top:12px}' in css
@@ -143,19 +145,19 @@ def test_formal_operator_page_connects_real_write_workflows_without_external_ass
     parser.close()
     assert parser.stack == []
     assert parser.external_assets == [
-            'operator.css?v=material-guidance-9',
+            'operator.css?v=guided-flow-1',
         'operator-historical.js?v=guided-decision-2',
-            'operator-materials.js?v=material-guidance-8',
-        'operator-problem-review.js?v=issue-triage-2',
-            'operator-material-navigation.js?v=material-guidance-8',
+            'operator-materials.js?v=guided-flow-1',
+        'operator-problem-review.js?v=guided-flow-1',
+            'operator-material-navigation.js?v=guided-flow-1',
         'operator-bank-periods.js?v=bank-period-1',
-            'operator-material-guidance.js?v=material-guidance-8',
-            'operator-decision.js?v=material-guidance-8',
+            'operator-material-guidance.js?v=guided-flow-1',
+            'operator-decision.js?v=guided-flow-1',
         'operator-bills.js?v=guided-decision-2',
         'operator-invoice-review.js?v=guided-decision-2',
         'operator-accounts.js?v=guided-decision-2',
         'operator-mapping.js?v=guided-decision-2',
-        'operator-parse-plans.js?v=structure-plan-1', 'operator.js?v=material-guidance-4']
+        'operator-parse-plans.js?v=structure-plan-1', 'operator.js?v=guided-flow-1']
     for asset in parser.external_assets:
         assert client.get('/static/' + asset).status_code == 200
     response = client.get("/static/operator.html")
