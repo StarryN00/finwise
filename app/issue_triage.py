@@ -205,8 +205,9 @@ def _render(outcome, result, task, rows, checks, context):
         return _human(result, descriptor, '已定位到具体发票；原件对应的开票日期单元格为空，不是日期格式转换失败。',
                       ['请核对该发票原件的开票日期，提供已有日期依据或正确版本；不按文件名猜测日期。'])
     elif outcome == 'verify':
-        return _human(result, descriptor, '系统检查已通过，尚未有人核实原件与提取值。',
-                      ['只核实当前已查看的原件与提取值，不代表账务可用。'])
+        explanation = presentation.get('explanation') or '请逐条核对当前记录的原件字段与提取值是否一致。'
+        return _human(result, descriptor, explanation,
+                      ['逐条查看原件与提取值；一致后，仅勾选当前页已核对的记录。此次确认不代表业务真实或账务可用。'])
     elif outcome == 'safe_unknown':
         result['fallback_eligible'] = True
         explanation = ('当前问题已绑定到可核验的原件和记录，但没有匹配到专用业务动作；'

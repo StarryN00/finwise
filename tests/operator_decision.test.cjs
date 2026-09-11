@@ -12,7 +12,7 @@ function descriptor(o=option()){o.steps=o.steps||o.fields.map(f=>({id:f.name,pro
 function app(){
  const saved=new Map();const draft={note:'原草稿',reason:'原原因',taskAction:{},selected:new Set()},ui={page:0,screen:'detail'},listeners={};
  const t={id:'task',kind:'ARBITRARY_KIND',record_ids:['r'],artifact_id:'a',artifact_version:1,descriptor:descriptor()};
- const c=vm.createContext({crypto:require('node:crypto').webcrypto,queueMicrotask,notify(){},sessionStorage:{getItem:k=>saved.get(k)||null,setItem:(k,v)=>saved.set(k,v)},state:{view:'materials',role:'operator',user:{user_id:'actor'},overview:{artifacts:[{object_id:'a',version:1,data:{sha256:'hash'}}],material_review:{records:[{object_id:'r',version:1,source_anchor:{region:'A1'},values:{invoice_no:'i'}}]},bill_review:{candidates:[]},bank_accounts:{accounts:[],statements:[]}}},actions:{},esc:v=>String(v??'').replace(/[&<>"']/g,ch=>({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[ch])),materialState:()=>ui,materialDraft:()=>draft,currentMaterialTask:()=>t,materialTaskIsCurrent:()=>true,materialCanWrite:()=>true,materialComparison:(r,s)=>s?'SELECTION':'SOURCE',materialPager:()=>'',objectButton:()=>'',materialSaveDraft(){},render(){},readonly:()=>false,scope:()=>boundScope,scopeKey:()=>'',document:{addEventListener:(event,fn)=>{(listeners[event]??=[]).push(fn);}},activeArtifacts:()=>[],badge:()=>''});
+ const c=vm.createContext({crypto:require('node:crypto').webcrypto,queueMicrotask,notify(){},sessionStorage:{getItem:k=>saved.get(k)||null,setItem:(k,v)=>saved.set(k,v)},state:{view:'materials',role:'operator',user:{user_id:'actor'},overview:{artifacts:[{object_id:'a',version:1,data:{sha256:'hash'}}],material_review:{records:[{object_id:'r',version:1,source_anchor:{region:'A1'},values:{invoice_no:'i'}}]},bill_review:{candidates:[]},bank_accounts:{accounts:[],statements:[]}}},actions:{},fieldLabels:{amount:'金额',net_pay:'实发工资'},esc:v=>String(v??'').replace(/[&<>"']/g,ch=>({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[ch])),materialState:()=>ui,materialDraft:()=>draft,currentMaterialTask:()=>t,materialTaskIsCurrent:()=>true,materialCanWrite:()=>true,materialComparison:(r,s)=>s?'SELECTION':'SOURCE',materialPager:()=>'',objectButton:()=>'',materialSaveDraft(){},render(){},readonly:()=>false,scope:()=>boundScope,scopeKey:()=>'',document:{addEventListener:(event,fn)=>{(listeners[event]??=[]).push(fn);}},activeArtifacts:()=>[],badge:()=>''});
  for(const f of ['operator-decision.js','operator-bank-periods.js','operator-material-guidance.js','operator-bills.js','operator-accounts.js','operator-invoice-review.js'])vm.runInContext(fs.readFileSync(path.join(root,f),'utf8'),c);
  c.installInvoiceAmountActions();
  return {c,t,draft,ui,listeners,saved,render:()=>c.renderDecisionTask(t)};
@@ -79,6 +79,27 @@ test('source evidence precedes actions and presentation uses only bound record f
  a.t.descriptor.presentation={type_label:'发票状态核对',explanation:'原件状态为“已红冲-全额”，不是读取错误。',records:[{id:'r',focus_fields:['invoice_status']}]};
  const html=a.render();assert.match(html,/已红冲-全额/);assert.match(html,/表!O14/);assert(html.indexOf('decision-evidence')<html.indexOf('<form'));assert.doesNotMatch(html,/责任人：|确认提交摘要/);
  a.t.descriptor.presentation.records[0].id='outside';assert.equal(a.c.decisionPresentation(a.t),null);
+});
+test('common amount field uses a business label instead of a generic source placeholder',()=>{
+ const a=app(),r=a.c.state.overview.material_review.records[0];r.comparison=[{field:'amount',source_value:'9352.00',value:'9352.00',state:'DIRECT_MATCH',region:'表!R2'}];
+ a.t.descriptor.presentation={type_label:'核对电子承兑明细读取结果',explanation:'请核对金额是否与原件一致。',records:[{id:'r',focus_fields:['amount']}]};
+ const html=a.render();assert.match(html,/金额：9352\.00/);assert.doesNotMatch(html,/来源字段：9352\.00/);
+});
+test('all verification focus fields have stable business labels in the workbench',()=>{
+ const source=fs.readFileSync(path.join(root,'operator-materials.js'),'utf8');
+ const expected={net_pay:'实发工资',income:'收入金额',expense:'支出金额',employer_amount:'单位缴费金额',employee_amount:'个人缴费金额',account:'个人公积金账号',account_code:'科目编码',account_name:'科目名称',opening_debit:'期初借方余额',opening_credit:'期初贷方余额',contract_no:'合同编号',contract_date:'合同日期',supplier:'供应商',stock_in_no:'入库单号',stock_in_date:'入库日期'};
+ for(const [field,label] of Object.entries(expected))assert.match(source,new RegExp(`${field}:'${label}'`),`${field} should display as ${label}`);
+ const a=app(),r=a.c.state.overview.material_review.records[0];r.comparison=[{field:'net_pay',source_value:'5000.00',value:'5000.00',state:'DIRECT_MATCH',region:'表!R2'}];
+ a.t.descriptor.presentation={type_label:'核对工资明细读取结果',explanation:'请核对实发工资是否与原件一致。',records:[{id:'r',focus_fields:['net_pay']}]};
+ assert.match(a.render(),/实发工资：5000\.00/);
+});
+test('verification evidence renders only the actual server-declared comparison fields',()=>{
+ const a=app(),r=a.c.state.overview.material_review.records[0];
+ r.values={person_name:null,person_id:'P-1',period_ref:'2026-01',employer_amount:'800.00',employee_amount:'400.00'};
+ r.comparison=[{field:'person_id',source_value:'P-1',value:'P-1',state:'DIRECT_MATCH',region:'表!A2'}];
+ a.c.fieldLabels.person_id='个人编号';
+ a.t.descriptor.presentation={type_label:'核对社保明细读取结果',explanation:'请核对个人编号是否与原件一致。',records:[{id:'r',focus_fields:['person_id']}]};
+ const html=a.render();assert.match(html,/个人编号：P-1/);assert.doesNotMatch(html,/姓名：/);
 });
 test('old descriptor can locate translated issue labels without inventing a new explanation',()=>{
  const a=app(),r=a.c.state.overview.material_review.records[0];r.issues=['发票状态：须人工核对'];r.comparison=[{field:'invoice_status',source_label:'发票状态',source_value:'已红冲-全额',state:'DIRECT_MATCH'}];

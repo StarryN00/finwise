@@ -78,7 +78,11 @@ function decisionFocusFields(t,r){
   const names=(r.issues||[]).map(i=>i.split('：')[0]);
   return (r.comparison||[]).filter(c=>names.includes(c.field)||names.includes(decisionFieldName(c.field))||names.includes(c.source_label)).map(c=>c.field);
 }
-function decisionFieldName(k){return typeof materialFieldLabels!=='undefined'?materialFieldLabels[k]||'来源字段':k;}
+function decisionFieldName(k){
+  const material=typeof materialFieldLabels!=='undefined'?materialFieldLabels[k]:'';
+  const common=typeof fieldLabels!=='undefined'?fieldLabels[k]:'';
+  return material||common||'来源字段';
+}
 function decisionEvidence(t){
   const {all,rows}=decisionEvidenceRows(t),g=decisionGuide(t);
   const selected=rows.find(r=>r.object_id===g.sourceRecord)||rows[0];

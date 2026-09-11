@@ -4,7 +4,7 @@ import pytest
 from pydantic import ValidationError
 
 from app.ontology.contracts import Scope
-from app.task_descriptors import TaskDescriptor, describe_task
+from app.task_descriptors import VERIFY_RECORD_TYPE_LABELS, TaskDescriptor, describe_task
 from conftest import command
 from test_material_review import setup, view
 from test_invoice_amount_review import setup_invoices, confirm_amount
@@ -292,7 +292,7 @@ def test_verify_preview_is_compact_identity_date_amount_without_losing_records(s
     assert p['records'] == [dict(id=f'r{i}', focus_fields=['invoice_no', 'invoice_date', 'invoice_total', 'tax']) for i in range(5)]
     assert len(p['explanation']) <= 400
     assert 'INV-1' not in p['explanation']
-    assert '涉及 5 条记录，详见下方清单' in p['explanation']
+    assert p['explanation'] == '请核对下方 5 条发票记录的发票号码、开票日期、价税合计和税额是否与原件一致。'
 
 
 def test_verify_payroll_includes_actual_salary(scope):
@@ -301,6 +301,153 @@ def test_verify_payroll_includes_actual_salary(scope):
                                                  'actual_salary': '5000', 'basic_salary': '6000'})
     p = describe_task(task, Scope(**scope), dict(object_id='a', version=1, data={}), [record])['presentation']
     assert p['records'] == [dict(id='r', focus_fields=['person_name', 'period', 'actual_salary'])]
+
+
+@pytest.mark.parametrize('record_type,values,subject,expected_fields', [
+    ('INVOICE',
+     {'invoice_no': 'INV-1', 'invoice_date': '2026-01-10', 'invoice_total': '113.00', 'tax': '13.00'},
+     '采购发票', '发票号码、开票日期、价税合计和税额'),
+    ('ELECTRONIC_ACCEPTANCE',
+     {'acceptance_no': 'B-1', 'transaction_date': '2026-01-13', 'amount': '9352.00', 'period': '2026-01'},
+     '电子承兑', '票据包号、交易日期、金额和业务期间'),
+    ('SALES_INVOICE',
+     {'invoice_no': 'INV-1', 'invoice_date': '2026-01-10', 'invoice_total': '113.00', 'tax': '13.00'},
+     '销售发票', '发票号码、开票日期、价税合计和税额'),
+    ('PAYMENT',
+     {'transaction_id': 'TX-1', 'transaction_date': '2026-01-08', 'expense': '88.00'},
+     '银行支出流水', '交易流水号、交易日期和支出金额'),
+    ('RECEIPT',
+     {'transaction_id': 'TX-2', 'transaction_date': '2026-01-09', 'income': '188.00', 'balance': '500.00'},
+     '银行收入流水', '交易流水号、交易日期、收入金额和账户余额'),
+    ('BANK_TRANSACTION',
+     {'transaction_id': 'TX-3', 'transaction_date': '2026-01-10', 'expense': '88.00', 'income': '0.00'},
+     '银行流水', '交易流水号、交易日期、支出金额和收入金额'),
+    ('PAYROLL',
+     {'person_name': '员工', 'period': '2026-01', 'actual_salary': '5000.00'},
+     '工资', '姓名、业务期间和实发工资'),
+    ('SOCIAL_SECURITY',
+     {'person_name': '员工', 'period_ref': '2026-01', 'employer_amount': '800.00', 'employee_amount': '400.00'},
+     '社保', '姓名、费款所属期、单位缴费金额和个人缴费金额'),
+    ('SOCIAL_SECURITY',
+     {'insurance_type': '养老', 'period': '2026-01', 'start_period': '2026-01', 'end_period': '2026-01',
+      'employer_amount': '800.00', 'employee_amount': '400.00'},
+     '社保', '险种、业务期间、单位缴费金额和个人缴费金额'),
+    ('HOUSING_FUND',
+     {'account': 'HF-1', 'person_name': '员工', 'entry_date': '2026-01-10', 'period': '2026-01', 'amount': '600.00'},
+     '住房公积金', '个人公积金账号、姓名、入账日期和金额'),
+    ('INDIVIDUAL_INCOME_TAX',
+     {'person_name': '员工', 'person_id': 'P-1', 'period': '2026-01', 'income': '5000.00'},
+     '个人所得税', '姓名、个人编号、业务期间和收入金额'),
+    ('OPENING_BALANCE',
+     {'account_code': '1001', 'account_name': '库存现金', 'opening_debit': '100.00', 'opening_credit': '0.00'},
+     '期初余额', '科目编码、科目名称、期初借方余额和期初贷方余额'),
+    ('CONTRACT',
+     {'contract_no': 'C-1', 'contract_date': '2026-01-02', 'supplier': '供应商', 'amount': '1000.00'},
+     '合同', '合同编号、合同日期、供应商和金额'),
+    ('STOCK_IN',
+     {'stock_in_no': 'S-1', 'stock_in_date': '2026-01-03', 'supplier': '供应商', 'amount': '1000.00'},
+     '入库', '入库单号、入库日期、供应商和金额'),
+])
+def test_verify_presentation_tells_user_exactly_what_to_compare(
+        scope, record_type, values, subject, expected_fields):
+    task = dict(id='t', kind='VERIFY', reason='核对读取结果', title='核对', action='verify', filename='测试.xlsx')
+    records = [dict(object_id=f'r{i}', version=1, record_type=record_type, values=values)
+               for i in range(4)]
+    presentation = describe_task(
+        task, Scope(**scope), dict(object_id='a', version=1, data={}), records
+    )['presentation']
+    assert presentation['type_label'] == f'核对{subject}明细读取结果'
+    assert presentation['explanation'] == (
+        f'请核对下方 4 条{subject}记录的{expected_fields}是否与原件一致。'
+    )
+
+
+def test_verify_presentation_does_not_mislabel_cross_family_records(scope):
+    task = dict(id='t', kind='VERIFY', reason='核对读取结果', title='核对', action='verify', filename='混合资料.xlsx')
+    records = [
+        dict(object_id='bill', version=1, record_type='ELECTRONIC_ACCEPTANCE',
+             values={'acceptance_no': 'B-1', 'amount': '100.00'}),
+        dict(object_id='bank', version=1, record_type='PAYMENT',
+             values={'transaction_id': 'TX-1', 'expense': '100.00'}),
+    ]
+    presentation = describe_task(
+        task, Scope(**scope), dict(object_id='a', version=1, data={}), records
+    )['presentation']
+    assert presentation['type_label'] == '核对混合资料明细读取结果'
+    assert presentation['explanation'].startswith('请核对下方 2 条混合资料记录的')
+    assert '2 条电子承兑记录' not in presentation['explanation']
+    assert '2 条银行流水记录' not in presentation['explanation']
+
+
+def test_verify_presentation_infers_each_legacy_record_before_naming_the_group(scope):
+    task = dict(id='t', kind='VERIFY', reason='核对读取结果', title='核对', action='verify', filename='旧版混合资料.xlsx')
+    records = [
+        dict(object_id='invoice', version=1,
+             values={'invoice_no': 'INV-1', 'invoice_total': '113.00'}),
+        dict(object_id='payroll', version=1,
+             values={'person_name': '员工', 'net_pay': '5000.00'}),
+    ]
+    presentation = describe_task(
+        task, Scope(**scope), dict(object_id='a', version=1, data={}), records
+    )['presentation']
+    assert presentation['type_label'] == '核对混合资料明细读取结果'
+    assert presentation['explanation'].startswith('请核对下方 2 条混合资料记录的')
+
+
+@pytest.mark.parametrize('missing_type', [None, ''])
+def test_verify_presentation_fails_closed_when_one_record_type_is_missing(scope, missing_type):
+    task = dict(id='t', kind='VERIFY', reason='核对读取结果', title='核对', action='verify', filename='旧版混合资料.xlsx')
+    records = [
+        dict(object_id='bank', version=1, record_type='PAYMENT',
+             values={'transaction_id': 'TX-1', 'expense': '100.00'}),
+        dict(object_id='legacy', version=1, record_type=missing_type,
+             values={'acceptance_no': 'B-1', 'amount': '100.00'}),
+    ]
+    presentation = describe_task(
+        task, Scope(**scope), dict(object_id='a', version=1, data={}), records
+    )['presentation']
+    assert presentation['type_label'] == '核对混合资料明细读取结果'
+    assert presentation['explanation'].startswith('请核对下方 2 条混合资料记录的')
+    assert '2 条银行支出流水记录' not in presentation['explanation']
+
+
+@pytest.mark.parametrize('record_type,values,comparison,expected_fields', [
+    ('SOCIAL_SECURITY',
+     {'person_name': None, 'person_id': 'P-1', 'period_ref': '2026-01',
+      'employer_amount': '800.00', 'employee_amount': '400.00'},
+     ['person_id', 'period_ref', 'employer_amount', 'employee_amount'],
+     '个人编号、费款所属期、单位缴费金额和个人缴费金额'),
+    ('HOUSING_FUND',
+     {'account': 'HF-1', 'person_name': None, 'entry_date': '2026-01-10',
+      'period': '2026-01', 'amount': '600.00'},
+     ['account', 'entry_date', 'period', 'amount'],
+     '个人公积金账号、入账日期、业务期间和金额'),
+    ('INDIVIDUAL_INCOME_TAX',
+     {'person_name': '员工', 'person_id': None, 'period': '2026-01', 'income': '5000.00'},
+     ['person_name', 'period', 'income'],
+     '姓名、业务期间和收入金额'),
+    ('RECEIPT',
+     {'transaction_id': None, 'transaction_date': '2026-01-09',
+      'income': '188.00', 'balance': None},
+     ['transaction_date', 'income'],
+     '交易日期和收入金额'),
+])
+def test_verify_presentation_only_names_fields_rendered_in_real_comparison(
+        scope, record_type, values, comparison, expected_fields):
+    task = dict(id='t', kind='VERIFY', reason='核对读取结果', title='核对', action='verify', filename='真实解析结构.xlsx')
+    records = [dict(
+        object_id='r', version=1, record_type=record_type, values=values,
+        comparison=[dict(field=name, source_value=values.get(name), value=values.get(name),
+                         state='DIRECT_MATCH', region=f'表!{name}') for name in comparison],
+    )]
+    presentation = describe_task(
+        task, Scope(**scope), dict(object_id='a', version=1, data={}), records
+    )['presentation']
+    assert presentation['records'] == [dict(id='r', focus_fields=comparison)]
+    subject = VERIFY_RECORD_TYPE_LABELS[record_type]
+    assert presentation['explanation'] == (
+        f'请核对下方 1 条{subject}记录的{expected_fields}是否与原件一致。'
+    )
 
 
 @pytest.mark.parametrize('kind,status,title,explanation', [

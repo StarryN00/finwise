@@ -132,6 +132,109 @@ class PresentationDescriptor(BaseModel):
     records: list[PresentationRecord]
 
 
+VERIFY_RECORD_TYPE_LABELS = {
+    'INVOICE': '采购发票',
+    'SALES_INVOICE': '销售发票',
+    'PAYMENT': '银行支出流水',
+    'RECEIPT': '银行收入流水',
+    'BANK_TRANSACTION': '银行流水',
+    'ELECTRONIC_ACCEPTANCE': '电子承兑',
+    'PAYROLL': '工资',
+    'SOCIAL_SECURITY': '社保',
+    'HOUSING_FUND': '住房公积金',
+    'INDIVIDUAL_INCOME_TAX': '个人所得税',
+    'OPENING_BALANCE': '期初余额',
+    'CONTRACT': '合同',
+    'STOCK_IN': '入库',
+}
+VERIFY_FIELD_LABELS = {
+    'invoice_no': '发票号码', 'acceptance_no': '票据包号', 'person_name': '姓名',
+    'person_id': '个人编号', 'contract_no': '合同编号', 'stock_in_no': '入库单号',
+    'transaction_id': '交易流水号', 'counterparty': '对方名称', 'bank_account_ref': '本方账户',
+    'invoice_date': '开票日期', 'transaction_date': '交易日期', 'entry_date': '入账日期',
+    'contract_date': '合同日期', 'stock_in_date': '入库日期', 'issue_date': '出票日期',
+    'arrival_date': '到账日期', 'start_period': '起始期间', 'end_period': '截止期间',
+    'period': '业务期间', 'period_ref': '费款所属期',
+    'invoice_total': '价税合计', 'amount': '金额', 'actual_salary': '实发工资',
+    'net_pay': '实发工资', 'total': '合计', 'income': '收入金额', 'expense': '支出金额',
+    'net_amount': '不含税金额', 'tax': '税额', 'balance': '账户余额',
+    'insurance_type': '险种', 'employer_amount': '单位缴费金额', 'employee_amount': '个人缴费金额',
+    'account': '个人公积金账号', 'account_code': '科目编码', 'account_name': '科目名称',
+    'opening_debit': '期初借方余额', 'opening_credit': '期初贷方余额',
+    'supplier': '供应商', 'item': '存货名称',
+}
+VERIFY_BANK_TYPES = {'PAYMENT', 'RECEIPT', 'BANK_TRANSACTION'}
+VERIFY_INVOICE_TYPES = {'INVOICE', 'SALES_INVOICE'}
+VERIFY_PEOPLE_TYPES = {'PAYROLL', 'SOCIAL_SECURITY', 'HOUSING_FUND', 'INDIVIDUAL_INCOME_TAX'}
+VERIFY_FOCUS_GROUPS = {
+    'INVOICE': (('invoice_no',), ('invoice_date',), ('invoice_total',), ('tax',)),
+    'SALES_INVOICE': (('invoice_no',), ('invoice_date',), ('invoice_total',), ('tax',)),
+    'PAYMENT': (('transaction_id',), ('transaction_date',), ('expense',), ('balance',)),
+    'RECEIPT': (('transaction_id',), ('transaction_date',), ('income',), ('balance',)),
+    'BANK_TRANSACTION': (('transaction_id',), ('transaction_date',), ('expense',), ('income',)),
+    'ELECTRONIC_ACCEPTANCE': (('acceptance_no',), ('transaction_date',), ('amount',), ('period',)),
+    'PAYROLL': (('person_name',), ('period',), ('actual_salary',), ('tax',)),
+    'SOCIAL_SECURITY': (
+        ('person_name', 'person_id', 'insurance_type'),
+        ('period_ref', 'period', 'start_period', 'end_period'),
+        ('employer_amount', 'total'),
+        ('employee_amount',),
+    ),
+    'HOUSING_FUND': (('account',), ('person_name',), ('entry_date', 'start_period', 'period'), ('amount',)),
+    'INDIVIDUAL_INCOME_TAX': (('person_name',), ('person_id',), ('period',), ('income',)),
+    'OPENING_BALANCE': (('account_code',), ('account_name',), ('opening_debit',), ('opening_credit',)),
+    'CONTRACT': (('contract_no',), ('contract_date',), ('supplier',), ('amount',)),
+    'STOCK_IN': (('stock_in_no',), ('stock_in_date',), ('supplier',), ('amount',)),
+}
+
+
+def _chinese_list(items: list[str]) -> str:
+    if len(items) < 2:
+        return ''.join(items)
+    return '、'.join(items[:-1]) + '和' + items[-1]
+
+
+def _infer_verify_subject(fields: list[str]) -> str:
+    field_set = set(fields)
+    return (
+        '发票' if field_set & {'invoice_no', 'invoice_date', 'invoice_total'}
+        else '电子承兑' if 'acceptance_no' in field_set
+        else '银行流水' if field_set & {'transaction_id', 'expense', 'income', 'bank_account_ref'}
+        else '工资' if field_set & {'actual_salary', 'net_pay'}
+        else '合同' if 'contract_no' in field_set
+        else '入库' if 'stock_in_no' in field_set
+        else '资料'
+    )
+
+
+def _verify_presentation(records: list[dict[str, Any]], refs: list[dict[str, Any]]) -> tuple[str, str]:
+    focused = list(dict.fromkeys(field for ref in refs for field in ref['focus_fields']))
+    typed_records = [record.get('record_type') for record in records if record.get('record_type')]
+    record_types = set(typed_records)
+    if typed_records and len(typed_records) != len(records):
+        subject = '混合资料'
+    elif len(record_types) == 1:
+        subject = VERIFY_RECORD_TYPE_LABELS.get(next(iter(record_types)), '资料')
+    elif record_types and record_types <= VERIFY_BANK_TYPES:
+        subject = '银行流水'
+    elif record_types and record_types <= VERIFY_INVOICE_TYPES:
+        subject = '发票'
+    elif record_types and record_types <= VERIFY_PEOPLE_TYPES:
+        subject = '薪酬与税费'
+    elif record_types:
+        subject = '混合资料'
+    else:
+        inferred = {_infer_verify_subject(ref['focus_fields']) for ref in refs}
+        subject = next(iter(inferred)) if len(inferred) == 1 else '混合资料'
+    labels = list(dict.fromkeys(VERIFY_FIELD_LABELS.get(field, '对应字段') for field in focused))
+    target = _chinese_list(labels) if labels else '字段含义和提取值'
+    count = len(records)
+    return (
+        f'核对{subject}明细读取结果',
+        f'请核对下方 {count} 条{subject}记录的{target}是否与原件一致。',
+    )
+
+
 BILL_PROPERTIES = [
     dict(name='business_kind', label='业务性质', required=True, choices={
         'RECEIVED': '本期收到', 'HELD': '以前期间收到、本期持有',
@@ -242,17 +345,38 @@ def issue_presentation(task, scope, artifact, records, bank=None):
         values = record.get('values') or {}
         comparison = {c['field']: c for c in record.get('comparison', [])}
         sources = record.get('field_sources') or {}
-        available = list(dict.fromkeys([*values, *comparison, *sources]))
+        if task['kind'] == 'VERIFY' and 'comparison' in record:
+            # The workbench renders the comparison rows. Do not ask users to
+            # check optional schema keys that have no value, source or row.
+            available = list(comparison)
+        elif task['kind'] == 'VERIFY':
+            visible_values = [name for name, value in values.items()
+                              if value is not None and (not isinstance(value, str) or value.strip())]
+            available = list(dict.fromkeys([*visible_values, *comparison, *sources]))
+        else:
+            available = list(dict.fromkeys([*values, *comparison, *sources]))
         fields = [field] if field in available else []
         if task['kind'] == 'VERIFY':
-            # A compact preview; full comparison remains in the existing record.
-            groups = (
-                ('invoice_no', 'acceptance_no', 'person_name', 'person_id', 'contract_no', 'stock_in_no', 'counterparty', 'bank_account_ref'),
-                ('invoice_date', 'transaction_date', 'entry_date', 'contract_date', 'stock_in_date', 'period', 'period_ref'),
-                ('invoice_total', 'amount', 'actual_salary', 'net_pay', 'total', 'income', 'expense', 'net_amount'),
-            )
-            fields = [next(f for f in group if f in available) for group in groups if any(f in available for f in group)]
-            fields += [f for f in ('tax', 'expense', 'income', 'period') if f in available and f not in fields][:4-len(fields)]
+            # Keep the first screen compact while naming the exact fields users must compare.
+            groups = VERIFY_FOCUS_GROUPS.get(record.get('record_type'))
+            if groups:
+                fields = [next(name for name in group if name in available)
+                          for group in groups if any(name in available for name in group)]
+                for name in dict.fromkeys(name for group in groups for name in group):
+                    if len(fields) >= 4:
+                        break
+                    if name in available and name not in fields:
+                        fields.append(name)
+                selected = set(fields)
+                fields = [name for name in available if name in selected]
+            else:
+                groups = (
+                    ('invoice_no', 'acceptance_no', 'person_name', 'person_id', 'contract_no', 'stock_in_no', 'transaction_id', 'counterparty', 'bank_account_ref'),
+                    ('invoice_date', 'transaction_date', 'entry_date', 'contract_date', 'stock_in_date', 'period', 'period_ref'),
+                    ('invoice_total', 'amount', 'actual_salary', 'net_pay', 'total', 'income', 'expense', 'net_amount'),
+                )
+                fields = [next(f for f in group if f in available) for group in groups if any(f in available for f in group)]
+                fields += [f for f in ('tax', 'expense', 'income', 'period') if f in available and f not in fields][:4-len(fields)]
         elif bill_issue:
             fields = [f for f in ('acceptance_no', 'sub_range', 'amount', 'issue_date', 'transaction_date', 'period', 'transaction_type', 'status') if f in available]
         elif bank_issue:
@@ -280,6 +404,8 @@ def issue_presentation(task, scope, artifact, records, bank=None):
             quoted = f'{region + " " if region else ""}{field_label}' + ('原值' if original else '当前值') + f'「{raw if raw is not None else "未提供"}」'
             if raw is not None:
                 (originals if original else current).append((str(raw), quoted))
+    if task['kind'] == 'VERIFY':
+        label, detail = _verify_presentation(records, refs)
     if bank_issue and bank:
         identity = bank.get('identity') or {}
         for name, title in [('bank_name', '银行'), ('bank_hint', '银行线索'), ('account_number', '账号'), ('holder', '户名')]:
@@ -304,7 +430,7 @@ def issue_presentation(task, scope, artifact, records, bank=None):
         else:
             omitted = True
     explanation = ('；'.join(quotes) + '。' if quotes else '') + detail
-    if omitted or len(records) > 2:
+    if task['kind'] != 'VERIFY' and (omitted or len(records) > 2):
         explanation += notice
     return dict(type_label=label, explanation=explanation, records=refs)
 

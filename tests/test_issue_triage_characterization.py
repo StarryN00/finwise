@@ -59,7 +59,7 @@ def task(kind="ISSUE", reason="未知字段：需要判断", *, options=("supple
         ("business-period", task(reason="业务期间：其他月份", focus="transaction_date"), [row(field="transaction_date", value="2026-02-01")], [], True, "HUMAN", True, "契约问题标题", "请核对清单所列日期"),
         ("invoice-amount", task(options=("confirm_invoice_amount",)), [row()], [], True, "HUMAN", True, "契约问题标题", "请确认本条记录"),
         ("missing-invoice-date", task(reason="开票日期：为空", focus="invoice_date"), [row(field="invoice_date", state="MISSING", value=None)], [], True, "HUMAN", True, "契约问题标题", "请核对该发票原件"),
-        ("verify", task("VERIFY", options=("verify_source_values",)), [row()], [], True, "HUMAN", True, "契约问题标题", "只核实当前已查看"),
+        ("verify", task("VERIFY", options=("verify_source_values",)), [row()], [], True, "HUMAN", True, "契约问题标题", "逐条查看原件与提取值"),
         ("unknown", task(), [row()], [], True, "SYSTEM", False, "契约问题标题", None),
     ],
 )

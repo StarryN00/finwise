@@ -77,6 +77,22 @@ def test_clear_period_and_bill_business_questions_remain_actionable():
     assert classify_task(t,[r],[],True)['route']=='HUMAN'
 
 
+def test_verify_question_uses_specific_presentation_instead_of_generic_status():
+    t=task('VERIFY',reason='核对读取结果',field='acceptance_no')
+    t['descriptor']['options']=[{'id':'verify_source_values','available':True}]
+    t['descriptor']['presentation']={
+        'type_label':'核对电子承兑明细读取结果',
+        'explanation':'请核对下方 4 条电子承兑记录的票据包号、交易日期、金额和业务期间是否与原件一致。',
+        'records':[{'id':'f','focus_fields':['acceptance_no']}],
+    }
+    result=classify_task(t,[row('acceptance_no','B-1','B-1')],[],True)
+    assert result['route']=='HUMAN'
+    assert result['title']=='核对电子承兑明细读取结果'
+    assert result['explanation']==t['descriptor']['presentation']['explanation']
+    assert result['next_action'].startswith('逐条查看原件与提取值')
+    assert '不代表业务真实或账务可用' in result['next_action']
+
+
 def test_parse_failure_and_invalid_source_never_request_customer_evidence():
     assert classify_task(task('PARSE'),[],[],True)['route']=='SYSTEM'
     assert classify_task(task(),[row()],[],False)['route']=='SYSTEM'
