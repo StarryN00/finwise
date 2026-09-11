@@ -1,5 +1,8 @@
 from copy import deepcopy
+import pytest
+from pydantic import ValidationError
 from app.ontology.contracts import Scope
+from app.materials import VerifyInput
 from conftest import command
 from test_tabular_ingestion import uploaded,parse,xlsx_fixture,INVOICE_HEADERS
 
@@ -108,14 +111,38 @@ def test_failed_reextract_retires_old_facts_and_cannot_restore_via_reparse(clien
         with pytest.raises(PreconditionFailed):s.reparse_fact(typed,fact_id=old['object_id'],expected_version=old['version'],actor_id='fixture',parser_version='unsafe',normalized_value=old['data']['normalized_value'])
 
 
-def test_current_page_binding_and_unparsed_file_queue(client,scope):
+def test_cross_page_verification_is_one_atomic_task_and_unparsed_file_queue(client,scope):
     a=uploaded(client,scope,xlsx_fixture([('发票',[INVOICE_HEADERS]+[[f'I-{i}','2026-03-01','100','13','13%','甲'] for i in range(6)])]))
     m=view(client,scope)['material_review'];assert m['counts']['files']==1 and m['counts']['file_states']['pending']==1
     assert m['tasks'][0]['kind']=='PARSE'
     result=parse(client,scope,a).json()['effect'];a=result['artifact'];f=result['facts']
-    tasks=view(client,scope)['material_review']['tasks'];assert len(tasks)==2
-    response=command(client,scope,'verify_source_values',a['object_id'],a['version'],'cross-page',{'task_id':tasks[0]['id'],'records':[{'object_id':item['object_id'],'version':item['version']} for item in [f[0],f[5]]]})
-    assert response.status_code==409 and view(client,scope)['material_review']['counts']['source_verified']==0
+    tasks=view(client,scope)['material_review']['tasks'];assert len(tasks)==1 and len(tasks[0]['record_ids'])==6
+    records=[{'object_id':item['object_id'],'version':item['version']} for item in f]
+    response=command(client,scope,'verify_source_values',a['object_id'],a['version'],'cross-page',{'task_id':tasks[0]['id'],'records':records})
+    assert response.status_code==200,response.text
+    assert response.json()['effect']['verified_count']==6
+    assert view(client,scope)['material_review']['counts']['source_verified']==6
+
+
+def test_verification_task_limit_and_input_boundary(client,scope):
+    a=uploaded(client,scope,xlsx_fixture([('发票',[INVOICE_HEADERS]+[[f'I-{i}','2026-03-01','100','13','13%','甲'] for i in range(101)])]))
+    result=parse(client,scope,a).json()['effect'];tasks=[t for t in view(client,scope)['material_review']['tasks'] if t['kind']=='VERIFY']
+    assert [len(t['record_ids']) for t in tasks]==[100,1]
+    refs=[{'object_id':item['object_id'],'version':item['version']} for item in result['facts']]
+    VerifyInput.model_validate({'task_id':tasks[0]['id'],'records':refs[:100]})
+    with pytest.raises(ValidationError):
+        VerifyInput.model_validate({'task_id':tasks[0]['id'],'records':refs})
+
+
+def test_cross_page_verification_rolls_back_every_record_on_one_stale_version(client,scope):
+    a=uploaded(client,scope,xlsx_fixture([('发票',[INVOICE_HEADERS]+[[f'I-{i}','2026-03-01','100','13','13%','甲'] for i in range(6)])]))
+    result=parse(client,scope,a).json()['effect'];a=result['artifact'];facts=result['facts']
+    task=next(t for t in view(client,scope)['material_review']['tasks'] if t['kind']=='VERIFY')
+    records=[{'object_id':item['object_id'],'version':item['version']} for item in facts]
+    records[-1]['version']+=1
+    response=command(client,scope,'verify_source_values',a['object_id'],a['version'],'cross-page-stale',{'task_id':task['id'],'records':records})
+    assert response.status_code==409
+    assert view(client,scope)['material_review']['counts']['source_verified']==0
 
 
 def test_missing_rate_is_not_a_material_error_or_financial_permission(client,scope):

@@ -275,7 +275,7 @@ OPTION_STEPS = {
     ],
     'confirm_invoice_amount': [dict(id='basis', prompt='请核对原金额与正负号，并说明红字或零金额的实际业务原因。', fields=['reason'])],
     'verify_source_values': [
-        dict(id='records', prompt='请查看本页原件对照，只勾选你已经逐条核对的记录。', fields=['records']),
+        dict(id='records', prompt='请查看原件对照，只勾选当前事项中你已经逐条核对的记录。', fields=['records']),
         dict(id='note', prompt='是否需要补充核实备注？没有可以直接继续。', fields=['note']),
     ],
     'defer_material_issue': [dict(id='reason', prompt='目前为什么无法继续处理？记录后问题仍保留。', fields=['reason'])],
@@ -468,12 +468,12 @@ def describe_task(task, scope, artifact, records, bank=None):
     title = task['title']
     facts_summary = f"{task['filename']} · 涉及 {len(records)} 条记录"
     if task['kind'] == 'VERIFY':
-        advice = '系统已完成提取检查，未发现问题。请确认字段是否归类正确、原件数值是否读对、所属期间是否正确。仅勾选本页已检查的记录，不是确认业务真实、工资计算正确或账务可用。'
+        advice = '系统已完成提取检查，未发现问题。请确认字段是否归类正确、原件数值是否读对、所属期间是否正确。仅勾选当前事项中已检查的记录，不是确认业务真实、工资计算正确或账务可用。'
         title = '确认字段含义与读取结果'
         option.update(id='verify_source_values', label='确认原件与提取值一致',
-                      fields=[dict(name='records', label='选择当前页已核对的记录', component='slot', slot='record_selection', required=True),
+                      fields=[dict(name='records', label='选择当前事项中已核对的记录', component='slot', slot='record_selection', required=True),
                               dict(name='note', label='核实备注（可选）', component='textarea')],
-                      completion='核对当前页字段、数值与期间，仅提交已勾选的记录。',
+                      completion='核对当前事项的字段、数值与期间，仅提交已勾选的记录。',
                       effects=['为已选择且通过校验的记录保存资料核实结果'])
     elif task['kind'] == 'INVOICE_AMOUNT':
         title = '核对发票 ' + str(records[0]['values'].get('invoice_no', ''))

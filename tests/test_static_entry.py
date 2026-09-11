@@ -150,14 +150,14 @@ def test_formal_operator_page_connects_real_write_workflows_without_external_ass
     parser.close()
     assert parser.stack == []
     assert parser.external_assets == [
-            'operator.css?v=login-flow-1',
+            'operator.css?v=verify-bulk-1',
         'operator-historical.js?v=guided-decision-2',
-            'operator-materials.js?v=action-types-1',
+            'operator-materials.js?v=verify-bulk-1',
         'operator-problem-review.js?v=action-types-1',
-            'operator-material-navigation.js?v=action-types-1',
+            'operator-material-navigation.js?v=verify-bulk-1',
         'operator-bank-periods.js?v=bank-period-1',
             'operator-material-guidance.js?v=action-types-1',
-            'operator-decision.js?v=action-types-1',
+            'operator-decision.js?v=verify-bulk-1',
         'operator-bills.js?v=guided-decision-2',
         'operator-invoice-review.js?v=guided-decision-2',
         'operator-accounts.js?v=guided-decision-2',

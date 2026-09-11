@@ -58,9 +58,16 @@ function decisionTriage(t){
 }
 function decisionSystemTask(t){return !!t.triage&&decisionTriage(t)?.route!=='HUMAN';}
 function decisionSource(t,selectable=false){
-  const {rows}=decisionEvidenceRows(t),d=materialDraft(t);
-  d.selected=new Set([...d.selected].filter(id=>rows.some(r=>r.object_id===id)));
-  return '<div class="decision-selection"><p class="small muted">完整对照在上方；只勾选本页已逐条核对的记录，切换查看不会自动勾选。</p>'+rows.map((r,i)=>'<div class="decision-select-row"><label class="mat-checkbox"><input type="checkbox" data-material-record="'+esc(r.object_id)+'" '+(d.selected.has(r.object_id)?'checked':'')+' '+(selectable?'':'disabled')+'>已核对 '+esc(r.values?.invoice_no||r.values?.person_name||r.values?.acceptance_no||'本页记录 '+(i+1))+' · '+esc(r.source_anchor?.region||'来源定位未提供')+'</label><button type="button" class="text" data-guide="record" data-record="'+esc(r.object_id)+'" data-source-jump="true">查看对照</button></div>').join('')+'</div>';
+  const {all,rows}=decisionEvidenceRows(t),d=materialDraft(t),valid=new Set(all.map(r=>r.object_id));
+  d.selected=new Set([...d.selected].filter(id=>valid.has(id)));
+  const count=d.selected.size,complete=all.length>0&&count===all.length;
+  return '<div class="decision-selection"><div class="decision-selection-tools"><button type="button" class="secondary" data-guide="select-all-records" aria-pressed="'+complete+'" '+(selectable?'':'disabled')+'>'+(complete?'取消全选':'全选全部 '+all.length+' 条')+'</button><span class="small muted" data-selection-status tabindex="-1" role="status" aria-live="polite">已选择 '+count+'/'+all.length+' 条</span></div><p class="small muted">需要复查时可展开核对依据；可逐条选择，或一次选择当前事项的全部记录。</p>'+rows.map((r,i)=>'<div class="decision-select-row"><label class="mat-checkbox"><input type="checkbox" data-material-record="'+esc(r.object_id)+'" '+(d.selected.has(r.object_id)?'checked':'')+' '+(selectable?'':'disabled')+'>已核对 '+esc(r.values?.invoice_no||r.values?.person_name||r.values?.acceptance_no||'记录 '+(all.indexOf(r)+1))+' · '+esc(r.source_anchor?.region||'来源定位未提供')+'</label><button type="button" class="text" data-guide="record" data-record="'+esc(r.object_id)+'" data-source-jump="true">查看对照</button></div>').join('')+'</div>';
+}
+function decisionRefreshSelectionStatus(t){
+  const {all}=decisionEvidenceRows(t),d=materialDraft(t),valid=new Set(all.map(r=>r.object_id));d.selected=new Set([...d.selected].filter(id=>valid.has(id)));
+  const count=d.selected.size,complete=all.length>0&&count===all.length,status=document.querySelector?.('[data-selection-status]'),button=document.querySelector?.('[data-guide="select-all-records"]');
+  if(status)status.textContent='已选择 '+count+'/'+all.length+' 条';
+  if(button){button.textContent=complete?'取消全选':'全选全部 '+all.length+' 条';button.setAttribute?.('aria-pressed',String(complete));}
 }
 function decisionPresentation(t){
   const p=t.descriptor.presentation;
@@ -103,6 +110,10 @@ function decisionEvidence(t){
   return '<section class="decision-evidence" aria-label="问题数据清单"><h4>问题数据 · '+all.length+' 条</h4><p class="small muted">'+esc(t.filename||t.descriptor.why.facts)+' · 点击记录查看对照，仅切换查看，不会确认数据。</p>'+
     (rows.length?'<div class="table-wrap"><table class="decision-key-table"><thead><tr><th>记录／日期与金额</th><th>问题字段的原值</th><th>来源位置</th><th>查看</th></tr></thead><tbody>'+rows.map(r=>'<tr '+(selected===r?'class="decision-selected"':'')+'><td>'+esc(identity(r))+'<small>'+esc(context(r))+'</small></td><td>'+esc(keyValues(r))+'</td><td>'+esc(r.source_anchor?.region||'来源定位未提供')+'</td><td><button type="button" class="text" data-guide="record" data-record="'+esc(r.object_id)+'" aria-pressed="'+(selected===r)+'">'+(selected===r?'当前记录':'查看对照')+'</button></td></tr>').join('')+'</tbody></table></div>'+materialPager(all.length):'<p>尚未形成可定位的提取记录。请查看原件与识别失败原因。</p>'+objectButton(t.artifact_id,'查看原件'))+
     (selected?'<details class="decision-source" open><summary>当前记录原件与提取值</summary>'+detail+'</details>':'')+'</section>';
+}
+function decisionEvidenceDisclosure(t,content){
+  const open=decisionGuide(t).evidenceOpen===true,count=decisionEvidenceRows(t).all.length;
+  return '<details class="decision-evidence-disclosure" '+(open?'open':'')+'><summary aria-controls="decision-evidence-body" aria-expanded="'+open+'">查看核对依据与原件对照（'+count+' 条）</summary><div id="decision-evidence-body">'+content+'</div></details>';
 }
 function decisionField(t,o,f){
   if(f.component==='textarea'){const id=decisionAdapters[o.id].fields[f.name],draft=materialDraft(t),fallback=o.fallback===true,value=fallback?(draft.taskAction?.[f.name]||''):draft[id==='materialReason'?'reason':'note'];return `<label for="${id}">${esc(f.label)}<textarea id="${id}" ${fallback?'data-task-action-field="'+esc(f.name)+'"':''} ${!decisionOptionAvailable(o)||!materialCanWrite()?'disabled':''} ${f.required?'required':''} maxlength="${f.max_length}" placeholder="${esc(f.placeholder)}">${esc(value||'')}</textarea></label>`;}
@@ -196,13 +207,13 @@ function decisionValidateStep(t,o,index,form){
   return true;
 }
 function decisionReady(t){const h=decisionHandling(t);return !!t&&t.descriptor?.version==='decision-v2'&&!decisionSystemTask(t)&&(!h||h.owner==='USER')&&decisionValid(t.descriptor)&&decisionBound(t)&&materialTaskIsCurrent(t)&&materialCanWrite();}
-function decisionShowStep(){render();document.querySelector?.('.decision-chat [data-current-question]')?.focus({preventScroll:true});}
+function decisionShowStep(){render();const current=document.querySelector?.('.decision-chat [data-current-question]');current?.scrollIntoView?.({block:'start',behavior:'auto'});current?.focus({preventScroll:true});}
 function decisionChoose(t,id,preserveSuggestion=false){
   if(!decisionReady(t))return;
   const o=t.descriptor.options.find(o=>o.id===id);if(!decisionOptionAvailable(o))return;
   const g=decisionGuide(t);
   if(!preserveSuggestion){delete g.suggestionChoice;const entry=typeof materialDetailEntry==='function'?materialDetailEntry():null;if(entry)delete entry.suggestionPlan;}
-  g.option=id;g.chosen=true;g.step=0;g.reviewed='';materialDraft(t).defer=id==='defer_material_issue';materialDraft(t).resume=true;decisionRemember(t);decisionShowStep();
+  g.option=id;g.chosen=true;g.step=0;g.reviewed='';g.evidenceOpen=false;materialDraft(t).defer=id==='defer_material_issue';materialDraft(t).resume=true;decisionRemember(t);decisionShowStep();
 }
 function decisionNext(t,form){
   if(!decisionReady(t))return;
@@ -347,7 +358,8 @@ function renderDecisionTask(t){
   const answers=steps.slice(0,g.step).map((s,i)=>'<article class="decision-answer"><div><small>'+esc(s.title)+'</small><p>'+esc(s.fields.length?s.fields.map(f=>decisionValue(t,o,f)).join('；'):o.label)+'</p></div><button type="button" class="text" data-guide="edit" data-step="'+i+'">修改</button></article>').join('');
   const fields=steps.map((s,i)=>'<fieldset data-guide-step="'+i+'" '+(i!==g.step?'hidden disabled':disabled&&!s.fields.some(f=>f.slot==='record_selection')?'disabled':'')+'><legend tabindex="-1" '+(i===g.step?'data-current-question':'')+'>'+esc(s.title)+'</legend>'+(s.explanation?'<p>'+esc(s.explanation)+'</p>':'')+s.fields.map(f=>decisionField(t,o,f)).join('')+'</fieldset>').join('');
   const button=paused?'<button type="button" class="primary" data-guide="resume">继续：'+esc(o.label)+'</button>':!steps.length?'<button type="button" class="primary" data-guide="open" '+(disabled?'disabled':'')+'>'+esc(decisionConfirmationLabel(o))+'</button>':summary?'<button type="button" class="primary" data-guide="commit" '+(disabled?'disabled':'')+'>'+esc(decisionConfirmationLabel(o))+'</button>':'<button type="button" class="primary" data-guide="next" '+(disabled?'disabled':'')+'>下一步：'+esc(g.step+1===steps.length?'确认执行内容':steps[g.step+1].title)+'</button>';
-  return '<section class="panel mat-task decision-chat" data-task-id="'+esc(t.id)+'" data-decision-version="'+esc(d.version)+'"><div class="focus-head"><h3 id="materialTaskTitle" tabindex="-1">'+esc(triage?.title||presentation?.type_label||d.title)+'</h3><p class="decision-explanation">'+esc(triage?.explanation||presentation?.explanation||'当前尚未提供具体问题解释，请先核对下方原值和来源；不能据此判断客户缺少资料。')+'</p><p class="small">'+esc(d.why.facts)+'</p><small>办理期间：'+esc(d.scope.accounting_period_id)+' · '+esc(decisionStageLabel(d.stage))+'</small></div><div class="pad">'+decisionEvidence(t)+(typeof renderProblemReviewDetail==='function'?renderProblemReviewDetail(t):'')+result+'<section class="decision-handling"><h4 '+(!steps.length?'tabindex="-1" data-current-question':'')+'>接下来怎么处理</h4><div class="decision-question"><p>'+esc(triage?.next_action||d.why_now||d.why.recommendation)+'</p>'+list('需要明确的问题',triage?.questions||[])+list('系统规则',[d.why.rule])+'</div>'+
+  const evidence='<div class="decision-evidence-meta"><p class="small">'+esc(d.why.facts)+'</p><small>办理期间：'+esc(d.scope.accounting_period_id)+' · '+esc(decisionStageLabel(d.stage))+'</small></div>'+decisionEvidence(t)+(typeof renderProblemReviewDetail==='function'?renderProblemReviewDetail(t):'')+result;
+  return '<section class="panel mat-task decision-chat" data-task-id="'+esc(t.id)+'" data-decision-version="'+esc(d.version)+'" data-operation-active="true"><div class="focus-head"><h3 id="materialTaskTitle" tabindex="-1">'+esc(triage?.title||presentation?.type_label||d.title)+'</h3><p class="decision-explanation">'+esc(triage?.explanation||presentation?.explanation||'当前尚未提供具体问题解释，请先核对原值和来源；不能据此判断客户缺少资料。')+'</p></div><div class="pad">'+decisionEvidenceDisclosure(t,evidence)+'<section class="decision-handling decision-handling-active"><h4 '+(!steps.length?'tabindex="-1" data-current-question':'')+'>接下来怎么处理</h4><div class="decision-question"><p>'+esc(triage?.next_action||d.why_now||d.why.recommendation)+'</p>'+list('需要明确的问题',triage?.questions||[])+list('系统规则',[d.why.rule])+'</div>'+
     '<nav class="decision-options" aria-label="选择处理方式">'+d.options.map(x=>'<button type="button" class="secondary" data-guide="option" data-option="'+esc(x.id)+'" '+(!decisionOptionAvailable(x)||!materialCanWrite()?'disabled':'')+' aria-pressed="'+(x.id===o.id)+'">'+esc(x.label)+'</button>').join('')+'</nav>'+answers+
     (t.deferred?'<div class="record-note">'+esc(t.response?.data.reason)+'</div>':'')+
     '<form id="'+a.form+'" data-artifact="'+esc(t.artifact_id)+'" novalidate>'+fields+
@@ -359,6 +371,13 @@ function renderDecisionTask(t){
 function decisionCapture(event){
   const card=event.target.closest?.('.decision-chat');if(!card)return;
   const t=currentMaterialTask();if(!t)return;
+  if(event.type==='click'){
+    const summary=event.target.closest?.('.decision-evidence-disclosure > summary');
+    if(summary)summary.setAttribute?.('aria-expanded',String(!summary.parentElement.open));
+  }
+  if(event.type==='toggle'){
+    if(event.target.matches?.('.decision-evidence-disclosure')){const g=decisionGuide(t);g.evidenceOpen=event.target.open===true;event.target.querySelector?.('summary')?.setAttribute?.('aria-expanded',String(g.evidenceOpen));decisionRemember(t);}return;
+  }
   if(event.type==='submit'){
     if(decisionAllowedSubmits.has(event.target)&&decisionCanSubmit(t)){decisionAllowedSubmits.delete(event.target);return;}
     event.preventDefault();event.stopImmediatePropagation();decisionNext(t,event.target);return;
@@ -389,7 +408,7 @@ function decisionCapture(event){
   if(b.dataset.guide==='record'){
     if(!decisionValid(t.descriptor)||!decisionBound(t))return;
     const r=decisionEvidenceRows(t).rows.find(r=>r.object_id===b.dataset.record);if(!r)return;
-    decisionGuide(t).sourceRecord=r.object_id;decisionRemember(t);render();
+    decisionGuide(t).sourceRecord=r.object_id;decisionGuide(t).evidenceOpen=true;decisionRemember(t);render();
     const source=document.querySelector?.('.decision-source');if(source)source.open=true;
     if(b.dataset.sourceJump==='true'){const title=source?.querySelector('summary');if(title){title.tabIndex=-1;title.focus();}}
     else [...(document.querySelectorAll?.('.decision-evidence [data-record]')||[])].find(el=>el.dataset.record===r.object_id)?.focus({preventScroll:true});return;
@@ -398,6 +417,11 @@ function decisionCapture(event){
   if(b.dataset.guide==='task-action-revoke')return decisionOpenTaskActionRevoke(t);
   if(!decisionReady(t))return;
   const g=decisionGuide(t),form=card.querySelector('form'),act=b.dataset.guide;
+  if(act==='select-all-records'){
+    const {all}=decisionEvidenceRows(t),d=materialDraft(t),complete=all.length>0&&all.every(r=>d.selected.has(r.object_id));
+    for(const r of all)complete?d.selected.delete(r.object_id):d.selected.add(r.object_id);
+    g.reviewed='';materialSaveDraft(t);decisionRemember(t);render();document.querySelector?.('[data-selection-status]')?.focus({preventScroll:true});return;
+  }
   if(op){if(op.id===g.option)decisionNext(t,form);else decisionChoose(t,op.id);return;}
   if(act==='option')return decisionChoose(t,b.dataset.option);
   if(act==='suggestion')return decisionUseSuggestion(t,b.dataset.option);
@@ -416,6 +440,7 @@ function decisionCapture(event){
   decisionRemember(t);decisionShowStep();
 }
 document.addEventListener('click',decisionCapture,true);
+document.addEventListener('toggle',decisionCapture,true);
 document.addEventListener('submit',decisionCapture,true);
 document.addEventListener('submit',event=>{
   if(event.target.id!=='taskActionRevokeForm')return;

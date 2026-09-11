@@ -9,6 +9,8 @@ from app.ontology.errors import PermissionDenied, PreconditionFailed, VersionCon
 from app.ontology.store import digest
 from app.action_types import ACTION_TYPE_BY_ID, FALLBACK_IDS
 
+VERIFY_TASK_RECORD_LIMIT = 100
+
 
 def compare_fields(data):
     """Align values using their recorded source, never a label/value guess."""
@@ -88,7 +90,7 @@ class RecordRef(BaseModel):
 class VerifyInput(BaseModel):
     model_config=ConfigDict(extra='forbid',str_strip_whitespace=True)
     task_id: StrictStr
-    records: list[RecordRef] = Field(min_length=1,max_length=5)
+    records: list[RecordRef] = Field(min_length=1,max_length=VERIFY_TASK_RECORD_LIMIT)
     note: StrictStr = Field(default='',max_length=2000)
 
 
@@ -238,8 +240,9 @@ class MaterialReview:
                 task('PARSE',a,'识别资料' if status=='RECEIVED' else '处理识别失败',[],
                      '；'.join(a['data'].get('parse_errors',[])) or '原件已保存，尚未提取', 'parse' if retryable else 'supplement')
             eligible=[r for r in records if r['source_artifact_id']==a['object_id'] and r['state']=='AWAITING_VERIFICATION' and not r.get('automatic_invoice_check')]
-            for start in range(0,len(eligible),5):
-                task('VERIFY',a,'核对原件与提取值',eligible[start:start+5],'请逐条比较原始数据与提取值；仅选择已核对的本页记录。','verify')
+            for start in range(0,len(eligible),VERIFY_TASK_RECORD_LIMIT):
+                task('VERIFY',a,'核对原件与提取值',eligible[start:start+VERIFY_TASK_RECORD_LIMIT],
+                     '请逐条比较原始数据与提取值；仅选择当前事项中已经核对的记录。','verify')
             problem_records=[r for r in records if r['source_artifact_id']==a['object_id'] and r['state'] in {'PERIOD_EXCEPTION','NEEDS_REVIEW'}]
             reasons=dict.fromkeys(reason for r in problem_records for reason in r['issues'])
             for reason in reasons:
@@ -305,7 +308,7 @@ class MaterialReview:
         try:
             value=(ReasonInput if action=='defer_material_issue' else VerifyInput).model_validate(payload)
         except ValidationError as exc:
-            raise PreconditionFailed('请填写有效原因或选择当前页记录；不允许提交修改值或责任人') from exc
+            raise PreconditionFailed('请填写有效原因或选择当前事项记录；不允许提交修改值或责任人') from exc
         if action=='defer_material_issue':
             overview=self.service.workbench(scope)['material_review']
             task=next((t for t in overview['tasks'] if t['id']==value.task_id and t['artifact_id']==target),None)
@@ -324,7 +327,7 @@ class MaterialReview:
         refs=value.records
         task=next((t for t in self.service.workbench(scope)['material_review']['tasks'] if t['id']==value.task_id and t['kind']=='VERIFY' and t['artifact_id']==target),None)
         if not task or not {r.object_id for r in refs}.issubset(task['record_ids']):
-            raise PreconditionFailed('核实页面已变化或包含未展示的记录，请刷新后选择当前事项')
+            raise PreconditionFailed('核实事项已变化或包含事项外记录，请刷新后重新选择')
         if len({r.object_id for r in refs})!=len(refs):
             raise PreconditionFailed('不可重复选择同一条记录')
         from app.tabular import extract_workbook, ParseOptions, ExtractionError

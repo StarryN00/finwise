@@ -22,7 +22,7 @@ function guided(page){
  };
  const commit=async()=>{assert(await page.locator('.decision-summary').isVisible());assert.equal(await button('commit').count(),1);await button('commit').click();await settle();};
  const choose=async id=>{await page.locator(`[data-guide="option"][data-option="${id}"]`).click();await settle();await focus();};
- const source=async()=>{const d=page.locator('.decision-source');if(await d.getAttribute('open')===null)await d.locator(':scope > summary').click();};
+ const source=async()=>{const outer=page.locator('.decision-evidence-disclosure');if(await outer.count()&&await outer.getAttribute('open')===null)await outer.locator(':scope > summary').click();const d=page.locator('.decision-source');if(await d.getAttribute('open')===null)await d.locator(':scope > summary').click();};
  const closeSource=async()=>{const d=page.locator('.decision-source');if(await d.getAttribute('open')!==null)await d.locator(':scope > summary').click();};
  const sourceDialog=async()=>{await source();await page.locator('.decision-source [data-object]').first().click();await page.locator('#dialog[open]').waitFor();await page.keyboard.press('Escape');};
  return {next,review,commit,choose,source,closeSource,sourceDialog,settle,focus,

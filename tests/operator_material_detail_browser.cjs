@@ -24,7 +24,7 @@ const delay=ms=>new Promise(r=>setTimeout(r,ms));
    assert.equal(await page.locator('.mat-task').count(),0);await taxGroup().getByRole('button',{name:'进入处理'}).click();
    assert.equal(await page.locator('#materialWorkbench').getAttribute('data-screen'),'detail');assert.equal(await page.locator('.mat-overview,.mat-issue-groups').count(),0);
    assert.match(await page.locator('.mat-detail-context').innerText(),/本组共 2 项，涉及 2 份原件/);assert.equal(await page.evaluate(()=>window.scrollY),0);
-   assert.equal(await page.locator('#materialWorkbench .primary:visible').count(),0);assert(await page.locator('[data-guide="option"]:visible').count()>=2);assert.equal(await page.locator('.decision-summary').count(),0);assert.notEqual(await page.locator('.decision-source').getAttribute('open'),null);assert(await page.locator('.decision-key-table').isVisible());
+   assert.equal(await page.locator('#materialWorkbench .primary:visible').count(),1);assert(await page.locator('[data-guide="option"]:visible').count()>=2);assert.equal(await page.locator('.decision-summary').count(),0);assert.notEqual(await page.locator('.decision-source').getAttribute('open'),null);assert(await page.locator('.decision-key-table').isVisible());
   });
   await check('back/forward restore list position and selected group',async()=>{
    const selected=await page.evaluate(()=>materialUI.selected);await page.goBack();await page.locator('.mat-issue-groups').waitFor();
@@ -60,15 +60,16 @@ const delay=ms=>new Promise(r=>setTimeout(r,ms));
   });
   await check('save targets one task, moves within group, and stops at group summary',async()=>{
    const before=await counts();await click('material-save-defer');assert.equal((await counts()).deferred,before.deferred+1);assert.equal((await counts()).needs_review,before.needs_review);
-   assert.match(await page.locator('.mat-detail-context').innerText(),/本组第 2 项/);assert.match(await page.locator('.mat-inline-feedback').innerText(),/仍待补充/);
+   assert.match(await page.locator('.mat-detail-context').innerText(),/本组第 2 项/);assert.match(await page.locator('.mat-inline-feedback').innerText(),/等待外部资料或条件/);
    await click('material-skip');
    assert.equal(await page.locator('#materialWorkbench').getAttribute('data-screen'),'summary');assert.match(await page.locator('.mat-group-totals').innerText(),/等待外部资料或条件/);assert.match(await page.locator('.mat-group-totals').innerText(),/暂未处理/);
    assert.equal((await counts()).source_verified,0);assert.equal((await counts()).accounting_usable,0);await page.screenshot({path:path.join(OUT,'group-summary-1440.png'),fullPage:true});
    await page.reload();await page.locator('[data-screen="summary"]').waitFor();await click('material-next-group');assert.equal(await page.locator('#materialWorkbench').getAttribute('data-screen'),'detail');
   });
   await check('return and results open verification details; partial confirmation keeps the same original',async()=>{
-   await click('material-return-list');await page.getByRole('button',{name:'已有成果',exact:true}).click();
+   await click('material-return-list');await page.locator('[data-action="material-filter"][data-filter="results"]').first().click();
    await page.locator('tr').filter({hasText:'1月发票.xlsx'}).getByRole('button',{name:'查看提取值并核实'}).click();
+   if(!await page.locator('[data-material-record]:visible').count())await g.choose('verify_source_values');
    assert.equal(await page.locator('.mat-overview').count(),0);assert.equal(await page.locator('[data-material-record]:visible').count(),5);
    // Synthetic read-only UI state in the disposable fixture; no permissions are changed server-side.
    await page.evaluate(()=>{window.savedMaterialCanWrite=materialCanWrite;materialCanWrite=()=>false;render();});
@@ -78,19 +79,19 @@ const delay=ms=>new Promise(r=>setTimeout(r,ms));
    await page.evaluate(()=>{materialCanWrite=window.savedMaterialCanWrite;materialState().page=0;render();});
    await page.locator('[data-material-record]:visible').first().check();
    const commandCount=commands.length;await g.sourceDialog();assert.equal(commands.length,commandCount);assert.equal(await page.locator('[data-material-record]:visible').first().isChecked(),true);
-   await g.next();await page.locator('#materialNote').fill('核对当前页第一条');
+   await g.next();await page.locator('#materialNote').fill('核对当前事项第一条');
    await click('material-verify');assert.equal((await counts()).source_verified,1);assert.equal(await page.locator('#materialWorkbench').getAttribute('data-screen'),'detail');
-   assert.match(await page.locator('.mat-task').innerText(),/1月发票.xlsx/);assert.equal(await page.locator('#materialNote').inputValue(),'');
-   for(let i=0;i<3&&await page.locator('[data-material-record]:visible').count();i++){for(const c of await page.locator('[data-material-record]:visible').all())await c.check();await click('material-verify');}
+   assert.match(await page.locator('.mat-task').innerText(),/1月发票.xlsx/);if(!await page.locator('#materialNote').count())await g.choose('verify_source_values');assert.equal(await page.locator('#materialNote').inputValue(),'');
+   for(let i=0;i<3;i++){if(!await page.locator('[data-material-record]:visible').count()&&await page.locator('[data-guide="option"][data-option="verify_source_values"]:visible').count())await g.choose('verify_source_values');if(!await page.locator('[data-material-record]:visible').count())break;for(const c of await page.locator('[data-material-record]:visible').all())await c.check();await click('material-verify');}
    assert.equal((await counts()).source_verified,7);assert.equal(await page.locator('#materialWorkbench').getAttribute('data-screen'),'summary');assert.match(await page.locator('.mat-group-totals').innerText(),/资料已核实/);
   });
   await check('verified records and revoke remain accessible from results',async()=>{
-   await click('material-return-list');await page.getByRole('button',{name:'已有成果',exact:true}).click();await page.getByRole('button',{name:'查看核实记录',exact:true}).click();
+   await click('material-return-list');await page.locator('[data-action="material-filter"][data-filter="results"]').first().click();await page.locator('[data-action="material-filter"][data-filter="verified"]').first().click();
    await click('material-revoke');assert.equal((await counts()).source_verified,6);assert.equal((await counts()).accounting_usable,0);
    await page.goBack();await page.locator('.mat-result-summary').waitFor();assert.equal(await page.evaluate(()=>materialUI.filter),'results');
   });
   await check('bank affiliation opens in detail and confirmation ends with explicit group results',async()=>{
-   await click('accounts-open');await page.locator('[data-action="accounts-statement"]').first().click();await page.locator('#bankAccountForm').waitFor();
+   await click('accounts-open');await page.locator('[data-action="accounts-statement"]').first().click();if(!await page.locator('#bankAccountForm').count())await g.choose('confirm_statement_account');await page.locator('#bankAccountForm').waitFor();
    assert.equal(await page.locator('.mat-overview').count(),0);await g.next();await page.locator('[name="confirmed"]').check();await g.finish();
    assert.equal(await page.evaluate(()=>state.overview.bank_accounts.statements[0].status),'LINKED');
    assert.equal(await page.evaluate(()=>state.overview.baseline.status),'DRAFT');

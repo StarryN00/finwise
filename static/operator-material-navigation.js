@@ -10,9 +10,9 @@ function materialStoredDraft(key,id,value){
 }
 function materialSaveDraft(t){
   const ui=materialState(),d=ui.drafts.get(t.id);if(!d)return;
-  materialStoredDraft(ui.key,t.id,{note:d.note,reason:d.reason,taskAction:d.taskAction,defer:d.defer,bill:d.bill,resume:d.resume,fingerprint:materialTaskFingerprint(t)});
+  materialStoredDraft(ui.key,t.id,{note:d.note,reason:d.reason,taskAction:d.taskAction,selected:[...d.selected],defer:d.defer,bill:d.bill,resume:d.resume,fingerprint:materialTaskFingerprint(t)});
 }
-function materialDraftRevision(d){return JSON.stringify([d?.note,d?.reason,d?.taskAction,d?.defer,d?.bill]);}
+function materialDraftRevision(d){return JSON.stringify([d?.note,d?.reason,d?.taskAction,[...(d?.selected||[])].sort(),d?.defer,d?.bill]);}
 function materialDeleteDraft(id,submittedRevision){const ui=materialState();if(submittedRevision&&materialDraftRevision(ui.drafts.get(id))!==submittedRevision)return false;ui.drafts.delete(id);materialStoredDraft(ui.key,id,null);return true;}
 function materialDetailStillOpen(group,taskId){const ui=materialState();return state.view==='materials'&&ui.screen==='detail'&&ui.group===group&&ui.selected===taskId;}
 function materialSupplementReceived(taskId,artifact){
@@ -40,9 +40,11 @@ function materialSaveNavigation(push=false){
   try{window.history[push?'pushState':'replaceState']({...window.history.state,finwiseMaterials:snapshot},'');}catch{}
 }
 function materialFocusDetail(){
-  const title=$('materialDetailTitle')||$('materialTaskTitle');
-  title?.focus({preventScroll:true});
-  if(typeof window!=='undefined')window.scrollTo({top:0,behavior:'instant'});
+  const current=document.querySelector?.('.decision-chat[data-operation-active="true"] [data-current-question]');
+  const target=current||$('materialDetailTitle')||$('materialTaskTitle');
+  if(current)current.scrollIntoView?.({block:'start',behavior:'auto'});
+  target?.focus({preventScroll:true});
+  if(!current&&typeof window!=='undefined')window.scrollTo({top:0,behavior:'instant'});
 }
 function materialTaskFingerprint(t){
   const m=state.overview.material_review,a=state.overview.artifacts?.find(a=>a.object_id===t.artifact_id);
@@ -130,7 +132,6 @@ function materialNextGroupTask(){
 }
 function materialUnavailableDetail(){
   const ui=materialState(),old=ui.drafts.get(ui.selected)||materialStoredDraft(ui.key,ui.selected);
-  old?.selected?.clear();
   return `<section class="panel pad"><h3>此事项的来源或版本已变化</h3><p>请返回列表查看最新问题，原选中记录不能继续提交。</p>${old?.note||old?.reason||old?.bill?`<details open><summary>之前填写的内容（仅供参考）</summary><p class="mat-draft-reference">${esc(old.note||old.reason||[old.bill?.business_kind,old.bill?.business_period,old.bill?.account_name,old.bill?.reason].filter(Boolean).join(' · '))}</p></details>`:''}<button class="primary" data-action="material-return-list">返回问题列表</button></section>`;
 }
 function materialPlanFollowup(entry){
@@ -167,7 +168,10 @@ function materialCaptureFocus(){
 function materialRestoreFocus(focus){
   if(!focus||state.view!=='materials'||focus.key!==materialState().key||focus.screen!==materialState().screen||focus.selected!==materialState().selected)return;
   const root=$('materialWorkbench');if(!root)return;
-  [...root.querySelectorAll('details')].forEach((el,i)=>{el.open=focus.open.includes(i);});
+  [...root.querySelectorAll('details')].forEach((el,i)=>{
+    if(el.matches('.decision-evidence-disclosure')||el.closest('.decision-evidence-disclosure'))return;
+    el.open=focus.open.includes(i);
+  });
   const target=focus.id?$(focus.id):[...root.querySelectorAll('[data-material-record]')].find(el=>el.dataset.materialRecord===focus.record);
   target?.focus({preventScroll:true});if(target?.setSelectionRange&&Number.isInteger(focus.start))try{target.setSelectionRange(focus.start,focus.end);}catch{}
   window.scrollTo(0,focus.scrollY);
