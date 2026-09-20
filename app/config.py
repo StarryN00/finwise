@@ -16,6 +16,11 @@ class Settings:
     agent_mode: str = "disabled"
     agent_provider: str = "deepseek"
     agent_model: str = "deepseek-chat"
+    # 按任务分级：结构与判断类用推理档，图像类只能用带视觉的那一档，高频轻任务用快档。
+    # 留空表示沿用 agent_model，因此既有部署不受影响。
+    agent_model_reasoning: str = ""
+    agent_model_vision: str = ""
+    agent_model_fast: str = ""
     deepseek_base_url: str = "https://api.deepseek.com"
     deepseek_api_key: str = ""
     agent_prompt_version: str = "finwise-agent-prompt-v1"
@@ -53,6 +58,9 @@ class Settings:
             agent_mode=os.getenv("FINWISE_AGENT_MODE", "disabled").lower(),
             agent_provider=os.getenv("FINWISE_AGENT_PROVIDER", "deepseek").lower(),
             agent_model=os.getenv("FINWISE_AGENT_MODEL", "deepseek-chat"),
+            agent_model_reasoning=os.getenv("FINWISE_AGENT_MODEL_REASONING", ""),
+            agent_model_vision=os.getenv("FINWISE_AGENT_MODEL_VISION", ""),
+            agent_model_fast=os.getenv("FINWISE_AGENT_MODEL_FAST", ""),
             deepseek_base_url=os.getenv("FINWISE_DEEPSEEK_BASE_URL", "https://api.deepseek.com"),
             deepseek_api_key=os.getenv("FINWISE_DEEPSEEK_API_KEY", ""),
             agent_prompt_version=os.getenv("FINWISE_AGENT_PROMPT_VERSION", "finwise-agent-prompt-v1"),
@@ -60,6 +68,29 @@ class Settings:
             gateway_timeout_seconds=env_float("FINWISE_GATEWAY_TIMEOUT_SECONDS", 45.0),
             gateway_max_retries=env_int("FINWISE_GATEWAY_MAX_RETRIES", 0),
         )
+
+    # 各 stage 该用哪一档模型。未列出的 stage 用默认档。
+    REASONING_STAGES = frozenset({"STRUCTURE_PLAN", "PROBLEM_REVIEW", "PAYROLL_MAPPING"})
+    VISION_STAGES = frozenset({"SCANNED_DOCUMENT"})
+    FAST_STAGES = frozenset({"MATERIAL_GUIDANCE"})
+
+    def model_for(self, stage: str) -> str:
+        """按任务选模型。只有配置了对应档位才切换，否则沿用默认模型。
+
+        图像类是唯一的硬约束：不是所有模型都支持图像理解，没配就在真正用到时
+        明确报错，而不是让不带视觉的模型去读扫描件、悄悄返回一堆幻觉。
+        """
+        if stage in self.VISION_STAGES:
+            if not self.agent_model_vision:
+                raise ValueError(
+                    "处理扫描件需要具备图像理解的模型，请配置 FINWISE_AGENT_MODEL_VISION"
+                )
+            return self.agent_model_vision
+        if stage in self.REASONING_STAGES and self.agent_model_reasoning:
+            return self.agent_model_reasoning
+        if stage in self.FAST_STAGES and self.agent_model_fast:
+            return self.agent_model_fast
+        return self.agent_model
 
     def validate_runtime(self) -> None:
         if self.environment in {"staging", "production"} and not self.require_auth:

@@ -168,3 +168,31 @@ def test_invalid_real_gateway_output_is_paused_as_mock_false(client, scope):
         service.agent_suggest_rule(Scope.model_validate(scope), group_id=demo["group"]["object_id"], actor_id="staging-operator", model_output=None)
     paused = service.store.list_objects("ModelRun", Scope.model_validate(scope), statuses=["PAUSED"])[-1]
     assert paused["data"]["gateway"]["mock"] is False
+
+
+def test_model_tier_selection_routes_stages_to_configured_models(tmp_path):
+    """结构与判断走推理档，高频轻任务走快档；未配置的档位沿用默认模型。"""
+    from app.config import Settings
+
+    base = dict(root=tmp_path, database_path=tmp_path / "d.db", storage_path=tmp_path / "a")
+    default_only = Settings(**base, agent_model="m-default")
+    assert default_only.model_for("STRUCTURE_PLAN") == "m-default"
+    assert default_only.model_for("MATERIAL_GUIDANCE") == "m-default"
+
+    tiered = Settings(**base, agent_model="m-default", agent_model_reasoning="m-pro",
+                      agent_model_fast="m-flash", agent_model_vision="m-vision")
+    assert tiered.model_for("STRUCTURE_PLAN") == "m-pro"
+    assert tiered.model_for("PROBLEM_REVIEW") == "m-pro"
+    assert tiered.model_for("MATERIAL_GUIDANCE") == "m-flash"
+    assert tiered.model_for("SCANNED_DOCUMENT") == "m-vision"
+    assert tiered.model_for("SOMETHING_ELSE") == "m-default"
+
+
+def test_scanned_documents_refuse_to_run_on_a_model_without_vision(tmp_path):
+    """没配视觉模型时明确报错，而不是让不带视觉的模型去读扫描件。"""
+    from app.config import Settings
+
+    settings = Settings(root=tmp_path, database_path=tmp_path / "d.db",
+                        storage_path=tmp_path / "a", agent_model="m-default")
+    with pytest.raises(ValueError, match="FINWISE_AGENT_MODEL_VISION"):
+        settings.model_for("SCANNED_DOCUMENT")

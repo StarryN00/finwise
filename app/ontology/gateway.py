@@ -93,7 +93,7 @@ class DeepSeekProvider:
             },
         ]
         body = {
-            "model": self.settings.agent_model,
+            "model": self.settings.model_for(stage),
             "messages": messages,
             "temperature": 0,
             "max_tokens": self.settings.agent_max_tokens,
@@ -207,7 +207,7 @@ class DeepSeekProvider:
         return GatewayResult(
             output=output,
             provider="deepseek",
-            model_version=self.settings.agent_model,
+            model_version=self.settings.model_for(stage),
             mock=False,
             prompt_version=({'PROBLEM_REVIEW':'problem-review-prompt-v1','PAYROLL_MAPPING':'payroll-mapping-prompt-v1', 'MATERIAL_GUIDANCE':'material-guidance-prompt-v2', 'STRUCTURE_PLAN':'structure-plan-prompt-v1'}).get(stage,self.settings.agent_prompt_version),
             input_hash=input_hash,
