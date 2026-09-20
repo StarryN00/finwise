@@ -193,6 +193,24 @@ def baseline_candidate(body: dict[str, Any], request: Request) -> dict[str, Any]
     )
 
 
+@router.post("/profile-cards")
+def profile_cards(body: ScopeQuery, request: Request) -> dict[str, Any]:
+    """列出本处理范围内认不出结构的原件，每份一张待确认卡片。"""
+    return service(request).profile_cards(body.scope)
+
+
+@router.post("/profile-cards/confirm")
+def confirm_profile_card(body: dict[str, Any], request: Request,
+                         context: tuple[str, str] = Depends(actor)) -> dict[str, Any]:
+    """确认一张识别卡并登记版式。确认是人的动作，卡片本身不授权任何写入。"""
+    actor_id, _ = context
+    scope = Scope.model_validate(body["scope"])
+    card = body.get("card")
+    if not isinstance(card, dict):
+        raise HTTPException(status_code=400, detail="缺少卡片内容")
+    return service(request).confirm_profile_card(scope, card=card, actor_id=actor_id)
+
+
 @router.post("/query")
 def query(body: QueryRequest, request: Request) -> dict[str, Any]:
     return service(request).query(body.scope, body.question)

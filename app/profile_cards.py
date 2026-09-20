@@ -42,11 +42,29 @@ def build_profile_card(
     rows = sheet.get("rows") or []
     proposal = propose_mapping(sheet, document_kind)
 
+    # 指纹只能算在真正的表头行上。退而求其次拿"第一个非空行"会把标题行
+    # （常含企业名称）算进指纹，既失去复用价值，又把业务值带进了本应可共享的键。
     header_values = None
     if proposal.header_row:
         header_values = next((r["values"] for r in rows if r["row"] == proposal.header_row), None)
+
     if header_values is None:
-        header_values = next((r["values"] for r in rows if any(str(v or "").strip() for v in r["values"])), [])
+        return {
+            "version": CARD_VERSION,
+            "card_type": "SOURCE_PROFILE_UNKNOWN",
+            "title": f"认不出这份文件的结构：{filename}",
+            "why": {
+                "facts": f"工作表 {sheet.get('name', '')}",
+                "rule": "未能在前若干行里定位到表头",
+                "recommendation": proposal.reason or "请人工指认表头行与各列",
+                "origin": "AGENT", "confidence": 0, "yields": None, "evidence": [],
+            },
+            "options": [
+                {"id": "designate_profile_columns", "label": "我来指认各列", "submit_label": "保存版式"},
+                {"id": "skip_source", "label": "这份先跳过", "submit_label": "跳过"},
+            ],
+            "fingerprint": "",
+        }
 
     key = fingerprint(header_values, document_kind)
     if store.resolve(fingerprint_value=key, document_kind=document_kind,

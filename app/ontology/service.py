@@ -1953,6 +1953,79 @@ class OntologyService:
                 'title': '你当前无需操作', 'explanation': '当前没有需要你处理的事项。',
                 'task_id': None, 'waiting': [], 'action': None}
 
+    # ---------- 来源版式卡片 ----------
+
+    def profile_cards(self, scope: Scope) -> dict[str, Any]:
+        """列出本处理范围内"认不出结构"的原件，每份产出一张待确认卡片。
+
+        已经命中版式的原件不出卡，所以这份清单会随着版式沉淀自然变短。
+        """
+        from app.profile_cards import build_profile_card
+        from app.tabular import read_workbook
+
+        cards: list[dict[str, Any]] = []
+        for artifact in self.store.list_objects(ObjectType.SOURCE_ARTIFACT.value, scope):
+            data = artifact["data"]
+            if artifact["status"] == "ARCHIVED":
+                continue
+            unrecognised = [sheet for sheet in data.get("parse_sheets", [])
+                            if sheet.get("status") == "UNRECOGNIZED"]
+            if not unrecognised:
+                continue
+            document_kind = (data.get("parse_options") or {}).get("document_kind")
+            if not document_kind:
+                continue
+            path = self.store.database.settings.storage_path / data["storage_path"]
+            if not path.exists():
+                continue
+            try:
+                sheets = read_workbook(path.read_bytes())
+            except Exception:
+                # 读不出的原件不是版式问题，交给既有的解析失败提示，不在这里出卡。
+                continue
+            wanted = {sheet["sheet"] for sheet in unrecognised}
+            for sheet in sheets:
+                if sheet["name"] not in wanted:
+                    continue
+                card = build_profile_card(
+                    sheet=sheet, document_kind=document_kind,
+                    filename=data.get("filename", ""), store=self.profiles,
+                    tenant_id=scope.tenant_id, legal_entity_id=scope.legal_entity_id,
+                )
+                if card is None:
+                    continue
+                card["artifact"] = {"id": artifact["object_id"], "version": artifact["version"],
+                                    "sha256": data.get("sha256")}
+                card["sheet"] = sheet["name"]
+                card["document_kind"] = document_kind
+                cards.append(card)
+        return {"cards": cards, "count": len(cards)}
+
+    def confirm_profile_card(self, scope: Scope, *, card: dict[str, Any], actor_id: str) -> dict[str, Any]:
+        """确认一张识别卡：登记版式，并把原件退回待解析，让操作人重新解析看结果。"""
+        from app.profile_cards import adopt_profile_card
+
+        document_kind = card.get("document_kind")
+        if not document_kind:
+            raise DomainError("卡片缺少资料类型", "VALIDATION_FAILED", 400)
+        try:
+            saved = adopt_profile_card(
+                card=card, store=self.profiles, actor=actor_id, document_kind=document_kind,
+                tenant_id=scope.tenant_id, legal_entity_id=scope.legal_entity_id,
+            )
+        except ValueError as exc:
+            raise DomainError(str(exc), "VALIDATION_FAILED", 400) from exc
+        self.store.add_audit(
+            "SOURCE_PROFILE_CONFIRMED", actor_id, scope,
+            object_type="SourceProfile", object_id=saved.profile_id, object_version=1,
+            after={"fingerprint": saved.fingerprint, "label": saved.label,
+                   "scope_level": saved.scope_level, "confidence": saved.confidence},
+            reason="人工确认来源版式",
+        )
+        return {"profile": saved.model_dump(mode="json"),
+                "artifact": card.get("artifact"),
+                "next_action": "版式已登记，请对该原件重新解析"}
+
     def workbench(self, scope: Scope, *, _problem_review: bool = True, actor_id: str | None = None) -> dict[str, Any]:
         period = self.store.get_object(self._period_object_id(scope), scope)
         baseline = self.store.get_object(self._baseline_object_id(scope), scope)

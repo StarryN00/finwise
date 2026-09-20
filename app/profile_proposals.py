@@ -210,17 +210,22 @@ def propose_mapping(sheet: dict[str, Any], document_kind: str) -> MappingProposa
         return MappingProposal(outcome="ABSTAIN", reason="未能定位表头行")
 
     header = rows[header_position]
+    # 即使最终弃权也要带回表头行：上层要用它算指纹，
+    # 否则会退化成拿标题行做指纹，把企业名称这类业务值混进去。
+    def abstain(reason: str) -> MappingProposal:
+        return MappingProposal(outcome="ABSTAIN", header_row=header["row"], reason=reason)
+
     labels = [str(v or "").strip() for v in header["values"]]
     body = [r["values"] for r in rows[header_position + 1:] if not _is_reference_row(r["values"])][:SAMPLE_ROWS]
     if len(body) < 2:
-        return MappingProposal(outcome="ABSTAIN", reason="表头之下数据不足，无法判断列形态")
+        return abstain("表头之下数据不足，无法判断列形态")
 
     width = max((len(r) for r in body), default=0)
     stats = [_column_stats(body, i) for i in range(width)]
 
     date_columns = [s["index"] for s in stats if s["filled"] and s["date_ratio"] >= 0.8]
     if not date_columns:
-        return MappingProposal(outcome="ABSTAIN", reason="没有任何一列能稳定解析为日期")
+        return abstain("没有任何一列能稳定解析为日期")
     date_column = max(date_columns, key=lambda i: (stats[i]["date_ratio"], stats[i]["fill_ratio"]))
 
     money_columns = [s["index"] for s in stats
@@ -231,10 +236,10 @@ def propose_mapping(sheet: dict[str, Any], document_kind: str) -> MappingProposa
                       and s["money_count"] >= 1 and s["money_ratio"] >= 0.9]
     balance = _pick_balance(stats, labels, money_columns)
     if balance is None:
-        return MappingProposal(outcome="ABSTAIN", reason="未能确定余额列，无法用余额连续性验证收付方向")
+        return abstain("未能确定余额列，无法用余额连续性验证收付方向")
     amount_columns = [i for i in money_columns if i != balance]
     if not amount_columns:
-        return MappingProposal(outcome="ABSTAIN", reason="除余额外没有金额列")
+        return abstain("除余额外没有金额列")
 
     body, row_order = _chronological(body, date_column)
     evidence = [f"表头行 {header['row']}", f"日期列 {labels[date_column] or date_column}",
@@ -313,7 +318,7 @@ def propose_mapping(sheet: dict[str, Any], document_kind: str) -> MappingProposa
                                        confidence=min(95, confidence_from(rate, checked)),
                                        label_hint=_label_hint(sheet, labels), evidence=evidence)
 
-    return MappingProposal(outcome="ABSTAIN", reason="收付方向无法通过余额连续性验证，不出提案")
+    return abstain("收付方向无法通过余额连续性验证，不出提案")
 
 
 def _partitions(tokens: set[str]) -> list[set[str]]:

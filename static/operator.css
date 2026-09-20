@@ -58,3 +58,6 @@ body:has(dialog[open]) #main .primary,body:has(dialog[open]) #sidebar .primary{v
 .action-metrics{margin-top:16px}.action-metrics-list{display:grid;gap:8px;margin-top:12px}.action-metrics-list button{text-align:left}
 .mat-result-summary .result-value{display:block;width:100%;padding:8px;text-align:left;border-color:var(--line);background:white}.mat-result-summary .result-value small{font-weight:400}
 @media(max-width:760px){.mat-result-summary>.result-value{border-bottom:1px solid var(--line);padding:10px}}
+
+.profile-card{margin-top:12px}.profile-card h3{margin:0 0 8px;font-size:17px;overflow-wrap:anywhere}.profile-card .facts{margin:10px 0;font-size:14px;overflow-wrap:anywhere}.profile-card .evidence{margin:10px 0;padding-left:18px;font-size:13px;color:var(--muted)}.profile-card .evidence li{margin:4px 0;overflow-wrap:anywhere}.profile-card .row{margin-top:16px;gap:12px;flex-wrap:wrap}.profile-card .primary,.profile-card .secondary{min-height:40px}
+@media(max-width:760px){.profile-card{padding:16px}.profile-card .row{display:grid;grid-template-columns:minmax(0,1fr)}.profile-card .primary,.profile-card .secondary{width:100%;min-height:44px}}

@@ -162,7 +162,8 @@ def test_formal_operator_page_connects_real_write_workflows_without_external_ass
         'operator-invoice-review.js?v=guided-decision-2',
         'operator-accounts.js?v=guided-decision-2',
         'operator-mapping.js?v=guided-decision-2',
-        'operator-parse-plans.js?v=structure-plan-1', 'operator.js?v=login-flow-1']
+        'operator-parse-plans.js?v=structure-plan-1', 'operator-profile-cards.js?v=profile-cards-1',
+        'operator.js?v=login-flow-1']
     for asset in parser.external_assets:
         assert client.get('/static/' + asset).status_code == 200
     response = client.get("/static/operator.html")

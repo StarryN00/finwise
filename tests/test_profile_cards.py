@@ -152,3 +152,29 @@ def test_unknown_card_cannot_be_adopted_without_human_designation(store: Profile
                               filename="怪格式.xlsx", store=store)
     with pytest.raises(ValueError, match="只有带提案"):
         adopt_profile_card(card=card, store=store, actor="alice", document_kind="bank_statement")
+
+
+def test_abstained_proposal_still_fingerprints_the_real_header(store: ProfileStore):
+    """弃权时也必须用真正的表头算指纹。
+
+    退回"第一个非空行"会把标题行算进去——那一行常含企业名称，
+    既让指纹失去复用价值，也把业务值带进了本应可跨租户共享的键。
+    """
+    rows = [['企业名称', '某某有限公司'],
+            ['账号', '123456'],
+            ['交易时间', '金额甲', '金额乙', '余额'],
+            ['2026-01-02', '10.00', '20.00', '999.00'],
+            ['2026-01-03', '30.00', '40.00', '111.00']]
+    card = build_profile_card(sheet=sheet_of(rows), document_kind="bank_statement",
+                              filename="怪格式.xlsx", store=store)
+    assert card["card_type"] == "SOURCE_PROFILE_UNKNOWN"
+    assert card["why"]["yields"]["key"] == fingerprint(rows[2], "bank_statement")
+    assert "某某有限公司" not in card["why"]["facts"]
+
+
+def test_card_without_any_locatable_header_carries_no_fingerprint(store: ProfileStore):
+    """连表头都定位不到时不编造指纹，等人工指认表头行之后再说。"""
+    card = build_profile_card(sheet=sheet_of([['只有一行说明文字']]), document_kind="bank_statement",
+                              filename="说明.xlsx", store=store)
+    assert card["card_type"] == "SOURCE_PROFILE_UNKNOWN"
+    assert card["why"]["yields"] is None and card["fingerprint"] == ""
