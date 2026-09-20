@@ -97,7 +97,7 @@ def test_failed_reextract_retires_old_facts_and_cannot_restore_via_reparse(clien
     import pytest
     a,f=setup(client,scope);s=client.app.state.service;typed=Scope(**scope)
     monkeypatch.setattr('app.ontology.service.PARSER_VERSION','failed-parser')
-    def fail(*args):raise ExtractionError('unsupported fixture')
+    def fail(*args, **kwargs):raise ExtractionError('unsupported fixture')
     monkeypatch.setattr('app.ontology.service.extract_workbook',fail)
     response=command(client,scope,'parse_artifact',a['object_id'],a['version'],'failed-reparse',{'document_kind':'purchase_invoices'})
     assert response.status_code==200

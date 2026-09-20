@@ -27,6 +27,7 @@ from app.ontology.procurement import ENGINE_VERSION, PAYMENT_TOLERANCE, procurem
 from app.ontology.baseline import VALIDATION_VERSION, previous_period, validate_confirmation
 from app.ontology.readiness import build_readiness
 from app.ontology.gateway import AGENT_SCHEMA_VERSION, GATEWAY_VERSION, AgentGateway, GatewayFailure
+from app.source_profiles import ProfileStore, scoped_resolver
 from app.tabular import ExtractionError, MAX_BYTES, PARSER_VERSION, ParseOptions, extract_workbook
 from app.payroll_mapping import PayrollMappingService
 from app.parse_plans import ParsePlanService, InspectRequest
@@ -122,6 +123,7 @@ def historical_prerequisite(job, plans, baseline_status):
 class OntologyService:
     def __init__(self, store: ObjectStore):
         self.store = store
+        self.profiles = ProfileStore(store.database)
         self.gateway = AgentGateway(store.database.settings)
         self.historical = HistoricalPreparation(self)
         self.historical_plans = HistoricalIssuePlans(self)
@@ -356,7 +358,9 @@ class OntologyService:
             return {"artifact": artifact, "facts": facts, "sheets": artifact["data"].get("parse_sheets", []), "counts": counts, "errors": artifact["data"].get("parse_errors", [])}
         extracted = None
         try:
-            extracted = _mapped if _mapped is not None else extract_workbook(content, options, scope.accounting_period_id)
+            extracted = _mapped if _mapped is not None else extract_workbook(
+                content, options, scope.accounting_period_id,
+                resolver=scoped_resolver(self.profiles, scope))
             if _mapped is None and options.document_kind == 'bank_statement':
                 extracted = self.bank_accounts.prepare(scope, artifact, extracted)
             if extracted.get('checks',{}).get('overall')=='REVIEW':

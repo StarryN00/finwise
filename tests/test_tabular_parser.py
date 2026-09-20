@@ -300,7 +300,7 @@ def test_xls_formatting_width_does_not_change_anchor_or_fact_identity(monkeypatc
     }
     with monkeypatch.context() as legacy:
         legacy.setattr(ontology_service, "PARSER_VERSION", "tabular-v3")
-        legacy.setattr(ontology_service, "extract_workbook", lambda *args: {"records": [legacy_record], "sheets": [], "errors": []})
+        legacy.setattr(ontology_service, "extract_workbook", lambda *args, **kwargs: {"records": [legacy_record], "sheets": [], "errors": []})
         before = parse(client, scope, source, kind="payroll", key="legacy-payroll").json()["effect"]
     assert before["artifact"]["data"]["parse_version"] == "tabular-v3"
     after = parse(client, scope, before["artifact"], kind="payroll", key="upgrade-payroll").json()["effect"]
