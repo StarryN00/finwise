@@ -1,5 +1,6 @@
 # 真实客户财务数据与数据库 —— 整目录排除，任何情况下不得入库
 data/
+.data/
 output/
 storage/
 
@@ -12,3 +13,4 @@ __pycache__/
 node_modules/
 deploy/staging.env
 deploy/staging-reports/
+*.egg-info/

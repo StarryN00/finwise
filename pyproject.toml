@@ -21,3 +21,6 @@ addopts = "-q"
 
 [tool.uvicorn]
 factory = false
+
+[tool.setuptools]
+packages = ["app", "app.ontology", "app.integrations"]
