@@ -21,9 +21,6 @@ CENT = Decimal("0.01")
 
 # 余额表表头是两行：第一行是期初/本期发生/期末，第二行是每段下的借方/贷方。
 HEADER_TOP = ("科目编码", "科目", "期初余额", "期末余额")
-# 需要辅助核算的往来类科目。判定只看它在余额表里有没有下级明细，
-# 这里的前缀只用于在没有明细时提醒人补，不用于臆造明细。
-AUXILIARY_PREFIXES = ("1122", "1123", "1221", "2202", "2203", "2241")
 
 
 class OpeningBalanceError(ValueError):
@@ -116,10 +113,11 @@ def to_confirmation(
 
     balances = []
     for root in roots:
+        # 有下级就保留下级，不按科目类别筛。按前缀挑"哪些算辅助核算"会丢信息：
+        # 银行存款的下级是各个银行账户，正是要和对账单期初对上的那个数。
         detail = [leaf for leaf in leaves(root) if leaf.account_code != root.account_code]
-        needs_auxiliary = bool(detail) and root.account_code.startswith(AUXILIARY_PREFIXES)
         auxiliary = []
-        if needs_auxiliary:
+        if detail:
             for leaf in detail:
                 auxiliary.append({
                     "key": leaf.account_name or leaf.account_code,
@@ -137,7 +135,7 @@ def to_confirmation(
             "opening_debit": format(root.closing_debit, ".2f"),
             "opening_credit": format(root.closing_credit, ".2f"),
             "source_anchor": {"row": root.row, "region": f"{sheet_name}!{root.row}"},
-            "requires_auxiliary": needs_auxiliary,
+            "requires_auxiliary": bool(detail),
             "auxiliary": auxiliary,
         })
     return {
@@ -148,4 +146,56 @@ def to_confirmation(
         "currency": "CNY",
         "completeness_confirmed": True,
         "balances": balances,
+    }
+
+
+def as_extracted(sheet: dict[str, Any], *, period: str, sheet_name: str = "余额表") -> dict[str, Any]:
+    """产出与 opening_balance 别名路径同形的提取结果。
+
+    账套导出的余额表是两行表头（期初／本期发生／期末，各自再分借贷），
+    "借方金额"在同一行里出现三次，逐列名匹配的别名表接不住。这里按
+    科目树解析，但记录形状保持一致，基线比对逻辑不需要分叉。
+    """
+    roots = parse_balance_sheet(sheet)
+    debit, credit = trial_balance(roots)
+    records: list[dict[str, Any]] = []
+    for root in roots:
+        for leaf in leaves(root):
+            detail = leaf.account_code != root.account_code
+            anchor = {"row": leaf.row, "region": f"{sheet_name}!{leaf.row}"}
+            records.append({
+                "record_type": "OPENING_BALANCE",
+                "source_anchor": anchor,
+                "original_value": {"sheet": sheet_name, "row": leaf.row,
+                                   "headers": ["科目编码", "科目", "期末借方", "期末贷方"],
+                                   "values": [leaf.account_code, leaf.account_name,
+                                              format(leaf.closing_debit, ".2f"),
+                                              format(leaf.closing_credit, ".2f")],
+                                   "cell_types": ["General"] * 4, "formulas": {}},
+                "normalized_value": {
+                    "account_code": root.account_code,
+                    "account_name": root.account_name,
+                    "auxiliary_key": leaf.account_name if detail else "",
+                    # 必须是真布尔：下游用 bool() 判断，中文的"否"是非空字符串，
+                    # 会被当成 True，把没有明细的科目全部误判成"缺辅助明细"。
+                    "requires_auxiliary": detail,
+                    "closing_debit": format(leaf.closing_debit, ".2f"),
+                    "closing_credit": format(leaf.closing_credit, ".2f"),
+                    "opening_debit": format(leaf.closing_debit, ".2f"),
+                    "opening_credit": format(leaf.closing_credit, ".2f"),
+                    "period": period,
+                },
+                "field_sources": {},
+                "extraction_issues": [],
+                "extraction_confidence": 1.0,
+                "period_check": "PASS",
+            })
+    return {
+        "records": records,
+        "sheets": [{"sheet": sheet_name, "status": "EXTRACTED", "rows": len(records),
+                    "mapping_origin": "ACCOUNT_TREE",
+                    "trial_balance": {"debit": format(debit, ".2f"), "credit": format(credit, ".2f")}}],
+        "errors": ([] if debit == credit
+                   else [f"余额表期末试算不平衡：借 {debit}，贷 {credit}"]),
+        "checks": {"overall": "PASS" if debit == credit else "REVIEW", "items": []},
     }

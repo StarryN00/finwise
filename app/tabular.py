@@ -889,6 +889,14 @@ def extract_workbook(content, options: ParseOptions, period, resolver=None):
                     break
         if header is None:
             header = next(((r, header_mapping(r["values"], options.document_kind)) for r in nonempty[:20] if header_mapping(r["values"], options.document_kind)), None)
+        if header is None and options.document_kind == "opening_balance":
+            # 账套导出的余额表是两行表头，"借方金额"在同一行里出现三次，
+            # 逐列名匹配接不住。改按科目树解析，记录形状保持一致。
+            from app.opening_balances import OpeningBalanceError, as_extracted
+            try:
+                return as_extracted(sheet, period=period)
+            except OpeningBalanceError:
+                pass
         if header is None:
             summaries.append({"sheet": sheet["name"], "status": "UNRECOGNIZED", "reason": "未找到当前资料类型所需的明确列标题", "rows": len(nonempty)})
             continue

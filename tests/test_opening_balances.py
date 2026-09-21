@@ -127,14 +127,18 @@ def test_current_account_details_become_auxiliary_entries():
     assert payable["auxiliary"][1]["closing_debit"] == "50292.10"
 
 
-def test_a_non_current_account_with_children_needs_no_auxiliary():
+def test_bank_sub_accounts_are_preserved_as_detail():
+    """按科目类别筛"哪些算辅助核算"会丢信息：银行存款的下级是各个银行账户，
+    正是要和当月对账单期初对上的那个数，绝不能在基线里被抹掉。"""
     payload = confirmation([
         line(1, "1002", "银行存款", "101017.78"),
         line(2, "100201", "江苏银行0758", "101017.78"),
         line(3, "3001", "实收资本", "", "101017.78"),
     ])
     bank = next(b for b in payload["balances"] if b["account_code"] == "1002")
-    assert bank["requires_auxiliary"] is False and bank["auxiliary"] == []
+    assert bank["requires_auxiliary"] is True
+    assert [a["key"] for a in bank["auxiliary"]] == ["江苏银行0758"]
+    assert bank["auxiliary"][0]["opening_debit"] == "101017.78"
 
 
 def test_the_payload_passes_the_baseline_contract():
@@ -162,10 +166,17 @@ def test_the_real_july_sheet_produces_a_valid_baseline():
 
 @pytest.mark.skipif(not REAL, reason="需要本地语料")
 def test_the_real_opening_bank_balance_matches_the_august_statement():
-    """202607 期末 = 8 月对账单倒算出的期初。基线与当月流水必须在这一点接上。"""
+    """202607 期末 = 8 月对账单倒算出的期初。基线与当月流水必须在这一点接上，
+    而且要具体到那个银行账户，不能只有汇总的银行存款。"""
     roots = parse_balance_sheet(read_workbook(Path(REAL[0]).read_bytes())[0])
     bank = next(r for r in roots if r.account_code == "1002")
     assert bank.closing_debit == Decimal("101017.78")
+
+    payload = to_confirmation(roots, prior_period="2026-07", close_reference="余额表",
+                              balance_source=source(), close_source=source())
+    entry = next(b for b in payload["balances"] if b["account_code"] == "1002")
+    account = next(a for a in entry["auxiliary"] if a["key"] == "江苏银行0758")
+    assert account["opening_debit"] == "101017.78"
 
 
 @pytest.mark.skipif(not REAL, reason="需要本地语料")
@@ -177,3 +188,34 @@ def test_the_real_current_accounts_reconcile_by_net():
     assert len(detail) == 33
     assert any(d.closing_debit > 0 for d in detail) and any(d.closing_credit > 0 for d in detail)
     assert sum(d.net for d in detail) == payable.net
+
+
+def test_the_auxiliary_flag_is_a_real_boolean():
+    """下游用 bool() 判断这个字段。写成中文的"否"会被当成 True，
+    把所有没有明细的科目误判成"标记需要辅助核算但没有辅助明细"。"""
+    from app.opening_balances import as_extracted
+    extracted = as_extracted(sheet([
+        line(1, "1403", "原材料", "1000.00"),
+        line(2, "2202", "应付账款", "", "1000.00"),
+        line(3, "220201", "甲供应商", "", "1000.00"),
+    ]), period="2026-07")
+    flags = {r["normalized_value"]["account_code"]: r["normalized_value"]["requires_auxiliary"]
+             for r in extracted["records"]}
+    assert flags["1403"] is False
+    assert flags["2202"] is True
+
+
+def test_account_tree_extraction_keeps_the_generic_record_shape():
+    from app.opening_balances import as_extracted
+    extracted = as_extracted(sheet(BALANCED), period="2026-07")
+    record = extracted["records"][0]
+    assert record["record_type"] == "OPENING_BALANCE"
+    assert set(record) >= {"source_anchor", "normalized_value", "extraction_issues", "period_check"}
+    assert extracted["sheets"][0]["mapping_origin"] == "ACCOUNT_TREE"
+
+
+def test_an_unbalanced_sheet_surfaces_as_a_review_check():
+    from app.opening_balances import as_extracted
+    extracted = as_extracted(sheet([line(1, "1002", "银行存款", "10.00")]), period="2026-07")
+    assert extracted["checks"]["overall"] == "REVIEW"
+    assert any("试算不平衡" in e for e in extracted["errors"])
