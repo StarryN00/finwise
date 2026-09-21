@@ -351,14 +351,16 @@ function render() {
   else if(state.view==='mapping')html+=renderMapping();
   else if(state.view==='parse-plans')html+=renderParsePlans();
   else if(state.view==='profile-cards')html+=renderProfileCards();
+  else if(state.view==='voucher-proposals')html+=renderVoucherProposals();
   else if(state.view==='materials')html+=renderMaterialWorkbench();
   else if(state.view==='historical')html+=renderHistoricalDetails();
   else if(state.view==='vouchers')html+=renderVoucherPage();
   else if(state.view==='history')html+='<button class="text return-link" data-action="return-current">← 返回本期办理</button><section class="panel pad" id="historyContent"><h2>往期数据与已归档凭证</h2><p>正在读取授权历史…</p></section>';
-  else html+=renderProgress()+renderPrerequisite()+renderStructure()+`<div class="work-grid">${state.category?renderCategory():renderTask()}${renderResults()}</div><nav class="secondary-nav" aria-label="本期详情"><button class="text" data-action="artifacts">全部资料</button><button class="text" data-action="groups">业务对象与处理工具</button><button class="text" data-action="vouchers">本期凭证</button><button class="text" data-action="profile-cards-open">待确认事项${typeof profileCardBadgeCount==='function'&&profileCardBadgeCount()?` ${profileCardBadgeCount()}`:''}</button><button class="text" data-action="history">往期与归档</button><button class="text" data-action="upload" ${readonly()?'disabled':''}>补充资料</button><button class="text" data-action="refresh">刷新状态</button></nav>`;
+  else html+=renderProgress()+renderPrerequisite()+renderStructure()+`<div class="work-grid">${state.category?renderCategory():renderTask()}${renderResults()}</div><nav class="secondary-nav" aria-label="本期详情"><button class="text" data-action="artifacts">全部资料</button><button class="text" data-action="groups">业务对象与处理工具</button><button class="text" data-action="vouchers">本期凭证</button><button class="text" data-action="voucher-proposals-open">凭证提案</button><button class="text" data-action="profile-cards-open">待确认事项${typeof profileCardBadgeCount==='function'&&profileCardBadgeCount()?` ${profileCardBadgeCount()}`:''}</button><button class="text" data-action="history">往期与归档</button><button class="text" data-action="upload" ${readonly()?'disabled':''}>补充资料</button><button class="text" data-action="refresh">刷新状态</button></nav>`;
   $('workspace').innerHTML=html;
   if(typeof installProfileCardActions==='function')installProfileCardActions();
   if(typeof installNewScopeActions==='function')installNewScopeActions();
+  if(typeof installVoucherProposalActions==='function')installVoucherProposalActions();
   if(typeof installHistoricalActions==='function'&&state.view==='current') {
     const nav=document.querySelector('.secondary-nav');
     const job=state.overview.historical_preparation;
@@ -588,6 +590,7 @@ if(typeof installBankActions==='function')installBankActions();
 if(typeof installParsePlanActions==='function')installParsePlanActions();
 if(typeof installNewScopeActions==='function')installNewScopeActions();
 if(typeof installProfileCardActions==='function')installProfileCardActions();
+if(typeof installVoucherProposalActions==='function')installVoucherProposalActions();
 if(location.protocol==='file:'){
   if(typeof location.replace==='function')location.replace(OPERATOR_HTTP_ENTRY);
   else notify('真实工作台需要登录服务，请通过当前 Staging 服务地址打开。',true);

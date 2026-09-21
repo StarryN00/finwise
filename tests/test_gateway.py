@@ -196,3 +196,25 @@ def test_scanned_documents_refuse_to_run_on_a_model_without_vision(tmp_path):
                         storage_path=tmp_path / "a", agent_model="m-default")
     with pytest.raises(ValueError, match="FINWISE_AGENT_MODEL_VISION"):
         settings.model_for("SCANNED_DOCUMENT")
+
+
+def test_env_file_is_read_but_never_overrides_the_real_environment(tmp_path, monkeypatch):
+    """一个存在却不被读取的 .env 是个陷阱：看着配好了，运行时却是默认值。"""
+    from app.config import Settings
+
+    (tmp_path / ".env").write_text(
+        "FINWISE_AGENT_MODE=gateway\nFINWISE_AGENT_MODEL_VISION=m-vision\n"
+        "# 注释行\n\n非法行没有等号\n", encoding="utf-8")
+    for name in ("FINWISE_AGENT_MODE", "FINWISE_AGENT_MODEL_VISION", "FINWISE_AGENT_MODEL"):
+        monkeypatch.delenv(name, raising=False)
+    monkeypatch.setenv("FINWISE_AGENT_MODEL", "从环境来的")
+
+    settings = Settings.from_env(tmp_path)
+    assert settings.agent_mode == "gateway"
+    assert settings.agent_model_vision == "m-vision"
+    assert settings.agent_model == "从环境来的", "真实环境变量必须优先于 .env"
+
+
+def test_a_missing_env_file_is_not_an_error(tmp_path):
+    from app.config import Settings
+    Settings.load_env_file(tmp_path)  # 不应抛出

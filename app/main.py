@@ -66,21 +66,23 @@ def create_app(settings: Optional[Settings] = None, *, initialize: bool = True) 
 
     static_dir = settings.root / "static"
 
-    class HtmlNoCacheStatic(StaticFiles):
-        """HTML 页面不缓存，带版本号的 js/css 仍然照常缓存。
+    class RevalidatingStatic(StaticFiles):
+        """静态资源一律要求重新验证。
 
-        页面本身没有版本查询串，浏览器会长期沿用旧副本。新增一个脚本之后，
-        旧页面既不会请求它，也不会报错，表现为"功能加了但界面上没有"——
-        这种沉默的陈旧比一次网络往返昂贵得多。
+        资源上挂的 ?v= 版本号是手写的，改了文件忘了改版本号是必然会发生的事 ——
+        实测就发生过两次：一次是新增脚本后旧 HTML 不去请求它，一次是改了
+        operator.js 而版本号没动。两次的表现都一样：功能确实加了，界面上却
+        毫无反应，控制台也没有报错。这种沉默的陈旧比一次条件请求昂贵得多。
+
+        这里只是要求重新验证，不是禁止缓存：文件没变时仍然走 304。
         """
 
         async def get_response(self, path, scope):
             response = await super().get_response(path, scope)
-            if path.endswith(".html"):
-                response.headers["Cache-Control"] = "no-cache, must-revalidate"
+            response.headers["Cache-Control"] = "no-cache, must-revalidate"
             return response
 
-    app.mount("/static", HtmlNoCacheStatic(directory=static_dir), name="static")
+    app.mount("/static", RevalidatingStatic(directory=static_dir), name="static")
 
     @app.get("/styles.css", include_in_schema=False)
     def root_stylesheet() -> FileResponse:

@@ -33,9 +33,27 @@ class Settings:
     gateway_vision_timeout_seconds: float = 180.0
     gateway_max_retries: int = 0
 
+    @staticmethod
+    def load_env_file(root: Path) -> None:
+        """读取项目根的 .env，但不覆盖已存在的环境变量。
+
+        没有这一步的话 .env 只是一个看着像配置、实际不生效的文件 ——
+        真实环境变量优先，便于部署与临时覆盖。
+        """
+        path = root / ".env"
+        if not path.is_file():
+            return
+        for line in path.read_text(encoding="utf-8").splitlines():
+            line = line.strip()
+            if not line or line.startswith("#") or "=" not in line:
+                continue
+            key, _, value = line.partition("=")
+            os.environ.setdefault(key.strip(), value.strip())
+
     @classmethod
     def from_env(cls, root: Optional[Path] = None) -> "Settings":
         project_root = root or Path(__file__).resolve().parents[1]
+        cls.load_env_file(project_root)
         database_path = Path(os.getenv("FINWISE_DATABASE_PATH", str(project_root / "data" / "finwise.db")))
         storage_path = Path(os.getenv("FINWISE_STORAGE_PATH", str(project_root / "data" / "artifacts")))
         if not database_path.is_absolute():

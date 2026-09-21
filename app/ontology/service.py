@@ -5,6 +5,7 @@ import hashlib
 import json
 import unicodedata
 from copy import deepcopy
+from concurrent.futures import ThreadPoolExecutor, as_completed
 from decimal import Decimal, InvalidOperation
 from typing import Any, Callable
 
@@ -2096,6 +2097,48 @@ class OntologyService:
         except Exception:
             pass
 
+        # 同一种说法只问一次模型。真实一个月里"收费"出现 4 次、"扣税"3 次，
+        # 逐笔问既慢又可能得到不一致的答案 —— 同样的摘要必须落到同一个科目。
+        decided: dict[tuple[str, str], tuple[Optional[tuple[str, str]], str]] = {}
+
+        def decide(summary: str, counterparty: str, amount: Decimal, direction: str):
+            rule, why = match_account(summary, learned["expense_rules"], learned["vocabulary"])
+            if rule is not None:
+                return (rule.account_code, rule.account_name), why
+            if classifier is None:
+                return None, why
+            choice = classify(summary=summary, counterparty=counterparty,
+                              amount=format(amount, ".2f"), direction=direction,
+                              vocabulary=learned["vocabulary"], reader=classifier,
+                              party_accounts=party_history(counterparty, learned["vouchers"]))
+            if choice.outcome == "PICK":
+                return ((choice.account_code, choice.account_name),
+                        f"{choice.reason}（模型判断，置信 {choice.confidence}）")
+            return None, choice.reason
+
+        # 各笔判断互不相关，串行等待纯属浪费：真实一个月 27 次判断串行要近两分钟。
+        pending: dict[tuple[str, str], tuple[str, str, Decimal, str]] = {}
+        for fact in facts:
+            value = fact["data"]["normalized_value"]
+            expense, income = Decimal(value.get("expense") or 0), Decimal(value.get("income") or 0)
+            if expense == 0 and income == 0:
+                continue
+            summary = value.get("summary") or ""
+            counterparty = value.get("counterparty") or ""
+            key = (normalize_party(summary), normalize_party(counterparty))
+            pending.setdefault(key, (summary, counterparty,
+                                     expense if expense > 0 else income,
+                                     "PAYMENT" if expense > 0 else "RECEIPT"))
+        if pending:
+            with ThreadPoolExecutor(max_workers=min(8, len(pending))) as pool:
+                futures = {pool.submit(decide, *args): key for key, args in pending.items()}
+                for future in as_completed(futures):
+                    key = futures[future]
+                    try:
+                        decided[key] = future.result()
+                    except Exception as exc:
+                        decided[key] = (None, f"科目判断未完成：{exc}"[:80])
+
         proposals, abstained = [], []
         for fact in facts:
             value = fact["data"]["normalized_value"]
@@ -2113,18 +2156,8 @@ class OntologyService:
             if tax is None and len(candidates) == 1:
                 tax = Decimal(candidates[0][1])
 
-            rule, why = match_account(summary, learned["expense_rules"], learned["vocabulary"])
-            chosen = (rule.account_code, rule.account_name) if rule else None
-            if chosen is None and classifier is not None:
-                choice = classify(summary=summary, counterparty=counterparty,
-                                  amount=format(amount, ".2f"), direction=direction,
-                                  vocabulary=learned["vocabulary"], reader=classifier,
-                                  party_accounts=party_history(counterparty, learned["vouchers"]))
-                if choice.outcome == "PICK":
-                    chosen = (choice.account_code, choice.account_name)
-                    why = f"{choice.reason}（模型判断，置信 {choice.confidence}）"
-                else:
-                    why = choice.reason
+            chosen, why = decided.get(
+                (normalize_party(summary), normalize_party(counterparty)), (None, "未判断"))
             proposal = propose(
                 bank_account_code=bank_code, bank_account_name=bank_name,
                 counterparty=counterparty, summary=summary, amount=amount,
@@ -2136,9 +2169,8 @@ class OntologyService:
                 "transaction": {"date": value.get("transaction_date"), "summary": summary,
                                 "counterparty": counterparty, "amount": format(amount, ".2f"),
                                 "direction": direction},
-                "account_hint": ({"account_code": rule.account_code,
-                                  "account_name": rule.account_name, "why": why}
-                                 if rule else {"why": why}),
+                "account_hint": ({"account_code": chosen[0], "account_name": chosen[1], "why": why}
+                                 if chosen else {"why": why}),
                 "proposal": proposal.model_dump(mode="json"),
             }
             (proposals if proposal.outcome == "PROPOSAL" else abstained).append(entry)
@@ -2149,6 +2181,7 @@ class OntologyService:
             "proposals": proposals, "abstained": abstained,
             "counts": {"transactions": len(facts), "proposed": len(proposals),
                        "abstained": len(abstained), "adoptable": len(adoptable)},
+            "classified": len(decided),
             "learned": {"artifact": learned["artifact"], "periods": learned["periods"],
                         "vouchers": len(learned["vouchers"]),
                         "templates": len(learned["templates"]),

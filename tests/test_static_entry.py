@@ -163,6 +163,7 @@ def test_formal_operator_page_connects_real_write_workflows_without_external_ass
         'operator-accounts.js?v=guided-decision-2',
         'operator-mapping.js?v=guided-decision-2',
         'operator-parse-plans.js?v=structure-plan-1', 'operator-profile-cards.js?v=profile-cards-1', 'operator-new-scope.js?v=new-scope-1',
+        'operator-voucher-proposals.js?v=voucher-proposals-1',
         'operator.js?v=login-flow-1']
     for asset in parser.external_assets:
         assert client.get('/static/' + asset).status_code == 200
@@ -170,13 +171,24 @@ def test_formal_operator_page_connects_real_write_workflows_without_external_ass
     assert response.status_code == 200
 
 
-def test_html_pages_are_revalidated_while_versioned_assets_stay_cacheable(client):
-    """页面没有版本查询串，缓存住之后新增的脚本既不会被请求也不会报错，
-    表现为"功能加了但界面上没有"。这种沉默的陈旧必须从响应头上挡掉。"""
-    page = client.get("/static/operator.html")
-    assert page.status_code == 200
-    assert "no-cache" in page.headers.get("cache-control", "")
+def test_static_assets_are_always_revalidated(client):
+    """资源上的 ?v= 是手写的，改了文件忘了改版本号必然会发生 —— 实测发生过两次，
+    表现都是"功能加了但界面毫无反应，控制台也不报错"。
+    这里只要求重新验证，文件没变仍然走 304。"""
+    for path in ("/static/operator.html", "/static/operator.js?v=login-flow-1",
+                 "/static/operator.css?v=login-flow-1"):
+        response = client.get(path)
+        assert response.status_code == 200, path
+        assert "no-cache" in response.headers.get("cache-control", ""), path
 
-    asset = client.get("/static/operator.js?v=login-flow-1")
-    assert asset.status_code == 200
-    assert "no-cache" not in asset.headers.get("cache-control", "")
+
+def test_every_page_module_registers_its_actions_at_boot():
+    """在 render() 里注册不够：一个企业都没有、或停在别的视图时 render 不会跑，
+    那些入口就点不动。实测漏注册时按钮存在但毫无反应，控制台也没有报错。"""
+    root = Path(__file__).resolve().parents[1]
+    script = (root / "static" / "operator.js").read_text(encoding="utf-8")
+    boot = script[script.index("if(location.protocol==='file:')") - 2000:
+                  script.index("if(location.protocol==='file:')")]
+    for installer in ("installNewScopeActions", "installProfileCardActions",
+                      "installVoucherProposalActions"):
+        assert installer in boot, f"{installer} 未在启动时注册"
