@@ -25,7 +25,12 @@ class Settings:
     deepseek_api_key: str = ""
     agent_prompt_version: str = "finwise-agent-prompt-v1"
     agent_max_tokens: int = 1200
+    # 逐行抄录整份对账单的输出远大于普通判断任务：35 行就已经超出 1200。
+    # 截断的表现是"输出不是合法 JSON"，很容易被误判成模型不会用 JSON。
+    agent_vision_max_tokens: int = 16000
     gateway_timeout_seconds: float = 45.0
+    # 图像识别要逐行抄录，比判断类调用慢得多；切条重读还要一次发多张图。
+    gateway_vision_timeout_seconds: float = 180.0
     gateway_max_retries: int = 0
 
     @classmethod
@@ -65,7 +70,9 @@ class Settings:
             deepseek_api_key=os.getenv("FINWISE_DEEPSEEK_API_KEY", ""),
             agent_prompt_version=os.getenv("FINWISE_AGENT_PROMPT_VERSION", "finwise-agent-prompt-v1"),
             agent_max_tokens=env_int("FINWISE_AGENT_MAX_TOKENS", 1200),
+            agent_vision_max_tokens=env_int("FINWISE_AGENT_VISION_MAX_TOKENS", 16000),
             gateway_timeout_seconds=env_float("FINWISE_GATEWAY_TIMEOUT_SECONDS", 45.0),
+            gateway_vision_timeout_seconds=env_float("FINWISE_GATEWAY_VISION_TIMEOUT_SECONDS", 180.0),
             gateway_max_retries=env_int("FINWISE_GATEWAY_MAX_RETRIES", 0),
         )
 

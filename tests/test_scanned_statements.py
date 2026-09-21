@@ -37,7 +37,7 @@ def sample(rows=None, **totals_overrides):
 def test_a_well_read_statement_passes_every_check():
     report = verify(parse_statement(sample()))
     assert report.outcome == "ACCEPTED"
-    assert [c.passed for c in report.checks] == [True] * 5 + [True]
+    assert report.failures == []
     assert report.opening_balance == Decimal("101017.78")
 
 
@@ -118,6 +118,34 @@ def test_inconsistent_header_totals_are_caught_by_the_opening_derivation():
                                            credit_count=1)))
     assert report.outcome == "REVIEW"
     assert "期初倒算与期末吻合" in {c.name for c in report.failures}
+
+
+def test_an_out_of_period_date_is_caught():
+    """真实样本里有一笔 2026-09-03 出现在 8 月对账单中 —— 银行数据本身的异常，
+    但操作人必须看到它，不能默默入账。"""
+    rows = sample()["rows"]
+    rows[1] = dict(rows[1], transaction_date="2026-09-03")
+    report = verify(parse_statement(sample(rows=rows)))
+    assert report.outcome == "REVIEW"
+    assert "日期落在对账单期间内" in {c.name for c in report.failures}
+
+
+def test_a_date_that_goes_backwards_is_caught_even_inside_the_period():
+    """模型把 2026-09-03 读成了 2026-08-02：落在期间内，六道数字校验全过，
+    只有时序倒退能抓住它。"""
+    rows = sample()["rows"]
+    rows[1] = dict(rows[1], transaction_date="2026-08-02")
+    report = verify(parse_statement(sample(rows=rows)))
+    assert report.outcome == "REVIEW"
+    failures = {c.name for c in report.failures}
+    assert failures == {"日期随序号不倒退"}, "数字校验应当全过，只有时序能发现这个错"
+
+
+def test_text_fields_are_declared_unverified():
+    """摘要没有任何算术约束，读错不会被任何一道校验抓到，必须一路标到人工确认。"""
+    report = verify(parse_statement(sample()))
+    assert "summary" in report.unverified_fields
+    assert "counterparty_name" in report.unverified_fields
 
 
 def test_every_check_reports_what_it_compared():
@@ -233,3 +261,88 @@ def test_real_scanned_statement_does_not_hard_fail_the_import():
 def test_a_corrupt_pdf_still_fails_explicitly():
     from app.scanned_statements import is_image_only_pdf
     assert is_image_only_pdf(b"%PDF-unknown") is False
+
+
+# ---------- 多次读取取共识 ----------
+
+def test_majority_wins_and_the_minority_is_still_reported():
+    """三次里两次一致：采用多数值，但仍然如实记下有过分歧。"""
+    from app.scanned_statements import consensus
+    good = parse_statement(sample())
+    typo = sample()
+    typo["rows"][1]["debit"] = "1.30"
+    merged, disputed = consensus([good, parse_statement(typo), good])
+    assert merged.rows[1].debit == Decimal("1.80")
+    assert [(d.sequence, d.field) for d in disputed] == [(2, "debit")]
+    assert sorted(disputed[0].values) == ["1.30", "1.80"]
+
+
+def test_a_field_that_never_agrees_is_disputed():
+    """真实样本第 9 行被印章遮挡，三次读出三个日期 —— 没有多数可言。"""
+    from app.scanned_statements import consensus
+    variants = []
+    for date in ("2026-08-02", "2026-08-03", "2026-09-02"):
+        payload = sample()
+        payload["rows"][0]["transaction_date"] = date
+        variants.append(parse_statement(payload))
+    _, disputed = consensus(variants)
+    dates = [d for d in disputed if d.field == "transaction_date"]
+    assert len(dates) == 1 and len(dates[0].values) == 3
+
+
+def test_a_row_missing_from_some_rounds_is_flagged():
+    from app.scanned_statements import consensus
+    full = parse_statement(sample())
+    short = sample()
+    short["rows"] = short["rows"][:2]
+    _, disputed = consensus([full, parse_statement(short), full])
+    assert any(d.field == "行存在性" and d.sequence == 3 for d in disputed)
+
+
+def test_single_round_needs_no_consensus():
+    from app.scanned_statements import consensus
+    only = parse_statement(sample())
+    merged, disputed = consensus([only])
+    assert merged is only and disputed == []
+
+
+def test_consensus_read_rejects_when_numbers_or_dates_disagree(monkeypatch):
+    import app.scanned_statements as module
+    from app.scanned_statements import read_with_consensus
+    monkeypatch.setattr(module, "page_images", lambda content: [b"\x89PNG\r\n\x1a\n"])
+    typo = sample()
+    typo["rows"][1]["debit"] = "1.30"
+    reader = FakeReader(sample(), typo, sample())
+    _, report = read_with_consensus(b"pdf", reader, rounds=3)
+    assert report.outcome == "REVIEW"
+    assert "多次读取金额与日期一致" in {c.name for c in report.failures}
+    assert report.rounds == 3
+
+
+def test_consensus_read_accepts_when_every_round_agrees(monkeypatch):
+    import app.scanned_statements as module
+    from app.scanned_statements import read_with_consensus
+    monkeypatch.setattr(module, "page_images", lambda content: [b"\x89PNG\r\n\x1a\n"])
+    _, report = read_with_consensus(b"pdf", FakeReader(sample()), rounds=3)
+    assert report.outcome == "ACCEPTED" and report.disputed == []
+
+
+def test_text_disagreement_alone_does_not_block_but_is_recorded(monkeypatch):
+    """对方户名的形近字每次都不同，不该因此卡住整份对账单，但必须留痕待人工核对。"""
+    import app.scanned_statements as module
+    from app.scanned_statements import read_with_consensus
+    monkeypatch.setattr(module, "page_images", lambda content: [b"\x89PNG\r\n\x1a\n"])
+    variant = sample()
+    variant["rows"][0]["counterparty_name"] = "候文军"
+    reader = FakeReader(sample(), variant, sample())
+    _, report = read_with_consensus(b"pdf", reader, rounds=3)
+    assert report.outcome == "ACCEPTED"
+    assert any(d.field == "counterparty_name" for d in report.disputed)
+
+
+def test_all_rounds_failing_raises_rather_than_returning_nothing(monkeypatch):
+    import app.scanned_statements as module
+    from app.scanned_statements import ScannedStatementError, read_with_consensus
+    monkeypatch.setattr(module, "page_images", lambda content: [b"\x89PNG\r\n\x1a\n"])
+    with pytest.raises(ScannedStatementError):
+        read_with_consensus(b"pdf", FakeReader({"totals": {}, "rows": []}), rounds=2)

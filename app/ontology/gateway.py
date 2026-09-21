@@ -238,7 +238,7 @@ class DeepSeekProvider:
                 {"role": "user", "content": blocks},
             ],
             "temperature": 0,
-            "max_tokens": self.settings.agent_max_tokens,
+            "max_tokens": self.settings.agent_vision_max_tokens,
             "response_format": {"type": "json_object"},
         }
         request = Request(
@@ -254,7 +254,7 @@ class DeepSeekProvider:
         )
         started = time.monotonic()
         try:
-            with self._opener(request, timeout=self.settings.gateway_timeout_seconds) as response:
+            with self._opener(request, timeout=self.settings.gateway_vision_timeout_seconds) as response:
                 response_body = json.loads(response.read().decode("utf-8"))
         except HTTPError as error:
             raise GatewayFailure(f"图像识别服务返回 HTTP {error.code}：{self._error_body(error)}",
@@ -268,10 +268,17 @@ class DeepSeekProvider:
             content = response_body["choices"][0]["message"]["content"]
         except (KeyError, IndexError, TypeError) as error:
             raise GatewayFailure("图像识别返回缺少 choices.message.content", "VISION_INVALID_RESPONSE") from error
+        reason = response_body["choices"][0].get("finish_reason")
         try:
             output = json.loads(content)
         except (json.JSONDecodeError, TypeError) as error:
-            raise GatewayFailure("图像识别输出不是合法 JSON，任务已暂停", "VISION_INVALID_JSON") from error
+            # 只说"不是合法 JSON"会把人引向"模型不会输出 JSON"，而最常见的原因
+            # 其实是输出被 max_tokens 截断。把截断信号和内容开头一并交出来。
+            detail = "输出被 max_tokens 截断" if reason == "length" else f"finish_reason={reason}"
+            preview = (content or "")[:160].replace("\n", " ")
+            raise GatewayFailure(
+                f"图像识别输出不是合法 JSON（{detail}），任务已暂停。内容开头：{preview}",
+                "VISION_INVALID_JSON") from error
         if not isinstance(output, dict):
             raise GatewayFailure("图像识别输出必须是 JSON 对象", "VISION_INVALID_SCHEMA")
         usage = response_body.get("usage") if isinstance(response_body.get("usage"), dict) else {}

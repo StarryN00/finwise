@@ -14,3 +14,7 @@ node_modules/
 deploy/staging.env
 deploy/staging-reports/
 *.egg-info/
+
+# 本地密钥，绝不入库
+.env
+.env.local

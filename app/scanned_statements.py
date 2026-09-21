@@ -107,12 +107,20 @@ class CheckResult(BaseModel):
     detail: StrictStr = ""
 
 
+# 校验覆盖不到的字段。摘要与对方户名没有任何算术约束，读错了不会被任何一道校验抓到，
+# 而它们恰恰驱动下游的科目归类。必须一路标到卡片上由人核对，不能当成已核实事实。
+UNVERIFIED_FIELDS = ("summary", "counterparty_name", "counterparty_account")
+
+
 class VerificationReport(BaseModel):
     model_config = ConfigDict(extra="forbid")
 
     outcome: Literal["ACCEPTED", "REVIEW"]
     checks: list[CheckResult]
     opening_balance: Optional[Decimal] = None
+    unverified_fields: list[StrictStr] = Field(default_factory=lambda: list(UNVERIFIED_FIELDS))
+    disputed: list["DisputedField"] = Field(default_factory=list)
+    rounds: StrictInt = 1
 
     @property
     def failures(self) -> list[CheckResult]:
@@ -155,6 +163,23 @@ def verify(statement: ScannedStatement) -> VerificationReport:
     checks.append(CheckResult(
         name="行间余额连续", passed=not breaks,
         detail="；".join(breaks[:3]) if breaks else f"{len(rows) - 1} 处衔接全部成立"))
+
+    # 日期不参与余额运算，所以前面那几道校验一个都抓不到它。真实样本里模型把
+    # 2026-09-03 读成了 2026-08-02：数字全对、校验全过，日期却是错的。
+    if statement.period_start and statement.period_end:
+        outside = [r for r in rows
+                   if not (statement.period_start <= r.transaction_date <= statement.period_end)]
+        checks.append(CheckResult(
+            name="日期落在对账单期间内", passed=not outside,
+            detail=("；".join(f"第{r.sequence}行 {r.transaction_date}" for r in outside[:3])
+                    if outside else f"{statement.period_start}~{statement.period_end} 全部落入")))
+
+    regressions = [current for previous, current in zip(rows, rows[1:])
+                   if current.transaction_date < previous.transaction_date]
+    checks.append(CheckResult(
+        name="日期随序号不倒退", passed=not regressions,
+        detail=("；".join(f"第{r.sequence}行 {r.transaction_date}" for r in regressions[:3])
+                if regressions else f"{len(rows)} 行按序号单调不减")))
 
     opening = rows[0].balance + rows[0].debit - rows[0].credit
     derived_closing = opening - totals.debit_total + totals.credit_total
@@ -254,6 +279,61 @@ def parse_statement(payload: dict[str, Any]) -> ScannedStatement:
         raise ScannedStatementError(f"扫描件读数不符合约定结构：{exc}") from exc
 
 
+class DisputedField(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    sequence: StrictInt
+    field: StrictStr
+    values: list[StrictStr]
+
+
+def consensus(statements: list[ScannedStatement]) -> tuple[ScannedStatement, list[DisputedField]]:
+    """多次读取取逐字段多数值，并把没有多数的字段列为分歧。
+
+    实测同一张扫描件连读三次，金额、日期、摘要都会变。数字的变化多半会被
+    后面的校验抓住，文本和日期不会。与其指望单次读准，不如把不确定性量化出来：
+    多次一致的才当成读到了，剩下的明说是分歧，交给人在卡片上定。
+    """
+    if len(statements) == 1:
+        return statements[0], []
+
+    def majority(values: list[str]) -> tuple[str, bool]:
+        counts: dict[str, int] = {}
+        for value in values:
+            counts[value] = counts.get(value, 0) + 1
+        best, hits = max(counts.items(), key=lambda item: item[1])
+        return best, hits * 2 > len(values)
+
+    by_sequence: dict[int, list[StatementRow]] = {}
+    for statement in statements:
+        for row in statement.rows:
+            by_sequence.setdefault(row.sequence, []).append(row)
+
+    merged: list[StatementRow] = []
+    disputed: list[DisputedField] = []
+    fields = ("transaction_date", "summary", "debit", "credit", "balance",
+              "counterparty_account", "counterparty_name")
+    for sequence in sorted(by_sequence):
+        variants = by_sequence[sequence]
+        if len(variants) < len(statements):
+            disputed.append(DisputedField(sequence=sequence, field="行存在性",
+                                          values=[f"{len(variants)}/{len(statements)} 次读到"]))
+        payload: dict[str, Any] = {"sequence": sequence}
+        for field in fields:
+            values = [str(getattr(row, field)) for row in variants]
+            picked, has_majority = majority(values)
+            payload[field] = picked
+            if not has_majority or len(set(values)) > 1:
+                disputed.append(DisputedField(sequence=sequence, field=field,
+                                              values=sorted(set(values))))
+        merged.append(StatementRow.model_validate(payload))
+
+    base = statements[0]
+    return ScannedStatement(account_name=base.account_name, account_number=base.account_number,
+                            currency=base.currency, period_start=base.period_start,
+                            period_end=base.period_end, totals=base.totals, rows=merged), disputed
+
+
 def read_and_verify(content: bytes, reader: StatementReader) -> tuple[ScannedStatement, VerificationReport]:
     """先整页读，校验不过再切条重读一次。两次都不过就如实交回待人工核对。"""
     images = page_images(content)
@@ -274,3 +354,36 @@ def read_and_verify(content: bytes, reader: StatementReader) -> tuple[ScannedSta
     if len(second_report.failures) < len(report.failures):
         return second, second_report
     return statement, report
+
+
+def read_with_consensus(content: bytes, reader: StatementReader, *, rounds: int = 3
+                        ) -> tuple[ScannedStatement, VerificationReport]:
+    """读若干次取共识，再对共识结果做校验。
+
+    单次读取实测三次只过一次；分歧集中在被印章遮挡处和形近字上。
+    共识把"读错"变成"读不准并且知道自己读不准"——后者可以交给人，前者不能。
+    """
+    images = page_images(content)
+    statements: list[ScannedStatement] = []
+    errors: list[str] = []
+    for _ in range(max(1, rounds)):
+        try:
+            statements.append(parse_statement(reader.read(images)))
+        except ScannedStatementError as exc:
+            errors.append(str(exc))
+    if not statements:
+        raise ScannedStatementError("；".join(errors) or "扫描件读取全部失败")
+
+    merged, disputed = consensus(statements)
+    report = verify(merged)
+    numeric = {"debit", "credit", "balance", "transaction_date", "行存在性"}
+    blocking = [item for item in disputed if item.field in numeric]
+    checks = list(report.checks)
+    checks.append(CheckResult(
+        name="多次读取金额与日期一致", passed=not blocking,
+        detail=("；".join(f"第{i.sequence}行 {i.field} {i.values}" for i in blocking[:3])
+                if blocking else f"{len(statements)} 次读取的金额与日期完全一致")))
+    passed = all(check.passed for check in checks)
+    return merged, VerificationReport(
+        outcome="ACCEPTED" if passed else "REVIEW", checks=checks,
+        opening_balance=report.opening_balance, disputed=disputed, rounds=len(statements))
