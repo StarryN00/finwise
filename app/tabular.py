@@ -669,7 +669,7 @@ def extract_generic_row(sheet, row, headers, mapping, kind, period, bank_account
             "period_check": "PASS" if row_period == period else "PERIOD_EXCEPTION"}
 
 
-def extract_row(sheet, row, headers, mapping, kind, period, bank_account, profile=None):
+def extract_row(sheet, row, headers, mapping, kind, period, bank_account, profile=None, document_period=None):
     if kind in GENERIC_RECORD_TYPES:
         return extract_generic_row(sheet, row, headers, mapping, kind, period, bank_account, None)
     values, number, issues, fields = row["values"], row["row"], [], {}
@@ -783,11 +783,21 @@ def extract_row(sheet, row, headers, mapping, kind, period, bank_account, profil
             normalized["receipt_total"] = income
         else:
             issues.append("direction：收入支出方向不明确，须核对冲正或汇总记录")
+    # 税局导出的发票清单在表头写明税款所属期。进项发票的期间归属是勾选所属期，
+    # 不是开票日期：7 月开的差旅票在 8 月勾选抵扣是常规业务，不该报成期间异常。
+    # 但开票月与所属期不一致确实需要会计判断费用归属，所以如实提示，不静默通过。
+    attributed = day[:7] if day else None
+    if kind in {"purchase_invoices", "sales_invoices"} and document_period:
+        if attributed and attributed != document_period:
+            issues.append(f"period：开票日期 {day} 不在税款所属期 {document_period} 内，"
+                          "属跨期抵扣，请确认费用归属期间")
+        attributed = document_period
+        normalized["period"] = document_period
     return {"record_type": record_type, "source_anchor": {"row": number, "region": f"{sheet}!A{number}:{column_name(len(headers))}{number}"},
             "original_value": {"sheet": sheet, "row": number, "headers": headers, "values": values, "cell_types": row["types"], "formulas": row["formulas"]},
             "normalized_value": normalized, "field_sources": fields, "extraction_issues": list(dict.fromkeys(issues)),
             "extraction_confidence": 0.0 if issues else 1.0,
-            "period_check": "PASS" if day and day[:7] == period else "PERIOD_EXCEPTION"}
+            "period_check": "PASS" if attributed == period else "PERIOD_EXCEPTION"}
 
 
 def bank_statistics_row(values):
@@ -958,7 +968,7 @@ def extract_workbook(content, options: ParseOptions, period, resolver=None):
                         continue
                 records.append(extract_generic_row(sheet["name"], candidate, row["values"], mapping, options.document_kind, period, options.bank_account_ref, document_period))
             else:
-                records.append(extract_row(sheet["name"], candidate, row["values"], mapping, options.document_kind, period, options.bank_account_ref, profile))
+                records.append(extract_row(sheet["name"], candidate, row["values"], mapping, options.document_kind, period, options.bank_account_ref, profile, document_period))
             parsed += 1
         summary = {"sheet": sheet["name"], "status": "EXTRACTED", "rows": parsed, "header_row": row["row"], "document_period": document_period, "reference_rows": references}
         if profile is not None:
