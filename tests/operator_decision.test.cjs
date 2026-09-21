@@ -74,10 +74,11 @@ test('zero-field options never create consent; explicit entry opens existing dia
  for(const id of ['parse','supplement']){const a=app();a.t.descriptor=descriptor(option(id));let writes=0,opened=0;a.c.actions['material-parse']=()=>writes++;a.c.actions['material-supplement']=()=>opened++;a.c.fileById=()=>({});a.c.openParseDialog=()=>opened++;
  const html=a.render();assert.doesNotMatch(html,/decision-summary|data-guide="commit"/);assert.match(html,/data-guide="open"/);assert.equal(a.c.decisionGuide(a.t).reviewed,'');a.c.decisionCommit(a.t);assert.equal(writes,0);assert.equal(opened,0);a.c.decisionOpen(a.t);assert.equal(opened,1);assert.equal(writes,0);assert.equal(a.c.decisionCanSubmit(a.t),false);}
 });
-test('source evidence precedes actions and presentation uses only bound record fields',()=>{
+test('actions precede the collapsed originals, and presentation uses only bound record fields',()=>{
  const a=app(),r=a.c.state.overview.material_review.records[0];r.comparison=[{field:'invoice_status',source_value:'已红冲-全额',value:'已红冲-全额',state:'DIRECT_MATCH',region:'表!O14'}];
  a.t.descriptor.presentation={type_label:'发票状态核对',explanation:'原件状态为“已红冲-全额”，不是读取错误。',records:[{id:'r',focus_fields:['invoice_status']}]};
- const html=a.render();assert.match(html,/已红冲-全额/);assert.match(html,/表!O14/);assert(html.indexOf('decision-evidence')<html.indexOf('<form'));assert.doesNotMatch(html,/责任人：|确认提交摘要/);
+ const html=a.render();assert.match(html,/已红冲-全额/);assert.match(html,/表!O14/);assert(html.indexOf('<form')<html.indexOf('decision-evidence'));
+ assert.match(html,/<details class="decision-originals"><summary>原件详情 · 1 条记录<\/summary>/);assert.doesNotMatch(html,/责任人：|确认提交摘要/);
  a.t.descriptor.presentation.records[0].id='outside';assert.equal(a.c.decisionPresentation(a.t),null);
 });
 test('common amount field uses a business label instead of a generic source placeholder',()=>{

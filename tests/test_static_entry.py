@@ -150,14 +150,14 @@ def test_formal_operator_page_connects_real_write_workflows_without_external_ass
     parser.close()
     assert parser.stack == []
     assert parser.external_assets == [
-            'operator.css?v=login-flow-1',
+            'operator.css?v=originals-collapsed-1',
         'operator-historical.js?v=guided-decision-2',
             'operator-materials.js?v=action-types-1',
         'operator-problem-review.js?v=action-types-1',
             'operator-material-navigation.js?v=action-types-1',
         'operator-bank-periods.js?v=bank-period-1',
             'operator-material-guidance.js?v=action-types-1',
-            'operator-decision.js?v=action-types-1',
+            'operator-decision.js?v=originals-collapsed-1',
         'operator-bills.js?v=guided-decision-2',
         'operator-invoice-review.js?v=guided-decision-2',
         'operator-accounts.js?v=guided-decision-2',
@@ -176,7 +176,7 @@ def test_static_assets_are_always_revalidated(client):
     表现都是"功能加了但界面毫无反应，控制台也不报错"。
     这里只要求重新验证，文件没变仍然走 304。"""
     for path in ("/static/operator.html", "/static/operator.js?v=login-flow-1",
-                 "/static/operator.css?v=login-flow-1"):
+                 "/static/operator.css?v=originals-collapsed-1"):
         response = client.get(path)
         assert response.status_code == 200, path
         assert "no-cache" in response.headers.get("cache-control", ""), path

@@ -45,9 +45,14 @@ test('evidence is escaped, unknown sources have no link, and mismatched task pro
  const a=fixture();a.job.data.title='<script>x</script>';a.job.data.result.evidence.push({artifact_id:'outside',region:'<img>'});const html=a.c.renderProblemReviewOverview();assert.doesNotMatch(html,/<script>|<img>|data-object="outside"/);assert.match(html,/data-object="r"/);assert.match(html,/&lt;img&gt;/);
  assert.match(a.c.renderProblemReviewDetail({id:'other',artifact_id:'a',kind:'ISSUE',problem_review:a.job}),/暂无匹配/);
 });
-test('integration places review after source evidence and before original handling without replacing forms',()=>{
+// 代账公司靠最后的科目余额表核对结果，有问题才顺着明细往前查。
+// 卡片因此先给问题与处理方式，原件明细收进默认折叠的「原件详情」放在最后。
+test('review comes before the handling section, and originals sit collapsed at the end',()=>{
  const decision=fs.readFileSync(path.join(__dirname,'../static/operator-decision.js'),'utf8'),html=fs.readFileSync(path.join(__dirname,'../static/operator.html'),'utf8');
- assert.match(decision,/decisionEvidence\(t\)\+\(typeof renderProblemReviewDetail/);assert.match(html,/operator-problem-review.js\?v=action-types-1/);
+ assert.match(decision,/class="pad">'\+\(typeof renderProblemReviewDetail/);
+ assert.match(decision,/'<\/section>'\+decisionOriginals\(t\)\+'<\/div><\/section>'/);
+ assert.doesNotMatch(decision,/<details class="decision-originals" open/);
+ assert.match(html,/operator-problem-review.js\?v=action-types-1/);
 });
 test('historical evidence opens bound versions; missing historical versions never use current facts',()=>{
  const a=fixture();a.job.valid=false;a.job.data.binding={artifact:{id:'a',version:1},records:[{id:'r',version:4}]};
