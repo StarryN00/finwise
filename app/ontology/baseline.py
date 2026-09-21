@@ -67,6 +67,9 @@ class BalanceAmounts(StrictModel):
 
 class AuxiliaryBalance(BalanceAmounts):
     key: StrictStr = Field(min_length=1)
+    # 明细科目编码。只存名称会让下游没法引用这个科目 —— 银行存款下面挂着
+    # 各个账户，做账时要写 100201 而不是汇总的 1002。
+    account_code: StrictStr = ""
 
 
 class AccountBalance(BalanceAmounts):

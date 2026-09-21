@@ -219,3 +219,26 @@ def test_an_unbalanced_sheet_surfaces_as_a_review_check():
     extracted = as_extracted(sheet([line(1, "1002", "银行存款", "10.00")]), period="2026-07")
     assert extracted["checks"]["overall"] == "REVIEW"
     assert any("试算不平衡" in e for e in extracted["errors"])
+
+
+def test_auxiliary_entries_carry_the_sub_account_code():
+    """只存名称会让下游没法引用这个科目：做账要写 100201，不是汇总的 1002。"""
+    payload = confirmation([
+        line(1, "1002", "银行存款", "101017.78"),
+        line(2, "100201", "江苏银行0758", "101017.78"),
+        line(3, "3001", "实收资本", "", "101017.78"),
+    ])
+    bank = next(b for b in payload["balances"] if b["account_code"] == "1002")
+    assert bank["auxiliary"][0]["account_code"] == "100201"
+
+
+def test_sub_account_codes_survive_the_baseline_contract():
+    from app.ontology.baseline import BaselineConfirmation
+    payload = confirmation([
+        line(1, "1002", "银行存款", "101017.78"),
+        line(2, "100201", "江苏银行0758", "101017.78"),
+        line(3, "3001", "实收资本", "", "101017.78"),
+    ])
+    confirmed = BaselineConfirmation.model_validate(payload)
+    bank = next(b for b in confirmed.balances if b.account_code == "1002")
+    assert bank.auxiliary[0].account_code == "100201"

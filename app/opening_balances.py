@@ -121,6 +121,7 @@ def to_confirmation(
             for leaf in detail:
                 auxiliary.append({
                     "key": leaf.account_name or leaf.account_code,
+                    "account_code": leaf.account_code,
                     "closing_debit": format(leaf.closing_debit, ".2f"),
                     "closing_credit": format(leaf.closing_credit, ".2f"),
                     "opening_debit": format(leaf.closing_debit, ".2f"),

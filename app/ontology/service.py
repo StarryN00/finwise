@@ -1999,6 +1999,162 @@ class OntologyService:
                 "checks": {"overall": "PASS", "items": []},
                 "statement_totals": statement.totals.model_dump(mode="json")}
 
+    # ---------- 凭证提案 ----------
+
+    def _learn_from_history(self, scope: Scope):
+        """从上传的历史凭证（序时账）里学做账习惯。
+
+        历史凭证是学习来源，不是本期业务事实：把几百张往期凭证灌进事实库
+        既不属于这一期，也会把"本期还有多少待处理"这个数字彻底冲掉。
+        这里按需读取、不落事实，结果用原件哈希缓存。
+        """
+        from app.tabular import read_workbook
+        from app.voucher_history import (account_vocabulary, learn_expense_rules,
+                                         learn_templates, parse_journal)
+
+        artifacts = [a for a in self.store.list_objects(ObjectType.SOURCE_ARTIFACT.value, scope)
+                     if a["data"].get("source_purpose") == "historical_reference"
+                     and a["status"] != "ARCHIVED"]
+        if not artifacts:
+            return None
+        artifact = artifacts[-1]
+        digest_key = artifact["data"].get("sha256") or artifact["object_id"]
+        cached = getattr(self, "_history_cache", {})
+        if digest_key in cached:
+            return cached[digest_key]
+        root = self.store.database.settings.storage_path.resolve()
+        path = (root / artifact["data"]["storage_path"]).resolve()
+        if not path.is_relative_to(root) or not path.is_file():
+            return None
+        try:
+            vouchers = parse_journal(read_workbook(path.read_bytes())[0])
+        except Exception:
+            return None
+        # 只用严格早于本期的凭证学习。用本期自己的凭证学再去生成本期，
+        # 是循环论证，验不出任何东西。
+        history = [v for v in vouchers if v.period < scope.accounting_period_id]
+        learned = {
+            "artifact": {"id": artifact["object_id"], "version": artifact["version"],
+                         "filename": artifact["data"].get("filename", "")},
+            "vouchers": history,
+            "templates": learn_templates(history),
+            "expense_rules": learn_expense_rules(history),
+            "vocabulary": account_vocabulary(history),
+            "periods": sorted({v.period for v in history}),
+        }
+        cached[digest_key] = learned
+        self._history_cache = cached
+        return learned
+
+    def voucher_proposals(self, scope: Scope) -> dict[str, Any]:
+        """为本期每一笔还没做账的银行流水提出凭证。
+
+        提不出来不是失败：新出现的往来对象、没见过的说法本来就该问人。
+        每一条弃权都说明卡在哪里，而不是笼统地报"无法处理"。
+        """
+        from app.account_classifier import (GatewayAccountReader, auto_adoptable,
+                                             classify, party_history)
+        from app.voucher_history import match_account, normalize_party
+        from app.voucher_proposals import propose
+
+        settings = self.store.database.settings
+        # 没启用网关时不调模型：摘要匹配不上就照实弃权，不拿最常用的科目蒙。
+        classifier = (GatewayAccountReader(self.gateway.provider, settings)
+                      if settings.agent_mode == "gateway" else None)
+
+        learned = self._learn_from_history(scope)
+        if learned is None:
+            return {"proposals": [], "abstained": [], "learned": None,
+                    "reason": "尚未上传历史凭证，无法参照既有做法"}
+
+        facts = [f for f in self.store.list_objects(ObjectType.FACT_RECORD.value, scope)
+                 if f["status"] != "SUPERSEDED"
+                 and f["data"].get("record_type") in {"PAYMENT", "RECEIPT", "BANK_TRANSACTION"}]
+        invoices = [f for f in self.store.list_objects(ObjectType.FACT_RECORD.value, scope)
+                    if f["status"] != "SUPERSEDED"
+                    and f["data"].get("record_type") in {"INVOICE", "SALES_INVOICE"}]
+        tax_by_total: dict[str, list[tuple[str, str]]] = {}
+        for invoice in invoices:
+            value = invoice["data"]["normalized_value"]
+            total = value.get("invoice_total")
+            if total:
+                tax_by_total.setdefault(str(total), []).append(
+                    (value.get("seller_name") or value.get("counterparty") or "",
+                     str(value.get("tax") or "0")))
+
+        # 银行科目要具体到账户。基线里 1002 下面挂着各个银行户，
+        # 写成汇总的 1002 会让凭证对不上明细账，也无法与对账单核对。
+        bank_code, bank_name = "1002", "银行存款"
+        try:
+            baseline = self.store.get_object(self._baseline_object_id(scope), scope)
+            entries = (baseline["data"].get("confirmed_inputs") or {}).get("balances") or []
+            bank = next((b for b in entries if b["account_code"].startswith("1002")), None)
+            if bank and bank.get("auxiliary"):
+                detail = bank["auxiliary"][0]
+                bank_name = detail["key"]
+                bank_code = detail.get("account_code") or bank["account_code"]
+        except Exception:
+            pass
+
+        proposals, abstained = [], []
+        for fact in facts:
+            value = fact["data"]["normalized_value"]
+            expense, income = Decimal(value.get("expense") or 0), Decimal(value.get("income") or 0)
+            if expense == 0 and income == 0:
+                continue
+            direction = "PAYMENT" if expense > 0 else "RECEIPT"
+            amount = expense if expense > 0 else income
+            counterparty = value.get("counterparty") or ""
+            summary = value.get("summary") or ""
+
+            candidates = tax_by_total.get(format(amount, ".2f"), [])
+            tax = next((Decimal(t) for seller, t in candidates
+                        if normalize_party(seller) == normalize_party(counterparty)), None)
+            if tax is None and len(candidates) == 1:
+                tax = Decimal(candidates[0][1])
+
+            rule, why = match_account(summary, learned["expense_rules"], learned["vocabulary"])
+            chosen = (rule.account_code, rule.account_name) if rule else None
+            if chosen is None and classifier is not None:
+                choice = classify(summary=summary, counterparty=counterparty,
+                                  amount=format(amount, ".2f"), direction=direction,
+                                  vocabulary=learned["vocabulary"], reader=classifier,
+                                  party_accounts=party_history(counterparty, learned["vouchers"]))
+                if choice.outcome == "PICK":
+                    chosen = (choice.account_code, choice.account_name)
+                    why = f"{choice.reason}（模型判断，置信 {choice.confidence}）"
+                else:
+                    why = choice.reason
+            proposal = propose(
+                bank_account_code=bank_code, bank_account_name=bank_name,
+                counterparty=counterparty, summary=summary, amount=amount,
+                direction=direction, templates=learned["templates"], input_tax=tax,
+                expense_account=chosen, expense_basis=why)
+            entry = {
+                "fact": {"id": fact["object_id"], "version": fact["version"],
+                         "anchor": fact["data"].get("source_anchor")},
+                "transaction": {"date": value.get("transaction_date"), "summary": summary,
+                                "counterparty": counterparty, "amount": format(amount, ".2f"),
+                                "direction": direction},
+                "account_hint": ({"account_code": rule.account_code,
+                                  "account_name": rule.account_name, "why": why}
+                                 if rule else {"why": why}),
+                "proposal": proposal.model_dump(mode="json"),
+            }
+            (proposals if proposal.outcome == "PROPOSAL" else abstained).append(entry)
+
+        adoptable = [p for p in proposals
+                     if p["proposal"]["confidence"] >= 85 and p["account_hint"].get("account_code")]
+        return {
+            "proposals": proposals, "abstained": abstained,
+            "counts": {"transactions": len(facts), "proposed": len(proposals),
+                       "abstained": len(abstained), "adoptable": len(adoptable)},
+            "learned": {"artifact": learned["artifact"], "periods": learned["periods"],
+                        "vouchers": len(learned["vouchers"]),
+                        "templates": len(learned["templates"]),
+                        "accounts": len(learned["vocabulary"])},
+        }
+
     # ---------- 来源版式卡片 ----------
 
     def profile_cards(self, scope: Scope) -> dict[str, Any]:

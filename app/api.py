@@ -217,6 +217,12 @@ def provision_scope(body: Scope, request: Request, context: tuple[str, str] = De
     return {"scope": created}
 
 
+@router.post("/vouchers/propose")
+def voucher_proposals(body: ScopeQuery, request: Request) -> dict[str, Any]:
+    """按已上传的历史凭证，为本期银行流水提出凭证。只读，不写入任何账务。"""
+    return service(request).voucher_proposals(body.scope)
+
+
 @router.post("/profile-cards")
 def profile_cards(body: ScopeQuery, request: Request) -> dict[str, Any]:
     """列出本处理范围内认不出结构的原件，每份一张待确认卡片。"""
