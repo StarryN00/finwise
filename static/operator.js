@@ -286,7 +286,8 @@ function renderComparison(c) {
 function renderTask() {
   const task=currentTask(),d=state.overview,r=readiness();
   const next=d.material_review?.next_step;
-  if(task==='guided-material')return taskShell(next.title,`<p>${esc(next.explanation)}</p><div class="goal"><b>现在要做</b>进入对应问题，核对源数据并完成这一项明确操作。</div>`,`<button type="button" class="primary" data-action="material-open-task" data-task="${esc(next.task_id)}">${esc(next.action?.label||'进入处理')}</button>`,badge(next.state==='READY_TO_CONFIRM'?'待确认执行':next.state==='NEEDS_INPUT'?'待补充信息':'待你处理','yellow'));
+  // 首页直接写这个问题是什么，按钮直接进这张卡 —— 不再套一层"待选择处理方式"。
+  if(task==='guided-material')return taskShell(next.title,`<p>${esc(next.explanation)}</p>${next.remaining>1?`<p class="small muted">本期还有 ${next.remaining} 件需要你处理，这是第一件。</p>`:''}`,`<button type="button" class="primary" data-action="material-open-task" data-task="${esc(next.task_id)}">${esc(next.action?.label||'去处理这个问题')}</button>`,badge(next.state==='READY_TO_CONFIRM'?'待确认执行':next.state==='NEEDS_INPUT'?'待补充信息':'待你处理','yellow'));
   if(task==='guided-wait'){
     const waiting=Array.isArray(next?.waiting)&&next.waiting.length?`<ul>${next.waiting.map(item=>`<li>${esc(item)}</li>`).join('')}</ul>`:'';
     const secondary=materialCounts().system_total?'<button type="button" class="secondary" data-action="material-open-filter" data-filter="system">查看系统处理中事项</button>':materialCounts().waiting_external?'<button type="button" class="secondary" data-action="material-open-filter" data-filter="deferred">查看等待事项</button>':'';

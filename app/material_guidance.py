@@ -374,6 +374,20 @@ def guidance(service, request: GuidanceRequest, actor_id: str, role: str):
     return response
 
 
+
+def _problem_headline(task, handling):
+    """这件事是什么、一句话说清。取不到具体说法时才退回办理状态的通用措辞。"""
+    descriptor = task.get('descriptor') or {}
+    triage = task.get('triage') or {}
+    presentation = descriptor.get('presentation') or {}
+    title = (triage.get('title') or presentation.get('type_label')
+             or descriptor.get('title') or task.get('title') or handling['label'])
+    explanation = (triage.get('explanation') or presentation.get('explanation')
+                   or (descriptor.get('why') or {}).get('rule') or handling['explanation'])
+    if task.get('filename'):
+        title = f"{task['filename']} · {title}"
+    return title, explanation
+
 class MaterialGuidance:
     """Durable candidate-only jobs, polled by the owner's existing worker.
 
@@ -956,11 +970,17 @@ class MaterialGuidance:
                          and item['handling']['owner'] == 'USER'), None)
             if task:
                 handling = task['handling']
-                action_labels = {'READY_TO_CONFIRM': '进入确认', 'NEEDS_DECISION': '选择处理方式',
+                action_labels = {'READY_TO_CONFIRM': '进入确认', 'NEEDS_DECISION': '去处理这个问题',
                                  'NEEDS_INPUT': '补充确认信息', 'STALE': '重新核对',
                                  'FAILED': '查看原因并重试'}
-                return {'state': state, 'owner': 'USER', 'title': handling['label'],
-                        'explanation': handling['explanation'], 'task_id': task['id'],
+                # 首页写的是这个问题本身，不是"待选择处理方式"。后者既没说是什么问题，
+                # 又让人以为还要先选一次"处理方式"，进去才发现就是这张卡。
+                title, explanation = _problem_headline(task, handling)
+                return {'state': state, 'owner': 'USER', 'title': title,
+                        'explanation': explanation, 'task_id': task['id'],
+                        'remaining': sum(1 for item in tasks
+                                         if item['handling']['owner'] == 'USER'
+                                         and item['handling']['state'] in set(priorities)),
                         'action': {'kind': 'MATERIAL_TASK', 'label': action_labels[state],
                                    'task_id': task['id']}}
         if counts['system_total']:

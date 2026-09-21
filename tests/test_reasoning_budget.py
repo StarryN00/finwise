@@ -50,3 +50,17 @@ def test_a_malformed_reply_that_was_not_truncated_says_so_instead(tmp_path):
         provider.complete(stage='PROBLEM_REVIEW', request_payload={}, input_hash='t')
     assert 'finish_reason=stop' in str(error.value)
     assert '这不是 JSON' in str(error.value), '内容开头要交出来，否则无从判断模型说了什么'
+
+
+def test_reasoning_stages_also_get_a_longer_wait(tmp_path):
+    """额度给够了但只等 45 秒，失败的表现和模型答不上来一模一样。"""
+    waits = []
+
+    def opener(request, timeout):
+        waits.append(timeout)
+        return FakeResponse({'choices': [{'finish_reason': 'stop',
+                                          'message': {'content': json.dumps({'ok': True})}}]})
+    provider = DeepSeekProvider(settings_for(tmp_path, gateway_timeout_seconds=45.0), opener=opener)
+    provider.complete(stage='PROBLEM_REVIEW', request_payload={}, input_hash='t')
+    provider.complete(stage='MATERIAL_GUIDANCE', request_payload={}, input_hash='t')
+    assert waits == [180.0, 45.0]

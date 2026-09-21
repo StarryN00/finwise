@@ -35,6 +35,9 @@ class Settings:
     gateway_timeout_seconds: float = 45.0
     # 图像识别要逐行抄录，比判断类调用慢得多；切条重读还要一次发多张图。
     gateway_vision_timeout_seconds: float = 180.0
+    # 推理档要先想再写，45 秒常常不够 —— 实测复核会以 read timeout 失败，
+    # 表现和模型答不上来一模一样。
+    gateway_reasoning_timeout_seconds: float = 180.0
     gateway_max_retries: int = 0
 
     @staticmethod
@@ -94,6 +97,7 @@ class Settings:
             agent_max_tokens=env_int("FINWISE_AGENT_MAX_TOKENS", 1200),
             agent_vision_max_tokens=env_int("FINWISE_AGENT_VISION_MAX_TOKENS", 16000),
             agent_reasoning_max_tokens=env_int("FINWISE_AGENT_REASONING_MAX_TOKENS", 8000),
+            gateway_reasoning_timeout_seconds=env_float("FINWISE_GATEWAY_REASONING_TIMEOUT_SECONDS", 180.0),
             gateway_timeout_seconds=env_float("FINWISE_GATEWAY_TIMEOUT_SECONDS", 45.0),
             gateway_vision_timeout_seconds=env_float("FINWISE_GATEWAY_VISION_TIMEOUT_SECONDS", 180.0),
             gateway_max_retries=env_int("FINWISE_GATEWAY_MAX_RETRIES", 0),
@@ -103,6 +107,14 @@ class Settings:
     REASONING_STAGES = frozenset({"STRUCTURE_PLAN", "PROBLEM_REVIEW", "PAYROLL_MAPPING"})
     VISION_STAGES = frozenset({"SCANNED_DOCUMENT"})
     FAST_STAGES = frozenset({"MATERIAL_GUIDANCE"})
+
+    def timeout_for(self, stage: str) -> float:
+        """这一档任务等多久。和 model_for / tokens_for 同一套分档。"""
+        if stage in self.VISION_STAGES:
+            return self.gateway_vision_timeout_seconds
+        if stage in self.REASONING_STAGES:
+            return max(self.gateway_reasoning_timeout_seconds, self.gateway_timeout_seconds)
+        return self.gateway_timeout_seconds
 
     def tokens_for(self, stage: str) -> int:
         """这一档任务给多少输出额度。和 model_for 同一套分档，别处不再各调各的。"""

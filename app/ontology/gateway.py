@@ -171,7 +171,7 @@ class DeepSeekProvider:
         )
         started = time.monotonic()
         try:
-            with self._opener(request, timeout=self.settings.gateway_timeout_seconds) as response:
+            with self._opener(request, timeout=self.settings.timeout_for(stage)) as response:
                 raw = response.read()
         except HTTPError as exc:
             detail = self._error_body(exc)
