@@ -137,7 +137,12 @@ function materialProblemHeadline(t){
 function renderProblemQueue(){
   const ui=materialState(),t=currentMaterialTask(),buckets=materialBuckets();
   const open=ui.bucket||t?.problem_kind||buckets.find(b=>b.needs_user&&b.count)?.kind;
-  const side=`<aside class="triage-side" aria-label="本期问题分类"><h3 id="materialListTitle" tabindex="-1">本期问题</h3>${buckets.map(b=>{
+  const f=state.overview.material_review?.flow?.task_counts||{};
+  // 办理状态说的是"这件事现在归谁"，四栏说的是"这是哪一类问题"，两者不是一回事，
+  // 所以并排放：上面一行状态，下面按类型分。
+  const status=[['待你处理',f.user_total],['待确认执行',f.ready_to_confirm],['系统处理中',f.system_total],
+                ['等待外部',f.waiting_external],['已完成',f.completed]].filter(([,n])=>n);
+  const side=`<aside class="triage-side" aria-label="本期问题分类">${status.length?`<section class="triage-status" aria-label="办理状态">${status.map(([label,n])=>`<div><strong>${n}</strong><span>${label}</span></div>`).join('')}</section>`:''}<h3 id="materialListTitle" tabindex="-1">本期问题</h3>${buckets.map(b=>{
     const expanded=open===b.kind&&b.count>0;
     return `<section class="triage-bucket${b.count?'':' empty'}${expanded?' expanded':''}">`+
       `<button type="button" class="triage-bucket-head" data-action="material-bucket" data-bucket="${esc(b.kind)}" aria-expanded="${expanded}" ${b.count?'':'disabled'}>`+
