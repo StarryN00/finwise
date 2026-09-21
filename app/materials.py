@@ -10,6 +10,16 @@ from app.ontology.store import digest
 from app.action_types import ACTION_TYPE_BY_ID, FALLBACK_IDS
 
 
+def arithmetic_ok(artifact):
+    """这份原件是否通过了可验证的算术核对。
+
+    MATCH 表示逐笔加总与原件自报的合计一致；PASS 表示银行流水的余额链完整。
+    UNATTESTED 只说明没有可比的合计，不等于核对过。
+    """
+    checks = artifact['data'].get('parse_checks') or {}
+    return checks.get('overall') in {'MATCH', 'PASS'}
+
+
 def compare_fields(data):
     """Align values using their recorded source, never a label/value guess."""
     original=data.get('original_value') or {}
@@ -211,13 +221,14 @@ class MaterialReview:
             records.append({**row,'state':state,'issues':issues,'eligible':eligible,
                 'period_assignment':period_assignment,
                 'automatic_invoice_check':auto_check,
+                'arithmetic_verified':arithmetic_ok(a) and not issues,
                 'invoice_amount_confirmation':invoice_confirmation,
                 'bill_supported':bill, 'bill_confirmation':confirmation,
                 'original_value':f['data'].get('original_value',{}),
                 'comparison':compare_fields(f['data']),
                 'verification':verified.get(f['object_id'])})
         tasks=[]
-        def task(kind,artifact,title,rows,reason,action):
+        def task(kind,artifact,title,rows,reason,action,optional=False):
             if reason.startswith('bank_account_ref：'):title='确认流水所属银行'
             binding={'artifact_id':artifact['object_id'],'version':artifact['version'],'sha256':artifact['data'].get('sha256'),
                      'records':[(r['object_id'],r['version']) for r in rows],'kind':kind,'reason':reason}
@@ -225,7 +236,9 @@ class MaterialReview:
             response=next((r for r in responses if r['data'].get('task_id')==key and r['status']=='DEFERRED'),None)
             tasks.append({'id':key,'kind':kind,'artifact_id':artifact['object_id'],'artifact_version':artifact['version'],
                 'filename':artifact['data']['filename'],'title':title,'reason':reason,'record_ids':[r['object_id'] for r in rows],
-                'action':action,'deferred':bool(response),'response':response})
+                'action':action,'deferred':bool(response),'response':response,
+                # 可选任务仍然能点开、能手动核实，只是不占"还有多少要办"。
+                'optional':optional})
         for a in files.values():
             status=a['data'].get('parse_status','RECEIVED')
             if status=='RECONCILIATION_FAILED':
@@ -238,8 +251,19 @@ class MaterialReview:
                 task('PARSE',a,'识别资料' if status=='RECEIVED' else '处理识别失败',[],
                      '；'.join(a['data'].get('parse_errors',[])) or '原件已保存，尚未提取', 'parse' if retryable else 'supplement')
             eligible=[r for r in records if r['source_artifact_id']==a['object_id'] and r['state']=='AWAITING_VERIFICATION' and not r.get('automatic_invoice_check')]
+            # 算术已经核过的不再当作待办。全表净额与税额逐笔加总等于原件自报合计、
+            # 银行余额逐行衔接 —— 这是真的核对过。让人对着 27 行点"确认一致"是仪式，
+            # 而且仪式做多了会让人不看就点，比不做更坏。
+            # 但入口保留：要顺着明细往前排查时，仍然能逐条比对、也仍然能手动核实。
+            # 算术覆盖不到的是摘要与对方名称，它们在定科目时由人看到，
+            # 最终还有科目余额表与银行勾稽兜底。
             for start in range(0,len(eligible),5):
-                task('VERIFY',a,'核对原件与提取值',eligible[start:start+5],'请逐条比较原始数据与提取值；仅选择已核对的本页记录。','verify')
+                page=eligible[start:start+5]
+                checked=all(r.get('arithmetic_verified') for r in page)
+                task('VERIFY',a,'抽查原件与提取值' if checked else '核对原件与提取值',page,
+                     '金额已通过全表合计核对，这里只是抽查；需要时可逐条比对原件。' if checked
+                     else '请逐条比较原始数据与提取值；仅选择已核对的本页记录。','verify',
+                     optional=checked)
             problem_records=[r for r in records if r['source_artifact_id']==a['object_id'] and r['state'] in {'PERIOD_EXCEPTION','NEEDS_REVIEW'}]
             reasons=dict.fromkeys(reason for r in problem_records for reason in r['issues'])
             for reason in reasons:
@@ -281,7 +305,9 @@ class MaterialReview:
         return {'version':'material-review-v2','records':records,'tasks':tasks,
             'categories':[{**c,'source_verified_count':sum(r['state']=='SOURCE_VERIFIED' for r in records if r['category_id']==c['id'])} for c in categories],
             'counts':{'files':len(files),'unassigned_files':sum(aid not in files for c in readiness['categories'] if c['id']=='unassigned' for aid in c['artifact_ids']),'file_states':dict(parse_counts),'records':len(records),'source_verified':counts['SOURCE_VERIFIED'],
-                'awaiting_verification':counts['AWAITING_VERIFICATION'],'needs_review':counts['NEEDS_REVIEW'],
+                'awaiting_verification':counts['AWAITING_VERIFICATION']-sum(1 for r in records if r.get('arithmetic_verified')),
+                'needs_review':counts['NEEDS_REVIEW'],
+                'arithmetic_verified':sum(1 for r in records if r.get('arithmetic_verified')),
                 'other_period':counts['OTHER_PERIOD'],
                 'business_confirmed':counts['BUSINESS_CONFIRMED'], 'bill_confirmed':sum(c['status']=='CONFIRMED' for c in bill_confirmations.values()),
                 'issue_confirmed':counts['ISSUE_CONFIRMED'], 'invoice_amount_confirmed':len(invoice_confirmations),
@@ -289,7 +315,9 @@ class MaterialReview:
                 'issue_tasks':sum(t['kind']!='VERIFY' and not t['deferred'] for t in tasks),
                 'period_exceptions':counts['PERIOD_EXCEPTION'],'accounting_usable':sum(r['state']=='CHECKED' and r['object_id'] not in unusable and valid_source.get(r['source_artifact_id'],False) for r in readiness['records']),
                 'supplement_issues':len({(b['group_id'],e) for c in categories for b in c.get('business_issues',[]) for e in b.get('missing_evidence',[])}),
-                'deferred':sum(t['deferred'] for t in tasks),'active_tasks':sum(not t['deferred'] for t in tasks)}}
+                'deferred':sum(t['deferred'] for t in tasks),
+                'optional_tasks':sum(t.get('optional') and not t['deferred'] for t in tasks),
+                'active_tasks':sum(not t['deferred'] and not t.get('optional') for t in tasks)}}
 
     def execute(self, scope, action, target, version, actor, payload):
         self.service._ensure_period_open(scope)

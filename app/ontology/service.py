@@ -424,6 +424,11 @@ class OntologyService:
         data = deepcopy(artifact["data"])
         data.update({"parse_status": parse_status, "parse_version": PARSER_VERSION, "parse_options": current_options, "parse_errors": errors, "parse_sheets": extracted["sheets"], "parse_counts": counts, "parsed_fact_ids": fact_ids, "parsed_at": utcnow(), 'parse_checks':extracted.get('checks',{})})
         self._carry_statement_totals(data, extracted)
+        # 扫描件识别没跑成时原因不能丢：原样落到 parse_errors 上，
+        # 否则界面只显示"识别失败"，人无从知道是没配模型、超时还是校验没过。
+        if extracted.get("scanned_reason"):
+            data["parse_errors"] = list(dict.fromkeys(
+                [*data.get("parse_errors", []), extracted["scanned_reason"]]))
         if _mapping_id:data['payroll_mapping_id']=_mapping_id
         if _plan_ref is not None:data['plan_ref']=deepcopy(_plan_ref)
         data.pop('bank_account_binding',None)

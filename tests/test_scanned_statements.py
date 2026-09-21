@@ -445,3 +445,29 @@ def test_a_genuinely_different_account_is_still_disputed():
     b = sample(); b["rows"][0]["counterparty_account"] = "6217732000504147"
     _, disputed = consensus([parse_statement(a), parse_statement(b)])
     assert len([d for d in disputed if d.field == "counterparty_account"]) == 1
+
+
+def test_a_failed_scan_keeps_its_reason_where_the_operator_can_see_it(client, scope):
+    """识别没跑成时只显示"识别失败"没有意义 —— 人无从知道是没配模型、
+    超时还是校验没过，也就无从决定下一步。"""
+    import base64
+    from pathlib import Path as _Path
+    if not _Path(REAL).exists():
+        import pytest as _pytest
+        _pytest.skip("需要本地语料")
+    headers = {"X-Actor-Id": "alice", "X-Role": "accountant"}
+    client.post("/api/v1/scopes", headers=headers, json=scope)
+    uploaded = client.post("/api/v1/artifacts", headers=headers, json={
+        "scope": scope, "filename": "对账单.pdf",
+        "content_base64": base64.b64encode(_Path(REAL).read_bytes()).decode(),
+        "observed_period": scope["accounting_period_id"]}).json()
+    response = client.post("/api/v1/commands", headers=headers, json={
+        "action": "parse_artifact", "target_id": uploaded["object_id"],
+        "target_version": uploaded["version"], "scope": scope,
+        "idempotency_key": "scan-reason-0001",
+        "payload": {"document_kind": "bank_statement"}})
+    assert response.status_code == 200, response.text
+    artifact = response.json()["effect"]["artifact"]
+    # 测试环境没有启用网关，因此必然走不通 —— 关键是它要说出来。
+    assert artifact["data"]["parse_errors"], "识别未完成时必须留下原因"
+    assert "扫描件" in artifact["data"]["parse_errors"][0]
