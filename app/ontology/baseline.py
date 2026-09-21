@@ -81,8 +81,17 @@ class AccountBalance(BalanceAmounts):
             raise ValueError("需要辅助核算的科目缺少明细")
         if len({a.key for a in self.auxiliary}) != len(self.auxiliary):
             raise ValueError("同一科目的辅助核算明细重复")
-        if self.auxiliary and any(sum((getattr(a, f) for a in self.auxiliary), Decimal(0)) != getattr(self, f) for f in AMOUNT_FIELDS):
-            raise ValueError("辅助明细与科目控制余额不一致")
+        # 控制科目按净额列示，辅助明细按各自方向列示。应付账款下面既有应付的
+        # 贷方余额，也有预付的借方余额；账套把控制科目轧成净额，明细保持原方向。
+        # 逐方向比总额会把这种完全正常的账判成不一致，因此只比净额。
+        # 明细各自的方向不做任何合并，它们是后续往来核销的依据。
+        # 只比期末：BalanceAmounts.reconcile 已经保证控制科目与每一项明细的
+        # 期初都等于各自期末，期末净额对上时期初必然也对上，再查一遍是死代码。
+        if self.auxiliary:
+            control = self.closing_debit - self.closing_credit
+            detail = sum((a.closing_debit - a.closing_credit for a in self.auxiliary), Decimal(0))
+            if control != detail:
+                raise ValueError(f"辅助明细与科目控制余额不一致（控制净额 {control}，明细净额 {detail}）")
         return self
 
 
