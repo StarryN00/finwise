@@ -361,6 +361,9 @@ class OntologyService:
             extracted = _mapped if _mapped is not None else extract_workbook(
                 content, options, scope.accounting_period_id,
                 resolver=scoped_resolver(self.profiles, scope))
+            if _mapped is None and any(sheet.get("status") == "SCANNED_IMAGE"
+                                       for sheet in extracted.get("sheets", [])):
+                extracted = self._read_scanned_statement(scope, content, options, extracted)
             if _mapped is None and options.document_kind == 'bank_statement':
                 extracted = self.bank_accounts.prepare(scope, artifact, extracted)
             if extracted.get('checks',{}).get('overall')=='REVIEW':
@@ -1953,6 +1956,49 @@ class OntologyService:
                 'title': '你当前无需操作', 'explanation': '当前没有需要你处理的事项。',
                 'task_id': None, 'waiting': [], 'action': None}
 
+    def _read_scanned_statement(self, scope, content, options, placeholder):
+        """图片型扫描件交给视觉模型多次读取取共识，再按同一形状产出记录。
+
+        没有配置视觉模型、或校验没过时都不抛异常：保留占位结果，
+        由上层出一张待人工核对的卡片。整份资料不因此算作解析失败。
+        """
+        from app.scanned_statements import (ScannedStatementError, read_with_consensus, to_records)
+        from app.statement_reader import GatewayStatementReader
+
+        settings = self.store.database.settings
+        if options.document_kind != "bank_statement":
+            return {**placeholder, "scanned_reason": "目前只支持扫描件银行对账单"}
+        if settings.agent_mode != "gateway":
+            return {**placeholder, "scanned_reason": "未启用 Agent Gateway，扫描件无法识别"}
+        try:
+            settings.model_for("SCANNED_DOCUMENT")
+        except ValueError as exc:
+            return {**placeholder, "scanned_reason": str(exc)}
+
+        reader = GatewayStatementReader(self.gateway.provider)
+        try:
+            statement, report = read_with_consensus(content, reader)
+        except (ScannedStatementError, GatewayFailure) as exc:
+            return {**placeholder, "scanned_reason": f"扫描件识别未完成：{exc}"}
+
+        records = to_records(statement, report, period=scope.accounting_period_id,
+                             bank_account=options.bank_account_ref,
+                             source_name="扫描件对账单")
+        from app.scanned_statements import page_images as _pages
+        try:
+            page_count = len(_pages(content))
+        except Exception:
+            page_count = 1
+        sheet = {"sheet": "扫描件对账单", "status": "EXTRACTED", "rows": len(records),
+                 "mapping_origin": "SCANNED", "read_rounds": report.rounds, "pages": page_count,
+                 "verification": report.outcome,
+                 "checks": [check.model_dump() for check in report.checks],
+                 "disputed": [item.model_dump() for item in report.disputed],
+                 "unverified_fields": list(report.unverified_fields)}
+        return {"records": records, "sheets": [sheet], "errors": [],
+                "checks": {"overall": "PASS", "items": []},
+                "statement_totals": statement.totals.model_dump(mode="json")}
+
     # ---------- 来源版式卡片 ----------
 
     def profile_cards(self, scope: Scope) -> dict[str, Any]:
@@ -1968,6 +2014,9 @@ class OntologyService:
             data = artifact["data"]
             if artifact["status"] == "ARCHIVED":
                 continue
+            scanned = self._scanned_review_card(artifact)
+            if scanned is not None:
+                cards.append(scanned)
             unrecognised = [sheet for sheet in data.get("parse_sheets", [])
                             if sheet.get("status") == "UNRECOGNIZED"]
             if not unrecognised:
@@ -2000,6 +2049,62 @@ class OntologyService:
                 card["document_kind"] = document_kind
                 cards.append(card)
         return {"cards": cards, "count": len(cards)}
+
+    def _scanned_review_card(self, artifact) -> dict[str, Any] | None:
+        """扫描件里多次识别不一致的字段，聚成一张对照卡。
+
+        按字段归并而不是按行：同一列反复读不准（例如对方账号）是一件事，
+        逐行问二十七遍是在消耗人，不是在用人。
+        """
+        data = artifact["data"]
+        sheets = [s for s in data.get("parse_sheets", []) if s.get("mapping_origin") == "SCANNED"]
+        if not sheets:
+            return None
+        sheet = sheets[0]
+        disputed = sheet.get("disputed") or []
+        if not disputed:
+            return None
+
+        labels = {"transaction_date": "交易日期", "debit": "借方发生额", "credit": "贷方发生额",
+                  "balance": "余额", "summary": "摘要", "counterparty_name": "对方户名",
+                  "counterparty_account": "对方账号", "行存在性": "整行"}
+        blocking = {"transaction_date", "debit", "credit", "balance", "行存在性"}
+        grouped: dict[str, list[dict[str, Any]]] = {}
+        for item in disputed:
+            grouped.setdefault(item["field"], []).append(item)
+
+        groups = []
+        for field, items in sorted(grouped.items(), key=lambda kv: (kv[0] not in blocking, kv[0])):
+            groups.append({
+                "field": field, "label": labels.get(field, field),
+                "blocking": field in blocking, "count": len(items),
+                "rows": [{"sequence": i["sequence"], "values": i["values"]} for i in items],
+            })
+        blocking_count = sum(g["count"] for g in groups if g["blocking"])
+        failed = [c["name"] for c in sheet.get("checks", []) if not c.get("passed")]
+
+        return {
+            "version": "scanned-review-v1",
+            "card_type": "SCANNED_STATEMENT_REVIEW",
+            "title": f"核对扫描件识别结果：{data.get('filename', '')}",
+            "why": {
+                "facts": (f"共 {sheet.get('rows', 0)} 行，读取 {sheet.get('read_rounds', 1)} 次，"
+                          f"{len(disputed)} 处识别不一致（其中影响金额或期间的 {blocking_count} 处）"),
+                "rule": ("表头笔数与合计、余额连续性等校验已通过；"
+                         + ("仍有未通过项：" + "、".join(failed) if failed else "未通过项：无")),
+                "recommendation": ("摘要与对方户名没有任何算术约束，任何校验都发现不了读错，"
+                                   "请对照原件逐项确认。"),
+                "origin": "AGENT", "confidence": 0 if blocking_count else 50,
+                "yields": None, "evidence": [],
+            },
+            "options": [{"id": "open_source_scan", "label": "对照原件", "submit_label": "查看扫描件"}],
+            "artifact": {"id": artifact["object_id"], "version": artifact["version"],
+                         "sha256": data.get("sha256")},
+            "pages": sheet.get("pages", 2),
+            "groups": groups,
+            "unverified_fields": sheet.get("unverified_fields", []),
+            "fingerprint": data.get("sha256", ""),
+        }
 
     def confirm_profile_card(self, scope: Scope, *, card: dict[str, Any], actor_id: str) -> dict[str, Any]:
         """确认一张识别卡：登记版式，并把原件退回待解析，让操作人重新解析看结果。"""

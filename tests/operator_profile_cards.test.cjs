@@ -22,6 +22,8 @@ function app(options){
   state:{epoch:1,sessionEpoch:1,role:opts.role||'operator',user:{user_id:'u1'},view:'profile-cards',overview:{period:{status:'OPEN'}}},
   scope:()=>({tenant_id:'t',legal_entity_id:'e',accounting_period_id:'2026-01'}),
   scopeKey:s=>JSON.stringify(s),
+  URLSearchParams,
+  encodeURIComponent,
   readonly:()=>opts.role==='viewer',
   request:async(path,body)=>{requests.push({path,body});if(opts.fail&&path.endsWith('/confirm'))throw new Error('确认失败：版式冲突');return opts.cards!==undefined&&path==='/api/v1/profile-cards'?{cards:opts.cards,count:opts.cards.length}:{};},
   command:async(...args)=>{requests.push({command:args[0],id:args[1]});return opts.parseResult===undefined?{effect:{artifact:{data:{parse_status:'PARSED',parse_counts:{rows:50}}}}}:opts.parseResult;},
@@ -44,8 +46,8 @@ test('未加载时显示读取中，不谎称没有待办',()=>{
 test('没有卡片时给出明确的空状态而不是空白',()=>{
  const c=app();const ui=c.profileCardState();ui.loaded=true;ui.cards=[];
  const html=c.renderProfileCards();
- assert.match(html,/没有待确认的结构/);
- assert.match(html,/新上传一份陌生格式时/);
+ assert.match(html,/没有待确认事项/);
+ assert.match(html,/识别结果也没有需要核对的分歧/);
 });
 
 test('高置信卡片展示列对应关系与余额证据，并提供两个选项',()=>{
@@ -128,7 +130,7 @@ test('角标只在有待确认卡片时出现',()=>{
  const c=app();const ui=c.profileCardState();
  assert.equal(c.profileCardBadge(),'');
  ui.loaded=true;ui.cards=[card(),card({sheet:'Sheet2'})];
- assert.match(c.profileCardBadge(),/待确认结构 2/);
+ assert.match(c.profileCardBadge(),/待确认事项 2/);
 });
 
 test('卡片按钮不使用 data-card，避免与既有对象详情分发冲突',()=>{
@@ -143,4 +145,89 @@ test('认不出的卡片不承诺"确认后登记版式"，因为没有可确认
  ui.cards=[card({card_type:'SOURCE_PROFILE_UNKNOWN',why:Object.assign({},card().why,{confidence:0,yields:null})})];
  const html=c.renderProfileCards();
  assert.equal(/确认后登记为/.test(html),false);
+});
+
+function scanCard(overrides){
+ return Object.assign({
+  version:'scanned-review-v1', card_type:'SCANNED_STATEMENT_REVIEW',
+  title:'核对扫描件识别结果：江苏银行对账单.pdf',
+  why:{facts:'共 35 行，读取 3 次，24 处识别不一致（其中影响金额或期间的 4 处）',
+       rule:'表头笔数与合计、余额连续性等校验已通过；未通过项：多次读取金额与日期一致',
+       recommendation:'摘要与对方户名没有任何算术约束，请对照原件逐项确认。',
+       origin:'AGENT', confidence:0, yields:null, evidence:[]},
+  options:[{id:'open_source_scan',label:'对照原件'}],
+  artifact:{id:'art-1',version:2,sha256:'abc'}, pages:2,
+  groups:[{field:'debit',label:'借方发生额',blocking:true,count:1,
+           rows:[{sequence:32,values:['17849.53','17949.53']}]},
+          {field:'counterparty_name',label:'对方户名',blocking:false,count:1,
+           rows:[{sequence:5,values:['山东高精橡塑制品有限公司','山东高棉橡胶制品有限公司']}]}],
+  unverified_fields:['summary','counterparty_name'], fingerprint:'abc'
+ }, overrides||{});
+}
+
+test('扫描件对照卡按字段归并，影响金额的分组默认展开',()=>{
+ const c=app();const ui=c.profileCardState();ui.loaded=true;ui.cards=[scanCard()];
+ const html=c.renderProfileCards();
+ assert.match(html,/借方发生额<\/strong> 1 处/);
+ assert.match(html,/影响金额或期间/);
+ assert.match(html,/<details class="scan-group" open>/);
+ assert.match(html,/第 32 行/);
+ assert.match(html,/17849\.53/);
+});
+
+test('文本分组不标成影响金额，默认收起',()=>{
+ const c=app();const ui=c.profileCardState();ui.loaded=true;ui.cards=[scanCard()];
+ const html=c.renderProfileCards();
+ // recommendation 文案里也出现"对方户名"，必须按分组元素切开再判断。
+ const groups=html.split('<details class="scan-group"').slice(1);
+ const textGroup=groups.find(g=>g.includes('<strong>对方户名'));
+ assert.ok(textGroup,'应当渲染出对方户名分组');
+ assert.equal(/影响金额或期间/.test(textGroup),false);
+ assert.equal(textGroup.trimStart().startsWith('open'),false,'文本分组默认收起');
+ const moneyGroup=groups.find(g=>g.includes('<strong>借方发生额'));
+ assert.equal(moneyGroup.trimStart().startsWith('open'),true,'影响金额的分组默认展开');
+});
+
+test('扫描件卡不出现确认按钮，它不产生版式',()=>{
+ const c=app();const ui=c.profileCardState();ui.loaded=true;ui.cards=[scanCard()];
+ const html=c.renderProfileCards();
+ assert.equal(/data-action="profile-card-confirm"/.test(html),false);
+ assert.match(html,/data-action="profile-card-scan"/);
+});
+
+test('对照原件按钮展开全部页面，图片地址带完整处理范围',()=>{
+ const c=app();const ui=c.profileCardState();ui.loaded=true;ui.cards=[scanCard()];
+ c.installProfileCardActions();
+ assert.equal(/scan-pages/.test(c.renderProfileCards()),false);
+ c.actions['profile-card-scan']({dataset:{profileCard:'art-1'}});
+ const html=c.renderProfileCards();
+ assert.match(html,/scan-pages/);
+ assert.match(html,/artifacts\/art-1\/pages\/1\?/);
+ assert.match(html,/artifacts\/art-1\/pages\/2\?/);
+ assert.match(html,/legal_entity_id=e/);
+ assert.match(html,/收起原件/);
+});
+
+test('再点一次收起原件',()=>{
+ const c=app();const ui=c.profileCardState();ui.loaded=true;ui.cards=[scanCard()];
+ c.installProfileCardActions();
+ c.actions['profile-card-scan']({dataset:{profileCard:'art-1'}});
+ c.actions['profile-card-scan']({dataset:{profileCard:'art-1'}});
+ assert.equal(/scan-pages/.test(c.renderProfileCards()),false);
+});
+
+test('识别值经过转义，读出的内容不能注入标记',()=>{
+ const c=app();const ui=c.profileCardState();ui.loaded=true;
+ ui.cards=[scanCard({groups:[{field:'summary',label:'摘要',blocking:false,count:1,
+   rows:[{sequence:1,values:['<img src=x onerror=alert(1)>','正常']}]}]})];
+ const html=c.renderProfileCards();
+ assert.equal(html.includes('<img src=x'),false);
+ assert.match(html,/&lt;img/);
+});
+
+test('空识别值显示为（空）而不是留白',()=>{
+ const c=app();const ui=c.profileCardState();ui.loaded=true;
+ ui.cards=[scanCard({groups:[{field:'summary',label:'摘要',blocking:false,count:1,
+   rows:[{sequence:9,values:['','计付利息']}]}]})];
+ assert.match(c.renderProfileCards(),/（空）/);
 });

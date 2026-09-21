@@ -282,6 +282,46 @@ def object_detail(body: dict[str, Any], request: Request) -> dict[str, Any]:
     return service(request).object_detail(body["object_id"], Scope.model_validate(body["scope"]), body.get("version"))
 
 
+@router.get("/artifacts/{artifact_id}/pages/{page}")
+def artifact_page_image(
+    artifact_id: str,
+    page: int,
+    request: Request,
+    tenant_id: str = Query(...),
+    organization_id: str = Query(...),
+    legal_entity_id: str = Query(...),
+    ledger_id: str = Query(...),
+    accounting_period_id: str = Query(...),
+    baseline_id: str = Query(...),
+) -> Response:
+    """取扫描件某一页的图像，供操作人对照识别结果核对原件。
+
+    只从已存档的原件里取图，不生成、不改写任何像素：核对的依据必须是原件本身。
+    """
+    from app.scanned_statements import is_image_only_pdf, page_images
+
+    scope = Scope(tenant_id=tenant_id, organization_id=organization_id,
+                  legal_entity_id=legal_entity_id, ledger_id=ledger_id,
+                  accounting_period_id=accounting_period_id, baseline_id=baseline_id)
+    artifact = service(request).store.get_object(artifact_id, scope)
+    if artifact["object_type"] != "SourceArtifact":
+        raise DomainError("该对象不是原始资料", "NOT_AN_ARTIFACT", 404)
+    root = request.app.state.settings.storage_path.resolve()
+    path = (root / artifact["data"]["storage_path"]).resolve()
+    if not path.is_relative_to(root) or not path.is_file():
+        raise DomainError("原始文件存储缺失", "ARTIFACT_STORAGE_MISSING", 404)
+    content = path.read_bytes()
+    if hashlib.sha256(content).hexdigest() != artifact["data"].get("sha256"):
+        raise DomainError("原件内容与登记摘要不一致", "ARTIFACT_CONTENT_MISMATCH", 409)
+    if not is_image_only_pdf(content):
+        raise DomainError("该原件不是图片型扫描件", "NOT_A_SCANNED_IMAGE", 404)
+    images = page_images(content)
+    if not 1 <= page <= len(images):
+        raise DomainError(f"该扫描件共 {len(images)} 页", "PAGE_OUT_OF_RANGE", 404)
+    return Response(content=images[page - 1], media_type="image/png",
+                    headers={"Cache-Control": "private, max-age=300"})
+
+
 @router.get("/artifacts/{artifact_id}/content")
 def artifact_content(
     artifact_id: str,

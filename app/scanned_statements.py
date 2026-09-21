@@ -78,6 +78,22 @@ class StatementRow(BaseModel):
     def parse_money(cls, value):
         return _money(value)
 
+    @field_validator("counterparty_account", mode="before")
+    @classmethod
+    def strip_inner_spaces(cls, value):
+        """账号在扫描件里折行显示，模型有时把换行读成空格。
+
+        银行账号内部不存在空白，去掉它不是在猜测内容，而是在消除排版噪声。
+        不这么做的话，同一个账号会因为一个空格被判成"多次识别不一致"，
+        把真正需要人看的分歧淹没在噪声里。
+        """
+        return re.sub(r"\s+", "", str(value or ""))
+
+    @field_validator("summary", "counterparty_name", mode="before")
+    @classmethod
+    def collapse_spaces(cls, value):
+        return re.sub(r"\s+", "", str(value or ""))
+
     @field_validator("transaction_date")
     @classmethod
     def iso_date(cls, value: str) -> str:
@@ -387,3 +403,92 @@ def read_with_consensus(content: bytes, reader: StatementReader, *, rounds: int 
     return merged, VerificationReport(
         outcome="ACCEPTED" if passed else "REVIEW", checks=checks,
         opening_balance=report.opening_balance, disputed=disputed, rounds=len(statements))
+
+
+# ---------- 转成事实记录 ----------
+
+# 分歧落在这些字段上时，必须写成该行的提取问题：它们直接决定入账金额与期间。
+BLOCKING_FIELDS = {"debit", "credit", "balance", "transaction_date", "行存在性"}
+
+
+def to_records(statement: ScannedStatement, report: VerificationReport, *,
+               period: str, bank_account: Optional[str] = None,
+               source_name: str = "扫描件") -> list[dict[str, Any]]:
+    """把校验过的对账单转成与表格路径同形的记录。
+
+    形状必须一致，否则下游要为扫描件分叉一套逻辑 —— 那正是我们在拆的东西。
+    差别只在证据：表格记录指向单元格，扫描件记录指向对账单的第几行，
+    并带上该字段是否经过多次读取一致性确认。
+    """
+    disputed_by_row: dict[int, list[DisputedField]] = {}
+    for item in report.disputed:
+        disputed_by_row.setdefault(item.sequence, []).append(item)
+
+    records: list[dict[str, Any]] = []
+    for row in statement.rows:
+        issues: list[str] = []
+        disputes = disputed_by_row.get(row.sequence, [])
+        for item in disputes:
+            label = {"transaction_date": "transaction_date", "debit": "expense",
+                     "credit": "income", "balance": "balance",
+                     "summary": "summary", "counterparty_name": "counterparty",
+                     "counterparty_account": "counterparty_account",
+                     "行存在性": "row"}.get(item.field, item.field)
+            if item.field in BLOCKING_FIELDS:
+                issues.append(f"{label}：多次识别结果不一致（{'、'.join(item.values)}），须比对原件确认")
+            else:
+                issues.append(f"{label}：识别结果不稳定（{'、'.join(item.values)}），须人工核对")
+        if not bank_account:
+            issues.append("bank_account_ref：本方账户待人工核对")
+
+        record_type = "BANK_TRANSACTION"
+        if row.debit > 0 and row.credit == 0:
+            record_type = "PAYMENT"
+        elif row.credit > 0 and row.debit == 0:
+            record_type = "RECEIPT"
+        else:
+            issues.append("direction：收入支出方向不明确，须核对冲正或汇总记录")
+
+        normalized = {
+            "transaction_date": row.transaction_date,
+            "period": row.transaction_date[:7],
+            "transaction_id": None,
+            "counterparty": row.counterparty_name or None,
+            "counterparty_account": row.counterparty_account or None,
+            "summary": row.summary or None,
+            "note": None,
+            # 银行视角的借方是账户支出，这里换成账簿口径的 expense/income。
+            "expense": format(row.debit, ".2f"),
+            "income": format(row.credit, ".2f"),
+            "balance": format(row.balance, ".2f"),
+            "bank_account_ref": bank_account,
+        }
+        if record_type == "PAYMENT":
+            normalized["payment_total"] = format(row.debit, ".2f")
+        elif record_type == "RECEIPT":
+            normalized["receipt_total"] = format(row.credit, ".2f")
+
+        anchor = {"row": row.sequence, "region": f"{source_name}!序号{row.sequence}"}
+        verified = sorted({"expense", "income", "balance", "transaction_date"}
+                          - {f for item in disputes for f in [item.field]})
+        records.append({
+            "record_type": record_type,
+            "source_anchor": anchor,
+            "original_value": {
+                "sheet": source_name, "row": row.sequence,
+                "headers": ["序号", "交易日期", "摘要", "借方发生额", "贷方发生额", "余额", "对方户名"],
+                "values": [row.sequence, row.transaction_date, row.summary,
+                           format(row.debit, ".2f"), format(row.credit, ".2f"),
+                           format(row.balance, ".2f"), row.counterparty_name],
+                "cell_types": ["image"] * 7, "formulas": {},
+                "read_rounds": report.rounds,
+            },
+            "normalized_value": normalized,
+            "field_sources": {field: dict(anchor, field=field) for field in normalized},
+            "extraction_issues": list(dict.fromkeys(issues)),
+            # 扫描件读数永远不是满信心：数字过了多重校验，摘要与对方从未被校验过。
+            "extraction_confidence": 0.0 if issues else 0.8,
+            "verified_fields": verified,
+            "period_check": "PASS" if row.transaction_date[:7] == period else "PERIOD_EXCEPTION",
+        })
+    return records

@@ -2,7 +2,7 @@
 
 // 识别卡：系统认不出一份原件的结构时出一张卡，确认一次之后同模板的文件
 // 不再打扰人。卡片只描述，确认动作仍然通过既有命令链路写入。
-const profileCardUI = {key: '', cards: [], loaded: false, pending: '', error: '', feedback: ''};
+const profileCardUI = {key: '', cards: [], loaded: false, pending: '', error: '', feedback: '', openScan: ''};
 
 function profileCardState() {
   const key = JSON.stringify([state.user?.user_id, scopeKey(scope())]);
@@ -13,6 +13,7 @@ function profileCardState() {
     profileCardUI.pending = '';
     profileCardUI.error = '';
     profileCardUI.feedback = '';
+    profileCardUI.openScan = '';
   }
   return profileCardUI;
 }
@@ -41,14 +42,54 @@ function profileCardBadgeCount() {
 function profileCardBadge() {
   const count = profileCardBadgeCount();
   if (!count) return '';
-  return `<button class="text" data-action="profile-cards-open">待确认结构 ${count}</button>`;
+  return `<button class="text" data-action="profile-cards-open">待确认事项 ${count}</button>`;
 }
 
 function profileCardKey(card) {
   return `${card.artifact?.id || ''}::${card.sheet || ''}`;
 }
 
+function scanPageUrl(card, page) {
+  const s = scope();
+  const query = new URLSearchParams({tenant_id: s.tenant_id, organization_id: s.organization_id,
+    legal_entity_id: s.legal_entity_id, ledger_id: s.ledger_id,
+    accounting_period_id: s.accounting_period_id, baseline_id: s.baseline_id});
+  return `/api/v1/artifacts/${encodeURIComponent(card.artifact.id)}/pages/${page}?${query}`;
+}
+
+function renderScannedGroup(group) {
+  const rows = group.rows.map(row =>
+    `<li><span class="scan-seq">第 ${row.sequence} 行</span>${row.values.map(
+      value => `<code>${esc(value || '（空）')}</code>`).join('<span class="scan-vs">／</span>')}</li>`).join('');
+  return `<details class="scan-group" ${group.blocking ? 'open' : ''}>
+    <summary><strong>${esc(group.label)}</strong> ${group.count} 处
+      ${group.blocking ? '<span class="badge red">影响金额或期间</span>' : '<span class="badge">文本</span>'}</summary>
+    <ul class="scan-rows">${rows}</ul>
+  </details>`;
+}
+
+function renderScannedCard(card) {
+  const ui = profileCardState();
+  const pages = Number(card.pages || 1);
+  const open = ui.openScan === card.artifact.id;
+  return `<article class="panel pad profile-card">
+    <h3>${esc(card.title)}</h3>
+    <p class="facts">${esc(card.why.facts)}</p>
+    <p class="muted small">${esc(card.why.rule)}</p>
+    <p class="muted small">${esc(card.why.recommendation)}</p>
+    ${(card.groups || []).map(renderScannedGroup).join('')}
+    <div class="row">
+      <button class="secondary" data-action="profile-card-scan" data-profile-card="${esc(card.artifact.id)}">
+        ${open ? '收起原件' : '对照原件'}</button>
+    </div>
+    ${open ? `<div class="scan-pages">${Array.from({length: pages}, (_, i) =>
+        `<figure><figcaption class="muted small">第 ${i + 1} 页</figcaption>
+         <img src="${scanPageUrl(card, i + 1)}" alt="扫描件第 ${i + 1} 页" loading="lazy"></figure>`).join('')}</div>` : ''}
+  </article>`;
+}
+
 function renderProfileCard(card) {
+  if (card.card_type === 'SCANNED_STATEMENT_REVIEW') return renderScannedCard(card);
   const ui = profileCardState();
   const confidence = Number(card.why?.confidence || 0);
   const known = card.card_type === 'SOURCE_PROFILE_CONFIRM';
@@ -76,11 +117,13 @@ function renderProfileCards() {
   if (ui.feedback) html += `<div class="notice">${esc(ui.feedback)}</div>`;
   if (!ui.loaded) return html + '<section class="panel pad"><p>正在读取待确认结构…</p></section>';
   if (!ui.cards.length) {
-    return html + `<section class="panel pad"><h2>没有待确认的结构</h2>
-      <p class="muted">本期原件的表格结构都已识别。新上传一份陌生格式时，这里会出现一张卡片。</p></section>`;
+    return html + `<section class="panel pad"><h2>没有待确认事项</h2>
+      <p class="muted">本期原件的结构都已识别，识别结果也没有需要核对的分歧。</p></section>`;
   }
-  return html + `<section class="panel pad"><h2>待确认结构 ${ui.cards.length}</h2>
-    <p class="muted small">每张卡确认一次，之后所有同模板的文件都直接按该结构解析。</p></section>`
+  const structural = ui.cards.filter(c => c.card_type !== 'SCANNED_STATEMENT_REVIEW').length;
+  return html + `<section class="panel pad"><h2>待确认事项 ${ui.cards.length}</h2>
+    <p class="muted small">${structural ? '版式确认一次之后，同模板的文件都直接按该结构解析。' : ''}
+      扫描件的识别分歧需要对照原件核对，不会自动采信。</p></section>`
     + ui.cards.map(renderProfileCard).join('');
 }
 
@@ -92,6 +135,12 @@ function installProfileCardActions() {
     loadProfileCards().catch(() => {});
   };
   actions['profile-cards-return'] = () => {state.view = 'current'; render();};
+  actions['profile-card-scan'] = (element) => {
+    const ui = profileCardState();
+    const id = element.dataset.profileCard;
+    ui.openScan = ui.openScan === id ? '' : id;
+    render();
+  };
   actions['profile-card-designate'] = (element) => {
     // 指认各列复用既有的结构方案界面；这里只负责把人送过去。
     const ui = profileCardState();

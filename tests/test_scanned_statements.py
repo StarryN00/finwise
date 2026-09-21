@@ -346,3 +346,102 @@ def test_all_rounds_failing_raises_rather_than_returning_nothing(monkeypatch):
     monkeypatch.setattr(module, "page_images", lambda content: [b"\x89PNG\r\n\x1a\n"])
     with pytest.raises(ScannedStatementError):
         read_with_consensus(b"pdf", FakeReader({"totals": {}, "rows": []}), rounds=2)
+
+
+# ---------- 转成事实记录 ----------
+
+def records_for(statement_payload=None, **kw):
+    from app.scanned_statements import to_records
+    statement = parse_statement(statement_payload or sample())
+    report = verify(statement)
+    return to_records(statement, report, period=kw.pop("period", "2026-08"), **kw)
+
+
+def test_records_match_the_shape_the_table_path_produces():
+    record = records_for(bank_account="ACCT-1")[0]
+    assert set(record) >= {"record_type", "source_anchor", "original_value", "normalized_value",
+                           "field_sources", "extraction_issues", "extraction_confidence", "period_check"}
+    assert record["source_anchor"]["row"] == 1
+
+
+def test_bank_debit_becomes_expense_in_book_terms():
+    """银行视角的借方是账户支出。换算只在这一步做一次，读数阶段不碰方向。"""
+    records = records_for(bank_account="ACCT-1")
+    assert records[0]["record_type"] == "PAYMENT"
+    assert records[0]["normalized_value"]["expense"] == "266.00"
+    assert records[0]["normalized_value"]["income"] == "0.00"
+    assert records[2]["record_type"] == "RECEIPT"
+    assert records[2]["normalized_value"]["income"] == "100000.00"
+
+
+def test_a_clean_row_never_reaches_full_confidence():
+    """扫描件读数不该拿到和单元格一样的信心：摘要与对方从未被校验过。"""
+    record = records_for(bank_account="ACCT-1")[0]
+    assert record["extraction_issues"] == []
+    assert 0 < record["extraction_confidence"] < 1
+
+
+def test_a_disputed_amount_becomes_a_row_level_issue():
+    from app.scanned_statements import DisputedField, to_records
+    statement = parse_statement(sample())
+    report = verify(statement)
+    report.disputed.append(DisputedField(sequence=1, field="debit", values=["266.00", "266.90"]))
+    record = to_records(statement, report, period="2026-08", bank_account="ACCT-1")[0]
+    assert any("多次识别结果不一致" in issue for issue in record["extraction_issues"])
+    assert record["extraction_confidence"] == 0.0
+
+
+def test_a_disputed_name_is_recorded_with_softer_wording():
+    from app.scanned_statements import DisputedField, to_records
+    statement = parse_statement(sample())
+    report = verify(statement)
+    report.disputed.append(DisputedField(sequence=1, field="counterparty_name", values=["侯文军", "候文军"]))
+    record = to_records(statement, report, period="2026-08", bank_account="ACCT-1")[0]
+    assert any("识别结果不稳定" in issue for issue in record["extraction_issues"])
+
+
+def test_verified_fields_exclude_whatever_was_disputed():
+    from app.scanned_statements import DisputedField, to_records
+    statement = parse_statement(sample())
+    report = verify(statement)
+    report.disputed.append(DisputedField(sequence=1, field="transaction_date", values=["a", "b"]))
+    record = to_records(statement, report, period="2026-08", bank_account="ACCT-1")[0]
+    assert "transaction_date" not in record["verified_fields"]
+    assert "expense" in record["verified_fields"]
+
+
+def test_a_row_outside_the_period_is_marked():
+    rows = sample()["rows"]
+    rows[0] = dict(rows[0], transaction_date="2026-09-03")
+    records = records_for(sample(rows=rows), bank_account="ACCT-1", period="2026-08")
+    assert records[0]["period_check"] == "PERIOD_EXCEPTION"
+
+
+def test_missing_bank_account_is_still_an_issue():
+    assert any("bank_account_ref" in issue for issue in records_for()[0]["extraction_issues"])
+
+
+def test_account_numbers_ignore_line_wrap_spaces():
+    """账号在扫描件里折行，模型有时把换行读成空格。同一个账号不该因此被判成分歧。"""
+    from app.scanned_statements import consensus
+    a = sample(); a["rows"][0]["counterparty_account"] = "6217732000504 146"
+    b = sample(); b["rows"][0]["counterparty_account"] = "6217732000504146"
+    merged, disputed = consensus([parse_statement(a), parse_statement(b)])
+    assert merged.rows[0].counterparty_account == "6217732000504146"
+    assert [d for d in disputed if d.field == "counterparty_account"] == []
+
+
+def test_text_fields_also_ignore_stray_whitespace():
+    from app.scanned_statements import consensus
+    a = sample(); a["rows"][0]["counterparty_name"] = "侯 文军"
+    b = sample(); b["rows"][0]["counterparty_name"] = "侯文军"
+    _, disputed = consensus([parse_statement(a), parse_statement(b)])
+    assert [d for d in disputed if d.field == "counterparty_name"] == []
+
+
+def test_a_genuinely_different_account_is_still_disputed():
+    from app.scanned_statements import consensus
+    a = sample(); a["rows"][0]["counterparty_account"] = "6217732000504146"
+    b = sample(); b["rows"][0]["counterparty_account"] = "6217732000504147"
+    _, disputed = consensus([parse_statement(a), parse_statement(b)])
+    assert len([d for d in disputed if d.field == "counterparty_account"]) == 1
