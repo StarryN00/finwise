@@ -218,6 +218,47 @@ class DeepSeekProvider:
             schema_version=({'PROBLEM_REVIEW':'problem-review-v1','PAYROLL_MAPPING':'payroll-mapping-v1', 'MATERIAL_GUIDANCE':'material-guidance-v2', 'STRUCTURE_PLAN':'structure-plan-v1'}).get(stage,AGENT_SCHEMA_VERSION),
         )
 
+    def complete_json(self, *, model: str, system: str, user: str,
+                      max_tokens: int | None = None) -> tuple[dict[str, Any], dict[str, Any]]:
+        """一次纯文本的 JSON 调用。调用方自己拼提示词并负责校验返回值。"""
+        body = {
+            "model": model,
+            "messages": [{"role": "system", "content": system},
+                         {"role": "user", "content": user}],
+            "temperature": 0,
+            "max_tokens": max_tokens or self.settings.agent_max_tokens,
+            "response_format": {"type": "json_object"},
+        }
+        request = Request(
+            self.settings.deepseek_base_url.rstrip("/") + "/chat/completions",
+            data=json.dumps(body, ensure_ascii=False).encode("utf-8"),
+            headers={"Authorization": f"Bearer {self.settings.deepseek_api_key}",
+                     "Content-Type": "application/json", "Accept": "application/json",
+                     "User-Agent": "finwise-agent-gateway/2"},
+            method="POST")
+        started = time.monotonic()
+        try:
+            with self._opener(request, timeout=self.settings.gateway_timeout_seconds) as response:
+                response_body = json.loads(response.read().decode("utf-8"))
+        except HTTPError as error:
+            raise GatewayFailure(f"服务返回 HTTP {error.code}：{self._error_body(error)}",
+                                 "PROVIDER_HTTP_ERROR") from error
+        except (URLError, TimeoutError, OSError) as error:
+            raise GatewayFailure(f"服务不可达：{error}", "PROVIDER_UNREACHABLE") from error
+        latency_ms = int((time.monotonic() - started) * 1000)
+        try:
+            content = response_body["choices"][0]["message"]["content"]
+            output = json.loads(content)
+        except (KeyError, IndexError, TypeError, json.JSONDecodeError) as error:
+            reason = response_body.get("choices", [{}])[0].get("finish_reason")
+            detail = "输出被 max_tokens 截断" if reason == "length" else f"finish_reason={reason}"
+            raise GatewayFailure(f"返回的不是合法 JSON（{detail}）", "PROVIDER_INVALID_JSON") from error
+        if not isinstance(output, dict):
+            raise GatewayFailure("返回必须是 JSON 对象", "PROVIDER_INVALID_SCHEMA")
+        usage = response_body.get("usage") if isinstance(response_body.get("usage"), dict) else {}
+        return output, {"provider": "deepseek", "model_version": model,
+                        "latency_ms": latency_ms, "usage": usage}
+
     def read_images(self, *, images: list[str], instruction: str, schema_hint: str,
                     hint: str = "") -> tuple[dict[str, Any], dict[str, Any]]:
         """图像理解调用。扫描件只能由模型直接读数，因此调用方必须自行校验结果。
