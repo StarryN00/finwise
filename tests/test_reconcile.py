@@ -402,15 +402,37 @@ def test_invoice_float_representation_is_explicit_and_never_cent_tolerance(raw, 
     assert (item.get("comparison") == "FLOAT_REPRESENTATION_ONLY") == (expected == "MATCH")
 
 
-@pytest.mark.parametrize("problem", ["missing", "subtotal", "multiple", "derived", "drift", "formula"])
+@pytest.mark.parametrize("problem", ["missing", "subtotal", "multiple", "drift", "formula"])
 def test_invoice_missing_or_ambiguous_anchor_does_not_invent_attestation(problem):
     data = invoice_extraction()
     if problem == "missing": data["sheets"][0]["reference_rows"] = []
     if problem == "subtotal": data["sheets"][0]["reference_rows"][0]["values"][0] = "本页合计"
     if problem == "multiple": data["sheets"][0]["reference_rows"] *= 2
-    if problem == "derived": data["records"][0]["field_sources"]["invoice_total"]["region"] = "发票基础信息!D2:F2"
     if problem == "drift": data["records"][0]["field_sources"]["net_amount"]["region"] = "发票基础信息!G2"
     if problem == "formula": data["records"][0]["field_sources"]["tax"]["formula"] = "=F2*0.1"
+    assert reconcile(data, "purchase_invoices")["overall"] == "UNATTESTED"
+
+
+def test_invoice_total_without_a_unique_anchor_is_carried_by_its_verified_inputs():
+    """价税合计定位不唯一不等于没核对过。
+
+    净额与税额的全表合计都已逐笔加总核对一致，且每条记录的价税合计确实等于
+    自己的净额加税额 —— 这时结论由输入承担，不需要再让人逐条比对原件。
+    净额或税额有任何一项不成立时，仍然退回"无法验证"（见上一条用例）。
+    """
+    data = invoice_extraction()
+    data["records"][0]["field_sources"]["invoice_total"]["region"] = "发票基础信息!D2:F2"
+    result = reconcile(data, "purchase_invoices")
+    assert result["overall"] == "MATCH"
+    item = next(i for i in result["items"] if i["code"] == "INVOICE_TOTAL_INVOICE_TOTAL")
+    assert item["status"] == "MATCH"
+    assert "逐条等于自身的净额加税额" in item["message"]
+
+
+def test_a_single_row_that_does_not_add_up_blocks_the_whole_conclusion():
+    data = invoice_extraction()
+    data["records"][0]["field_sources"]["invoice_total"]["region"] = "发票基础信息!D2:F2"
+    data["records"][-1]["normalized_value"]["invoice_total"] = "0.01"
     assert reconcile(data, "purchase_invoices")["overall"] == "UNATTESTED"
 
 

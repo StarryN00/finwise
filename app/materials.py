@@ -267,11 +267,20 @@ class MaterialReview:
                 task('PARSE',a,'核对解析对账差异',[],
                      '；'.join(a['data'].get('parse_errors',[])) or '原件明细与对账依据不一致，请核对结构方案','parse')
                 continue
+            from app.tabular import PARSER_VERSION
             if status in {'RECEIVED','FAILED'}:
-                from app.tabular import PARSER_VERSION
                 retryable=status=='RECEIVED' or a['data'].get('parse_version')!=PARSER_VERSION
                 task('PARSE',a,'识别资料' if status=='RECEIVED' else '处理识别失败',[],
                      '；'.join(a['data'].get('parse_errors',[])) or '原件已保存，尚未提取', 'parse' if retryable else 'supplement')
+            # 解析规则升级后，早先存下的核对结论是按旧规则算的，不能和现在的比。
+            # 没有这个入口的话只能让客户重新上传一遍原件 —— 原件根本没变，没有道理。
+            # 绑了工资字段对应或结构方案的原件不能直接重解析，那些要走各自的方案入口。
+            elif (status in {'PARSED','PARSED_WITH_ISSUES'}
+                  and a['data'].get('parse_version')!=PARSER_VERSION
+                  and not a['data'].get('payroll_mapping_id') and not a['data'].get('plan_ref')):
+                task('PARSE',a,'按新版规则重新识别',[],
+                     f"本份原件是按 {a['data'].get('parse_version') or '早期版本'} 识别的，当前规则为 {PARSER_VERSION}；"
+                     '重新识别后核对结论才与现在一致。原件不变。','parse')
             eligible=[r for r in records if r['source_artifact_id']==a['object_id'] and r['state']=='AWAITING_VERIFICATION' and not r.get('automatic_invoice_check')]
             # 算术已经核过的不再当作待办。全表净额与税额逐笔加总等于原件自报合计、
             # 银行余额逐行衔接 —— 这是真的核对过。让人对着 27 行点"确认一致"是仪式，

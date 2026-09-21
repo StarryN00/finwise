@@ -784,7 +784,10 @@ class MaterialGuidance:
         completed_records = sum(row.get('state') in {'SOURCE_VERIFIED', 'BUSINESS_CONFIRMED', 'ISSUE_CONFIRMED', 'OTHER_PERIOD'}
                                 for row in projected.get('records', []))
         status_counts = Counter(task['handling']['state'] for task in projected['tasks'])
-        user_status_counts = Counter(task['handling']['state'] for task in projected['tasks']
+        # 算术已核对的抽查任务保留着，是为了"有问题顺着明细往前查"的入口，
+        # 不是为了把人叫过来逐条比对。它不进待办计数，也不会被推成下一步。
+        pushable = [task for task in projected['tasks'] if not task.get('optional')]
+        user_status_counts = Counter(task['handling']['state'] for task in pushable
                                      if task['handling']['owner'] == 'USER')
         system_checks = [task for task in projected['tasks']
                          if task['handling']['owner'] == 'SYSTEM'
@@ -808,6 +811,7 @@ class MaterialGuidance:
             'failed': status_counts['FAILED'],
             'stale': status_counts['STALE'],
             'completed': status_counts['COMPLETED'],
+            'optional_checks': sum(bool(task.get('optional')) for task in projected['tasks']),
         }
         projected['flow'] = {
             'version': 'material-handling-v1',
@@ -817,7 +821,7 @@ class MaterialGuidance:
             'task_counts': task_counts,
             'record_counts': {'completed': completed_records,
                               'total': len(projected.get('records', []))},
-            'next_step': self._material_next_step(projected['tasks'], task_counts),
+            'next_step': self._material_next_step(pushable, task_counts),
         }
         # Compatibility counters keep old callers stable while ensuring a saved
         # opinion is no longer presented as unfinished user work.

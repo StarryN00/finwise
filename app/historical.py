@@ -557,3 +557,9 @@ class HistoricalPreparation:
         self.stop_event.set()
         if self.thread:
             self.thread.join(timeout=5)
+            # 超时后线程还在跑，就还在往同一个库里写。静默返回会让"已经停了"
+            # 这个假设一路带到后面，出问题时完全看不出来源，所以必须留痕。
+            if self.thread.is_alive():
+                log.error("historical_worker_did_not_stop", extra={"worker": self.thread.name})
+            else:
+                self.thread = None

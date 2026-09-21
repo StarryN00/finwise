@@ -432,4 +432,8 @@ class ProblemReview:
 
     def stop(self):
         self.stop_event.set()
-        if self.thread:self.thread.join(timeout=5)
+        if self.thread:
+            self.thread.join(timeout=5)
+            # 见 historical.stop：超时未退出的后台线程仍在写同一个库，不能静默。
+            if self.thread.is_alive():log.error("problem_review_worker_did_not_stop",extra={"worker":self.thread.name})
+            else:self.thread=None
