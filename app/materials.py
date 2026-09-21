@@ -20,6 +20,28 @@ def arithmetic_ok(artifact):
     return checks.get('overall') in {'MATCH', 'PASS'}
 
 
+def review_counts(records, tasks):
+    """记录状态与任务数的口径只此一处。
+
+    problem_review 的复核覆盖层原来自己又算了一遍，两边定义一旦分叉，
+    界面上的数字就对不上：算术已核对的记录在那边没有减掉，
+    「待核对」一直停在原数不动。
+    """
+    states = Counter(r['state'] for r in records)
+    verified = sum(1 for r in records if r.get('arithmetic_verified'))
+    return {'needs_review': states['NEEDS_REVIEW'],
+            # awaiting_verification 仍是记录状态的真实计数，加总恒等式依赖它。
+            # 界面上该提醒人去做的只是没通过算术核对的那部分。
+            'awaiting_verification': states['AWAITING_VERIFICATION'],
+            'awaiting_verification_active': states['AWAITING_VERIFICATION'] - verified,
+            'arithmetic_verified': verified,
+            'system_checked': states['AWAITING_VERIFICATION'] + states['SOURCE_VERIFIED'],
+            'issue_tasks': sum(t['kind'] != 'VERIFY' and not t['deferred'] for t in tasks),
+            'optional_tasks': sum(bool(t.get('optional')) and not t['deferred'] for t in tasks),
+            'active_tasks': sum(not t['deferred'] and not t.get('optional') for t in tasks),
+            'deferred': sum(t['deferred'] for t in tasks)}
+
+
 def compare_fields(data):
     """Align values using their recorded source, never a label/value guess."""
     original=data.get('original_value') or {}
@@ -305,19 +327,13 @@ class MaterialReview:
         return {'version':'material-review-v2','records':records,'tasks':tasks,
             'categories':[{**c,'source_verified_count':sum(r['state']=='SOURCE_VERIFIED' for r in records if r['category_id']==c['id'])} for c in categories],
             'counts':{'files':len(files),'unassigned_files':sum(aid not in files for c in readiness['categories'] if c['id']=='unassigned' for aid in c['artifact_ids']),'file_states':dict(parse_counts),'records':len(records),'source_verified':counts['SOURCE_VERIFIED'],
-                'awaiting_verification':counts['AWAITING_VERIFICATION']-sum(1 for r in records if r.get('arithmetic_verified')),
-                'needs_review':counts['NEEDS_REVIEW'],
-                'arithmetic_verified':sum(1 for r in records if r.get('arithmetic_verified')),
+                **review_counts(records,tasks),
                 'other_period':counts['OTHER_PERIOD'],
                 'business_confirmed':counts['BUSINESS_CONFIRMED'], 'bill_confirmed':sum(c['status']=='CONFIRMED' for c in bill_confirmations.values()),
                 'issue_confirmed':counts['ISSUE_CONFIRMED'], 'invoice_amount_confirmed':len(invoice_confirmations),
-                'system_checked':counts['AWAITING_VERIFICATION']+counts['SOURCE_VERIFIED'],
-                'issue_tasks':sum(t['kind']!='VERIFY' and not t['deferred'] for t in tasks),
                 'period_exceptions':counts['PERIOD_EXCEPTION'],'accounting_usable':sum(r['state']=='CHECKED' and r['object_id'] not in unusable and valid_source.get(r['source_artifact_id'],False) for r in readiness['records']),
                 'supplement_issues':len({(b['group_id'],e) for c in categories for b in c.get('business_issues',[]) for e in b.get('missing_evidence',[])}),
-                'deferred':sum(t['deferred'] for t in tasks),
-                'optional_tasks':sum(t.get('optional') and not t['deferred'] for t in tasks),
-                'active_tasks':sum(not t['deferred'] and not t.get('optional') for t in tasks)}}
+                }}
 
     def execute(self, scope, action, target, version, actor, payload):
         self.service._ensure_period_open(scope)

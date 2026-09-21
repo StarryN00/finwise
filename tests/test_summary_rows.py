@@ -63,7 +63,7 @@ def test_reparse_supersedes_false_facts_preserves_history_and_is_idempotent(clie
     assert len(old['facts']) == 3
     monkeypatch.setattr(tabular, 'bank_footer_header', classify)
     monkeypatch.setattr(tabular, 'bank_statistics_row', statistics)
-    monkeypatch.setattr(service_module, 'PARSER_VERSION', 'tabular-v5')
+    monkeypatch.setattr(service_module, 'PARSER_VERSION', 'tabular-v6')
     response = parse(client, scope, old['artifact'], kind='bank_statement', key='upgrade-footer')
     assert response.status_code == 200, response.text
     new = response.json()['effect']

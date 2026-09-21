@@ -11,7 +11,9 @@ from xml.etree import ElementTree
 
 from pydantic import BaseModel, ConfigDict, Field, StrictStr
 
-PARSER_VERSION = "tabular-v5"
+# v6：价税合计等算出来的字段改由净额与税额的已核对合计推出，
+# 早于 v6 存下的核对结论不能和现在的相比，必须重新读一遍。
+PARSER_VERSION = "tabular-v6"
 MAX_BYTES = 16 * 1024 * 1024
 MAX_EXPANDED_BYTES = 64 * 1024 * 1024
 MAX_CELLS = 200_000
