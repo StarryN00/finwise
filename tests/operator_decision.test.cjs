@@ -221,6 +221,22 @@ test('five fallback actions satisfy decision-v2 and keep one primary action in e
  for(const id of ids){const a=app();a.t.descriptor=descriptor(fallbackOption(id));assert.equal(a.c.decisionValid(a.t.descriptor),true,id);const html=a.render();assert.equal((html.match(/class="primary"/g)||[]).length,1,id);assert.match(html,/业务判断/);assert.match(html,/data-task-action-field/);}
  const choice=app();choice.t.descriptor=descriptor(fallbackOption());choice.t.descriptor.options=ids.map(fallbackOption);choice.t.material_opinions=[];const choiceHtml=choice.render();assert.equal((choiceHtml.match(/class="primary"/g)||[]).length,1);assert.equal((choiceHtml.match(/data-guide="option"/g)||[]).length,5);
 });
+// 通用兜底动作每张卡片都一样，和这张卡的具体问题无关。七个按钮平铺出来，
+// 真正针对本问题的那一两个就被淹没了 —— 实测界面上根本看不出该点哪个。
+test('generic fallback actions are grouped away, unless they are all there is',()=>{
+ const ids=['record_judgement','suspend','request_supplement','mark_out_of_scope','escalate'];
+ const a=app(),primary=option();a.t.descriptor=descriptor(primary);a.t.descriptor.options=[primary,...ids.map(fallbackOption)];a.t.material_opinions=[];
+ const html=a.render();
+ assert.match(html,/其他处理方式 · 5 项/);
+ const groupStart=html.indexOf('decision-more-options');
+ for(const id of ids)assert(html.indexOf('data-option="'+id+'"')>groupStart,id);
+ assert(html.indexOf('data-option="confirm_invoice_amount"')<groupStart);
+ assert.doesNotMatch(html,/<details class="decision-more-options" open/);
+ const only=app();only.t.descriptor=descriptor(fallbackOption());only.t.descriptor.options=ids.map(fallbackOption);only.t.material_opinions=[];
+ const onlyHtml=only.render();
+ assert.doesNotMatch(onlyHtml,/decision-more-options/);
+ assert.equal((onlyHtml.match(/data-guide="option"/g)||[]).length,5);
+});
 test('role permissions disable escalation when there is no higher role',()=>{
  const a=app(),ids=['record_judgement','suspend','request_supplement','mark_out_of_scope','escalate'];a.c.state.role='admin';a.t.descriptor=descriptor(fallbackOption());a.t.descriptor.options=ids.map(fallbackOption);a.t.descriptor.options.find(o=>o.id==='escalate').permissions=['operator','accountant'];a.t.material_opinions=[];
  const html=a.render();assert.match(html,/data-option="escalate"[^>]*disabled/);const original=a.c.decisionGuide(a.t).option;a.c.decisionChoose(a.t,'escalate');assert.equal(a.c.decisionGuide(a.t).option,original);

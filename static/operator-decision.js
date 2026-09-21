@@ -89,6 +89,20 @@ function decisionFieldName(k){
   const common=typeof fieldLabels!=='undefined'?fieldLabels[k]:'';
   return material||common||'来源字段';
 }
+function decisionOptionButton(x,cls,pressed){
+  return '<button type="button" class="'+cls+'" data-guide="option" data-option="'+esc(x.id)+'" '+(!decisionOptionAvailable(x)||!materialCanWrite()?'disabled':'')+' aria-pressed="'+(pressed===true)+'">'+esc(x.label)+'</button>';
+}
+function decisionOptionsNav(options,pressed,firstPrimary){
+  // 记录判断、暂停办理、转交复核这些兜底动作每张卡片都一样，和本张卡的具体问题无关。
+  // 七个按钮平铺出来，真正针对这个问题的那两个就被淹没了，所以收进「其他处理方式」。
+  // 整张卡片只有兜底动作时不能全收起来 —— 那样一个可点的处理方式都不剩。
+  const specific=options.filter(x=>x.fallback!==true),generic=options.filter(x=>x.fallback===true);
+  const main=specific.length?specific:generic,extra=specific.length?generic:[];
+  const first=firstPrimary?main.findIndex(decisionOptionAvailable):-1;
+  const open=extra.some(x=>pressed(x)===true)?' open':'';
+  return '<nav class="decision-options" aria-label="选择处理方式">'+main.map((x,i)=>decisionOptionButton(x,i===first?'primary':'secondary',pressed(x))).join('')+'</nav>'+
+    (extra.length?'<details class="decision-more-options"'+open+'><summary>其他处理方式 · '+extra.length+' 项</summary><nav class="decision-options" aria-label="其他处理方式">'+extra.map(x=>decisionOptionButton(x,'secondary',pressed(x))).join('')+'</nav></details>':'');
+}
 function decisionOriginals(t){
   // 代账公司是靠最后的科目余额表核对结果，有问题才顺着明细往前查。
   // 所以原件明细默认折叠放在处理动作后面：先看清问题和怎么处理，要查再展开。
@@ -121,7 +135,7 @@ function decisionEvidence(t){
     if(focused.length)detail+='<details class="decision-full"><summary>查看本条完整字段对照</summary>'+materialComparison(display)+'</details>';
   }
   return '<section class="decision-evidence" aria-label="原件与提取值"><h4>原件与提取值 · '+all.length+' 条</h4><p class="small muted">'+esc(t.filename||t.descriptor.why.facts)+' · 点击记录查看对照，仅切换查看，不会确认数据。</p>'+
-    (rows.length?'<div class="table-wrap"><table class="decision-key-table"><thead><tr><th>记录／日期与金额</th><th>问题字段的原值</th><th>来源位置</th><th>查看</th></tr></thead><tbody>'+rows.map(r=>'<tr '+(selected===r?'class="decision-selected"':'')+'><td>'+esc(identity(r))+'<small>'+esc(context(r))+'</small></td><td>'+esc(keyValues(r))+'</td><td>'+esc(r.source_anchor?.region||'来源定位未提供')+'</td><td><button type="button" class="text" data-guide="record" data-record="'+esc(r.object_id)+'" aria-pressed="'+(selected===r)+'">'+(selected===r?'当前记录':'查看对照')+'</button></td></tr>').join('')+'</tbody></table></div>'+materialPager(all.length):'<p>尚未形成可定位的提取记录。请查看原件与识别失败原因。</p>'+objectButton(t.artifact_id,'查看原件'))+
+    (rows.length?'<div class="table-wrap"><table class="decision-key-table"><thead><tr><th>记录／日期与金额</th><th>关键字段原值</th><th>来源位置</th><th>查看</th></tr></thead><tbody>'+rows.map(r=>'<tr '+(selected===r?'class="decision-selected"':'')+'><td>'+esc(identity(r))+'<small>'+esc(context(r))+'</small></td><td>'+esc(keyValues(r))+'</td><td>'+esc(r.source_anchor?.region||'来源定位未提供')+'</td><td><button type="button" class="text" data-guide="record" data-record="'+esc(r.object_id)+'" aria-pressed="'+(selected===r)+'">'+(selected===r?'当前记录':'查看对照')+'</button></td></tr>').join('')+'</tbody></table></div>'+materialPager(all.length):'<p>尚未形成可定位的提取记录。请查看原件与识别失败原因。</p>'+objectButton(t.artifact_id,'查看原件'))+
     (selected?'<details class="decision-source" open><summary>当前记录原件与提取值</summary>'+detail+'</details>':'')+'</section>';
 }
 function decisionField(t,o,f){
@@ -356,7 +370,7 @@ function renderDecisionTask(t){
   const g=decisionGuide(t),o=decisionOption(t),a=decisionAdapters[o.id],steps=decisionSteps(t,o),draft=materialDraft(t);
   const recorded=decisionRecordedOpinion(t);
   if(decisionRequiresChoice(t)&&(g.suggestionChoice?.submitted===true||recorded)&&g.chosen!==true)return decisionSuggestionRecorded(t,g,d,triage,recorded);
-  if(decisionRequiresChoice(t)&&g.chosen!==true)return '<section class="panel mat-task decision-chat" data-task-id="'+esc(t.id)+'"><div class="focus-head"><h3 id="materialTaskTitle" tabindex="-1">'+esc(triage?.title||decisionPresentation(t)?.type_label||d.title)+'</h3><p class="decision-explanation">'+esc(triage?.explanation||decisionPresentation(t)?.explanation||d.why.rule)+'</p></div><div class="pad">'+(typeof renderProblemReviewDetail==='function'?renderProblemReviewDetail(t):'')+decisionAgentPanel(t)+'<section class="decision-handling"><h4 tabindex="-1" data-current-question>请选择处理方式</h4><p>未默认选择任何方案。选择只进入逐步核对，不会自动提交。</p><nav class="decision-options" aria-label="选择处理方式">'+d.options.map((x,i)=>'<button type="button" class="'+(i===d.options.findIndex(decisionOptionAvailable)?'primary':'secondary')+'" data-guide="option" data-option="'+esc(x.id)+'" aria-pressed="false" '+(!decisionOptionAvailable(x)||!materialCanWrite()?'disabled':'')+'>'+esc(x.label)+'</button>').join('')+'</nav><div class="mat-actionbar"><button type="button" class="text" data-action="material-skip">先看下一项</button></div></section>'+decisionOriginals(t)+'</div></section>';
+  if(decisionRequiresChoice(t)&&g.chosen!==true)return '<section class="panel mat-task decision-chat" data-task-id="'+esc(t.id)+'"><div class="focus-head"><h3 id="materialTaskTitle" tabindex="-1">'+esc(triage?.title||decisionPresentation(t)?.type_label||d.title)+'</h3><p class="decision-explanation">'+esc(triage?.explanation||decisionPresentation(t)?.explanation||d.why.rule)+'</p></div><div class="pad">'+(typeof renderProblemReviewDetail==='function'?renderProblemReviewDetail(t):'')+decisionAgentPanel(t)+'<section class="decision-handling"><h4 tabindex="-1" data-current-question>请选择处理方式</h4><p>未默认选择任何方案。选择只进入逐步核对，不会自动提交。</p>'+decisionOptionsNav(d.options,()=>false,true)+'<div class="mat-actionbar"><button type="button" class="text" data-action="material-skip">先看下一项</button></div></section>'+decisionOriginals(t)+'</div></section>';
   g.step=Math.max(0,Math.min(g.step,steps.length));
   if(!steps.length)g.reviewed='';
   if(g.reviewed&&g.reviewed!==decisionAnswerHash(t,o)){g.reviewed='';g.step=Math.min(g.step,steps.length-1);}
@@ -368,7 +382,7 @@ function renderDecisionTask(t){
   const fields=steps.map((s,i)=>'<fieldset data-guide-step="'+i+'" '+(i!==g.step?'hidden disabled':disabled&&!s.fields.some(f=>f.slot==='record_selection')?'disabled':'')+'><legend tabindex="-1" '+(i===g.step?'data-current-question':'')+'>'+esc(s.title)+'</legend>'+(s.explanation?'<p>'+esc(s.explanation)+'</p>':'')+s.fields.map(f=>decisionField(t,o,f)).join('')+'</fieldset>').join('');
   const button=paused?'<button type="button" class="primary" data-guide="resume">继续：'+esc(o.label)+'</button>':!steps.length?'<button type="button" class="primary" data-guide="open" '+(disabled?'disabled':'')+'>'+esc(decisionConfirmationLabel(o))+'</button>':summary?'<button type="button" class="primary" data-guide="commit" '+(disabled?'disabled':'')+'>'+esc(decisionConfirmationLabel(o))+'</button>':'<button type="button" class="primary" data-guide="next" '+(disabled?'disabled':'')+'>下一步：'+esc(g.step+1===steps.length?'确认执行内容':steps[g.step+1].title)+'</button>';
   return '<section class="panel mat-task decision-chat" data-task-id="'+esc(t.id)+'" data-decision-version="'+esc(d.version)+'"><div class="focus-head"><h3 id="materialTaskTitle" tabindex="-1">'+esc(triage?.title||presentation?.type_label||d.title)+'</h3><p class="decision-explanation">'+esc(triage?.explanation||presentation?.explanation||'当前尚未提供具体问题解释；需要核对时展开下方「原件详情」看原值与来源，不能据此判断客户缺少资料。')+'</p><p class="small">'+esc(d.why.facts)+'</p><small>办理期间：'+esc(d.scope.accounting_period_id)+' · '+esc(decisionStageLabel(d.stage))+'</small></div><div class="pad">'+(typeof renderProblemReviewDetail==='function'?renderProblemReviewDetail(t):'')+result+'<section class="decision-handling"><h4 '+(!steps.length?'tabindex="-1" data-current-question':'')+'>接下来怎么处理</h4><div class="decision-question"><p>'+esc(triage?.next_action||d.why_now||d.why.recommendation)+'</p>'+list('需要明确的问题',triage?.questions||[])+list('系统规则',[d.why.rule])+'</div>'+
-    '<nav class="decision-options" aria-label="选择处理方式">'+d.options.map(x=>'<button type="button" class="secondary" data-guide="option" data-option="'+esc(x.id)+'" '+(!decisionOptionAvailable(x)||!materialCanWrite()?'disabled':'')+' aria-pressed="'+(x.id===o.id)+'">'+esc(x.label)+'</button>').join('')+'</nav>'+answers+
+    decisionOptionsNav(d.options,x=>x.id===o.id,false)+answers+
     (t.deferred?'<div class="record-note">'+esc(t.response?.data.reason)+'</div>':'')+
     '<form id="'+a.form+'" data-artifact="'+esc(t.artifact_id)+'" novalidate>'+fields+
     (summary?'<div class="decision-summary"><h4 tabindex="-1" data-current-question>确认执行内容</h4><p><strong>'+esc(o.label)+'</strong> · '+esc(t.filename||d.why.facts)+'</p><p class="mat-completion">'+esc(o.completion)+'</p>'+list('执行后',o.effects)+list('不会改变',o.not_effects)+'</div>':'')+
