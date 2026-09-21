@@ -217,6 +217,24 @@ def provision_scope(body: Scope, request: Request, context: tuple[str, str] = De
     return {"scope": created}
 
 
+@router.post("/vouchers/adopt")
+def adopt_bank_voucher(body: dict[str, Any], request: Request,
+                       context: tuple[str, str] = Depends(actor)) -> dict[str, Any]:
+    """采纳一笔流水的凭证提案。采纳是人的动作，提案本身不写入任何账务。"""
+    actor_id, _ = context
+    scope = Scope.model_validate(body["scope"])
+    return {"voucher": service(request).adopt_bank_voucher(
+        scope, fact_id=body["fact_id"], expected_version=int(body["fact_version"]),
+        lines=body.get("lines") or [], summary=body.get("summary") or "",
+        basis=body.get("basis") or [], actor_id=actor_id)}
+
+
+@router.post("/vouchers/reconciliation")
+def bank_voucher_reconciliation(body: ScopeQuery, request: Request) -> dict[str, Any]:
+    """期初 + 已采纳凭证的银行发生，与对账单自报的期末余额核对。"""
+    return service(request).bank_voucher_reconciliation(body.scope)
+
+
 @router.post("/vouchers/propose")
 def voucher_proposals(body: ScopeQuery, request: Request) -> dict[str, Any]:
     """按已上传的历史凭证，为本期银行流水提出凭证。只读，不写入任何账务。"""

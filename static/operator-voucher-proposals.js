@@ -2,7 +2,8 @@
 
 // 凭证提案：按历史做法为本期流水提出凭证。提案不是凭证 ——
 // 每一张都要人过一眼，区别只在于"扫一眼就过"还是"得想一下"。
-const voucherProposalUI = {key: '', data: null, loaded: false, error: '', open: '', filter: 'review'};
+const voucherProposalUI = {key: '', data: null, loaded: false, error: '', open: '', filter: 'review',
+  reconciliation: null, adopting: '', adopted: new Set(), feedback: ''};
 
 const PROPOSAL_AUTO = 85;
 const PROPOSAL_REVIEW = 60;
@@ -10,7 +11,8 @@ const PROPOSAL_REVIEW = 60;
 function voucherProposalState() {
   const key = JSON.stringify([state.user?.user_id, scopeKey(scope())]);
   if (voucherProposalUI.key !== key) {
-    Object.assign(voucherProposalUI, {key, data: null, loaded: false, error: '', open: '', filter: 'review'});
+    Object.assign(voucherProposalUI, {key, data: null, loaded: false, error: '', open: '', filter: 'review',
+      reconciliation: null, adopting: '', adopted: new Set(), feedback: ''});
   }
   return voucherProposalUI;
 }
@@ -22,6 +24,8 @@ async function loadVoucherProposals() {
     if (voucherProposalState().key !== key) return;
     ui.data = data;
     ui.error = '';
+    ui.reconciliation = await request('/api/v1/vouchers/reconciliation', {scope: scope()});
+    if (voucherProposalState().key !== key) return;
   } catch (error) {
     if (voucherProposalState().key !== key) return;
     ui.data = null;
@@ -54,6 +58,30 @@ function renderProposalLines(lines) {
     <tbody>${lines.map(row).join('')}</tbody></table></div>`;
 }
 
+function renderReconciliation(rec) {
+  if (!rec) return '';
+  if (rec.status === 'NO_BASELINE' || rec.status === 'NO_BANK_BASELINE') {
+    return `<section class="panel pad vp-recon"><p class="muted">${esc(rec.reason || '')}</p></section>`;
+  }
+  const balanced = rec.status === 'BALANCED';
+  const difference = rec.difference;
+  return `<section class="panel pad vp-recon ${balanced ? 'ok' : ''}">
+    <div class="row"><h3>${esc(rec.bank_account?.name || '银行存款')} 勾稽</h3>
+      <span class="badge ${balanced ? 'green' : 'yellow'}">${balanced ? '已对平' : '未对平'}</span></div>
+    <dl class="vp-recon-grid">
+      <div><dt>期初（基线）</dt><dd>${esc(rec.opening)}</dd></div>
+      <div><dt>已采纳凭证发生</dt><dd>${esc(rec.movement)}</dd></div>
+      <div><dt>算出的期末</dt><dd>${esc(rec.computed_closing)}</dd></div>
+      <div><dt>对账单期末</dt><dd>${esc(rec.statement_closing || '—')}</dd></div>
+      ${difference !== undefined ? `<div><dt>差额</dt><dd class="${balanced ? '' : 'vp-gap'}">${esc(difference)}</dd></div>` : ''}
+      <div><dt>还没入账</dt><dd>${esc(String(rec.outstanding))} / ${esc(String(rec.transactions))} 笔</dd></div>
+    </dl>
+    <p class="muted small">${balanced
+      ? '每一笔流水都入了账，算出的期末与银行对账单一致。'
+      : '对账单期末余额来自银行，不是账上的数。差额指向还没做或做错的那几笔。'}</p>
+  </section>`;
+}
+
 function renderProposalCard(item) {
   const ui = voucherProposalState();
   const t = item.transaction, p = item.proposal;
@@ -69,8 +97,16 @@ function renderProposalCard(item) {
     </div>
     ${renderProposalLines(p.lines || [])}
     ${item.account_hint?.why ? `<p class="muted small">${esc(item.account_hint.why)}</p>` : ''}
-    <button class="text" data-action="voucher-proposal-basis" data-proposal="${esc(proposalKey(item))}">
-      ${open ? '收起依据' : '查看依据'}</button>
+    <div class="row">
+      ${ui.adopted.has(proposalKey(item))
+        ? '<span class="badge green">已采纳</span>'
+        : `<button class="primary" data-action="voucher-proposal-adopt"
+             data-proposal="${esc(proposalKey(item))}"
+             ${ui.adopting === proposalKey(item) || readonly() ? 'disabled' : ''}>${
+             ui.adopting === proposalKey(item) ? '正在采纳…' : '采纳'}</button>`}
+      <button class="text" data-action="voucher-proposal-basis" data-proposal="${esc(proposalKey(item))}">
+        ${open ? '收起依据' : '查看依据'}</button>
+    </div>
     ${open ? `<ul class="vp-basis">${(p.basis || []).map(x => `<li>${esc(x)}</li>`).join('')}</ul>` : ''}
   </article>`;
 }
@@ -118,6 +154,8 @@ function renderVoucherProposals() {
   const abstained = all.filter(x => proposalBucket(x) === 'abstained');
   const learned = data.learned;
 
+  if (ui.feedback) html += `<div class="notice">${esc(ui.feedback)}</div>`;
+  html += renderReconciliation(ui.reconciliation);
   html += `<section class="panel pad">
     <h2>凭证提案 ${data.counts?.transactions || 0} 笔流水</h2>
     <p class="muted small">学自 ${esc(String(learned.vouchers))} 张历史凭证
@@ -158,6 +196,30 @@ function installVoucherProposalActions() {
     voucherProposalState().filter = element.dataset.filter;
     render();
   };
+  actions['voucher-proposal-adopt'] = (element) => exclusive(async () => {
+    const ui = voucherProposalState();
+    const id = element.dataset.proposal;
+    const item = [...(ui.data?.proposals || [])].find(x => proposalKey(x) === id);
+    if (!item || readonly()) return;
+    ui.adopting = id;
+    ui.error = '';
+    render();
+    try {
+      await request('/api/v1/vouchers/adopt', {
+        scope: scope(), fact_id: item.fact.id, fact_version: item.fact.version,
+        lines: item.proposal.lines, summary: item.transaction.summary,
+        basis: item.proposal.basis});
+      ui.adopted.add(id);
+      ui.feedback = '已采纳。凭证仍是草稿，尚未正式入账。';
+      // 采纳会改变勾稽结果，重新取一次而不是就地估算。
+      ui.reconciliation = await request('/api/v1/vouchers/reconciliation', {scope: scope()});
+    } catch (error) {
+      ui.error = error.message || '采纳失败';
+    } finally {
+      ui.adopting = '';
+      render();
+    }
+  });
   actions['voucher-proposal-basis'] = (element) => {
     const ui = voucherProposalState();
     const id = element.dataset.proposal;

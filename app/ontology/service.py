@@ -423,6 +423,7 @@ class OntologyService:
         parse_status = "PARSED" if facts and not errors and counts["needs_review"] == 0 and counts["period_exception"] == 0 else ("PARSED_WITH_ISSUES" if facts else "FAILED")
         data = deepcopy(artifact["data"])
         data.update({"parse_status": parse_status, "parse_version": PARSER_VERSION, "parse_options": current_options, "parse_errors": errors, "parse_sheets": extracted["sheets"], "parse_counts": counts, "parsed_fact_ids": fact_ids, "parsed_at": utcnow(), 'parse_checks':extracted.get('checks',{})})
+        self._carry_statement_totals(data, extracted)
         if _mapping_id:data['payroll_mapping_id']=_mapping_id
         if _plan_ref is not None:data['plan_ref']=deepcopy(_plan_ref)
         data.pop('bank_account_binding',None)
@@ -2000,6 +2001,16 @@ class OntologyService:
                 "checks": {"overall": "PASS", "items": []},
                 "statement_totals": statement.totals.model_dump(mode="json")}
 
+    @staticmethod
+    def _carry_statement_totals(data: dict[str, Any], extracted: dict[str, Any]) -> None:
+        """把对账单表头自报的合计留在原件上。
+
+        它是整条链路唯一的外部真值 —— 期末余额来自银行而不是账上，
+        丢掉它就只能用账验账。"""
+        totals = extracted.get("statement_totals")
+        if totals:
+            data["statement_totals"] = totals
+
     # ---------- 凭证提案 ----------
 
     def _learn_from_history(self, scope: Scope):
@@ -2187,6 +2198,152 @@ class OntologyService:
                         "templates": len(learned["templates"]),
                         "accounts": len(learned["vocabulary"])},
         }
+
+    def adopt_bank_voucher(self, scope: Scope, *, fact_id: str, expected_version: int,
+                           lines: list[dict[str, Any]], summary: str, basis: list[str],
+                           actor_id: str) -> dict[str, Any]:
+        """采纳一笔流水的凭证提案。
+
+        走的不是采购业务组那条路：那条路要求业务组、RuleInstance 与发票金额
+        全量校验，流水驱动的凭证没有业务组，硬塞进去只会把两边的约束都弄脏。
+        这里有自己的守卫，一条都不能少：
+          * 期间开放、基线已确认 —— 没有期初就没有可核对的终点；
+          * 借贷必须平衡；
+          * 绑定来源事实的 id 与版本 —— 流水重新识别后旧凭证必须失效重做；
+          * 同一笔流水只生成一张，重复采纳返回原件而不是再记一遍账。
+        """
+        self._ensure_period_open(scope)
+        self._require_baseline_confirmed(scope)
+        fact = self.store.get_object(fact_id, scope)
+        if fact["object_type"] != ObjectType.FACT_RECORD.value:
+            raise PreconditionFailed("凭证来源必须是已提取的事实记录")
+        if fact["data"].get("record_type") not in {"PAYMENT", "RECEIPT", "BANK_TRANSACTION"}:
+            raise PreconditionFailed("只有银行流水事实可以按这条路径生成凭证")
+        if fact["version"] != expected_version:
+            raise VersionConflict()
+
+        normalized = []
+        debit = credit = Decimal("0.00")
+        for index, line in enumerate(lines, start=1):
+            code = str(line.get("account_code") or "").strip()
+            name = str(line.get("account_name") or "").strip()
+            if not code or not name:
+                raise PreconditionFailed("凭证分录必须有科目编码与名称")
+            amount_debit = Decimal(str(line.get("debit") or "0")).quantize(Decimal(".01"))
+            amount_credit = Decimal(str(line.get("credit") or "0")).quantize(Decimal(".01"))
+            if (amount_debit > 0) == (amount_credit > 0):
+                raise PreconditionFailed(f"第 {index} 行必须恰好有一个方向的金额")
+            debit += amount_debit
+            credit += amount_credit
+            normalized.append({
+                "line_no": index,
+                "direction": "DEBIT" if amount_debit > 0 else "CREDIT",
+                "account": f"{code} {name}", "account_code": code, "account_name": name,
+                "amount": format(amount_debit or amount_credit, ".2f"),
+                "source_fact_id": fact_id,
+            })
+        if len(normalized) < 2:
+            raise PreconditionFailed("凭证至少需要借贷两行")
+        if debit != credit:
+            raise PreconditionFailed(f"借贷不平：借方 {debit:.2f}，贷方 {credit:.2f}")
+
+        existing = next((v for v in self.store.list_objects(ObjectType.VOUCHER_VERSION.value, scope)
+                         if v["data"].get("source_fact_id") == fact_id and v["status"] != "VOID"), None)
+        if existing is not None:
+            if existing["data"].get("source_fact_version") == fact["version"]:
+                return existing
+            self.store.revise_object(existing["object_id"], existing["version"], scope,
+                                     {**existing["data"], "superseded_reason": "来源流水已重新识别"},
+                                     status="VOID", created_by=actor_id)
+
+        value = fact["data"]["normalized_value"]
+        data = {
+            "source": "BANK_TRANSACTION",
+            "source_fact_id": fact_id, "source_fact_version": fact["version"],
+            "source_anchor": fact["data"].get("source_anchor"),
+            "transaction": {"date": value.get("transaction_date"),
+                            "summary": value.get("summary"),
+                            "counterparty": value.get("counterparty"),
+                            "expense": value.get("expense"), "income": value.get("income")},
+            "summary": summary or value.get("summary") or "",
+            "lines": normalized,
+            "debit_total": format(debit, ".2f"), "credit_total": format(credit, ".2f"),
+            "adoption_basis": list(basis or []),
+            "adopted_by": actor_id, "adopted_at": utcnow(),
+            # 采纳只是记下了做法，不等于账已经正式入库。
+            "formal_balance_impact": False,
+        }
+        voucher = self.store.create_initial_object(ObjectType.VOUCHER_VERSION.value, scope, data,
+                                                   status="DRAFT", created_by=actor_id)
+        self.store.add_audit("BANK_VOUCHER_ADOPTED", actor_id, scope,
+                             object_type=voucher["object_type"], object_id=voucher["object_id"],
+                             object_version=voucher["version"], after=data,
+                             evidence=[fact_id], reason="按历史做法采纳流水凭证提案")
+        return voucher
+
+    def bank_voucher_reconciliation(self, scope: Scope) -> dict[str, Any]:
+        """期初 + 已采纳凭证的银行发生 = 期末？与对账单自报的期末比。
+
+        这是整条链路唯一的外部真值：对账单期末余额来自银行，不是账上的数。
+        对得上说明每一笔流水都入了账且金额正确；对不上说明还有没做的，
+        或者做错了 —— 差额本身就指向哪里。
+        """
+        try:
+            baseline = self.store.get_object(self._baseline_object_id(scope), scope)
+        except KeyError:
+            return {"status": "NO_BASELINE", "reason": "基线尚未确认，没有期初余额"}
+        entries = (baseline["data"].get("confirmed_inputs") or {}).get("balances") or []
+        if not entries:
+            # 基线对象随处理范围一起创建，存在不等于已确认。
+            # 报"没有银行科目"会把人引去查科目表，而真正要做的是确认期初。
+            return {"status": "NO_BASELINE", "reason": "基线尚未确认，没有期初余额"}
+        bank = next((b for b in entries if b["account_code"].startswith("1002")), None)
+        if bank is None:
+            return {"status": "NO_BANK_BASELINE", "reason": "基线里没有银行存款科目"}
+        detail = (bank.get("auxiliary") or [{}])[0]
+        bank_code = detail.get("account_code") or bank["account_code"]
+        opening = (Decimal(str(detail.get("opening_debit") or bank["opening_debit"]))
+                   - Decimal(str(detail.get("opening_credit") or bank["opening_credit"])))
+
+        movement = Decimal("0.00")
+        adopted = 0
+        for voucher in self.store.list_objects(ObjectType.VOUCHER_VERSION.value, scope):
+            if voucher["status"] == "VOID" or voucher["data"].get("source") != "BANK_TRANSACTION":
+                continue
+            adopted += 1
+            for line in voucher["data"].get("lines", []):
+                if not str(line.get("account_code", "")).startswith(bank_code):
+                    continue
+                amount = Decimal(str(line.get("amount") or "0"))
+                movement += amount if line.get("direction") == "DEBIT" else -amount
+
+        facts = [f for f in self.store.list_objects(ObjectType.FACT_RECORD.value, scope)
+                 if f["status"] != "SUPERSEDED"
+                 and f["data"].get("record_type") in {"PAYMENT", "RECEIPT", "BANK_TRANSACTION"}]
+        covered = {v["data"].get("source_fact_id")
+                   for v in self.store.list_objects(ObjectType.VOUCHER_VERSION.value, scope)
+                   if v["status"] != "VOID" and v["data"].get("source") == "BANK_TRANSACTION"}
+        outstanding = [f for f in facts if f["object_id"] not in covered]
+
+        statement_closing = None
+        for artifact in self.store.list_objects(ObjectType.SOURCE_ARTIFACT.value, scope):
+            totals = artifact["data"].get("statement_totals")
+            if totals and totals.get("closing_balance") is not None:
+                statement_closing = Decimal(str(totals["closing_balance"]))
+        computed = opening + movement
+        result = {
+            "status": "OK", "bank_account": {"code": bank_code, "name": detail.get("key") or bank["account_name"]},
+            "opening": format(opening, ".2f"), "movement": format(movement, ".2f"),
+            "computed_closing": format(computed, ".2f"),
+            "adopted_vouchers": adopted, "transactions": len(facts),
+            "outstanding": len(outstanding),
+        }
+        if statement_closing is not None:
+            difference = computed - statement_closing
+            result.update({"statement_closing": format(statement_closing, ".2f"),
+                           "difference": format(difference, ".2f"),
+                           "status": "BALANCED" if difference == 0 and not outstanding else "OPEN"})
+        return result
 
     # ---------- 来源版式卡片 ----------
 

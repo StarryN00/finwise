@@ -33,7 +33,16 @@ function app(data,opts){
   state:{user:{user_id:'u1'},view:'voucher-proposals'},
   scope:()=>({tenant_id:'t',legal_entity_id:'e'}), scopeKey:s=>JSON.stringify(s),
   actions:{}, render:()=>{},
-  request:async()=>{if(options.fail)throw new Error('读取失败');return data;},
+  readonly:()=>!!options.readonly,
+  exclusive:async fn=>fn(),
+  request:async(path)=>{
+    if(options.fail)throw new Error('读取失败');
+    if(path==='/api/v1/vouchers/reconciliation')return options.reconciliation||{status:'OPEN',
+      bank_account:{code:'100201',name:'江苏银行0758'},opening:'101017.78',movement:'-91.53',
+      computed_closing:'100926.25',statement_closing:'40624.66',difference:'60301.59',
+      adopted_vouchers:1,transactions:35,outstanding:34};
+    if(path==='/api/v1/vouchers/adopt'){if(options.adoptFails)throw new Error('借贷不平');return {};}
+    return data;},
  });
  vm.runInContext(escapedCode+source,c);
  if(data!==undefined){const ui=c.voucherProposalState();ui.loaded=true;ui.data=data;}
@@ -133,4 +142,63 @@ test('切换企业或期间会清空提案，不串场',()=>{
  vm.runInContext("scope=()=>({tenant_id:'t',legal_entity_id:'e2'});",c);
  const fresh=c.voucherProposalState();
  assert.equal(fresh.data,null); assert.equal(fresh.loaded,false);
+});
+
+
+test('勾稽条展示期初、发生、算出的期末与对账单期末',()=>{
+ const c=app(body());
+ c.voucherProposalState().reconciliation={status:'OPEN',bank_account:{code:'100201',name:'江苏银行0758'},
+   opening:'101017.78',movement:'-311131.80',computed_closing:'-210114.02',
+   statement_closing:'40624.66',difference:'-250738.68',adopted_vouchers:20,transactions:35,outstanding:15};
+ const html=c.renderVoucherProposals();
+ assert.match(html,/101017\.78/); assert.match(html,/40624\.66/);
+ assert.match(html,/-250738\.68/); assert.match(html,/15 \/ 35 笔/);
+ assert.match(html,/未对平/);
+ assert.match(html,/对账单期末余额来自银行，不是账上的数/);
+});
+
+test('对平之后措辞和配色都要变',()=>{
+ const c=app(body());
+ c.voucherProposalState().reconciliation={status:'BALANCED',bank_account:{code:'100201',name:'江苏银行0758'},
+   opening:'101017.78',movement:'-60393.12',computed_closing:'40624.66',
+   statement_closing:'40624.66',difference:'0.00',adopted_vouchers:35,transactions:35,outstanding:0};
+ const html=c.renderVoucherProposals();
+ assert.match(html,/已对平/);
+ assert.match(html,/vp-recon ok/);
+ assert.match(html,/每一笔流水都入了账/);
+});
+
+test('没有基线时勾稽条只说原因，不显示一堆零',()=>{
+ const c=app(body());
+ c.voucherProposalState().reconciliation={status:'NO_BASELINE',reason:'基线尚未确认，没有期初余额'};
+ const html=c.renderVoucherProposals();
+ assert.match(html,/基线尚未确认/);
+ assert.equal(/期初（基线）/.test(html),false);
+});
+
+test('采纳后标记为已采纳并重新取勾稽',async()=>{
+ const c=app(body()); c.voucherProposalState().filter='auto';
+ c.installVoucherProposalActions();
+ assert.match(c.renderVoucherProposals(),/data-action="voucher-proposal-adopt"/);
+ await c.actions['voucher-proposal-adopt']({dataset:{proposal:'fact-1'}});
+ const ui=c.voucherProposalState();
+ assert.equal(ui.adopted.has('fact-1'),true);
+ assert.match(ui.feedback,/凭证仍是草稿，尚未正式入账/);
+ assert.ok(ui.reconciliation,'采纳后必须重新取勾稽结果');
+ assert.match(c.renderVoucherProposals(),/已采纳/);
+});
+
+test('采纳失败时显示错误且不标记为已采纳',async()=>{
+ const c=app(body(),{adoptFails:true}); c.voucherProposalState().filter='auto';
+ c.installVoucherProposalActions();
+ await c.actions['voucher-proposal-adopt']({dataset:{proposal:'fact-1'}});
+ const ui=c.voucherProposalState();
+ assert.equal(ui.adopted.has('fact-1'),false);
+ assert.match(ui.error,/借贷不平/);
+ assert.equal(ui.adopting,'');
+});
+
+test('只读账号看得到提案但不能采纳',()=>{
+ const c=app(body(),{readonly:true}); c.voucherProposalState().filter='auto';
+ assert.match(c.renderVoucherProposals(),/data-action="voucher-proposal-adopt"[^>]*disabled/);
 });
