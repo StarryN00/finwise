@@ -78,6 +78,12 @@ function decisionFocusFields(t,r){
   const names=(r.issues||[]).map(i=>i.split('：')[0]);
   return (r.comparison||[]).filter(c=>names.includes(c.field)||names.includes(decisionFieldName(c.field))||names.includes(c.source_label)).map(c=>c.field);
 }
+function decisionDerivationText(derivation){
+  if(!derivation)return '';
+  const text=String(derivation);
+  // 后端记的是字段名表达式，直接展示对操作人没有意义。
+  return text.split('+').map(part=>decisionFieldName(part.trim())||part.trim()).join(' + ');
+}
 function decisionFieldName(k){
   const material=typeof materialFieldLabels!=='undefined'?materialFieldLabels[k]:'';
   const common=typeof fieldLabels!=='undefined'?fieldLabels[k]:'';
@@ -89,7 +95,15 @@ function decisionEvidence(t){
   const keyValues=r=>{
     const fields=decisionFocusFields(t,r),comparisons=(r.comparison||[]).filter(x=>fields.includes(x.field));
     if(!comparisons.length)return '请展开记录查看原始字段；当前未提供具体字段定位。';
-    return comparisons.map(x=>decisionFieldName(x.field)+'：'+(x.source_value==null?(x.state==='MISSING'?'原件此字段为空':'原值尚未定位'):String(x.source_value))+(x.region?' · '+x.region:'')).join('；');
+    // 说清楚"为什么没有原值"。价税合计这类字段税局清单里根本没有这一列，
+    // 是由金额加税额算出来的；笼统说"原值尚未定位"会让人去找一个不存在的列。
+    const shown=x=>{
+      if(x.source_value!=null)return String(x.source_value);
+      if(x.state==='MISSING')return '原件此字段为空';
+      if(x.state==='DERIVED')return '原件无此列，由'+(decisionDerivationText(x.derivation)||'其他字段')+'算出';
+      return '原值尚未定位';
+    };
+    return comparisons.map(x=>decisionFieldName(x.field)+'：'+shown(x)+(x.region?' · '+x.region:'')).join('；');
   };
   const identity=r=>{const v=r.values||{};return v.invoice_no||v.acceptance_no||v.person_name||v.transaction_id||'记录 '+(all.indexOf(r)+1);};
   const context=r=>{const v=r.values||{};return [v.invoice_date||v.transaction_date||v.issue_date||v.period,v.invoice_total??v.amount??v.actual_salary].filter(v=>v!==undefined&&v!==null).join(' · ');};

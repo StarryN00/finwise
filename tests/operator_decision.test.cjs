@@ -235,3 +235,36 @@ test('fallback commit sends an explicit execute_task_action payload and follows 
 test('decision-v1 remains visible but read only',()=>{
  const a=app(),legacy=descriptor();legacy.version='decision-v1';delete legacy.stage;delete legacy.why_now;legacy.options[0].effects=['历史影响'];a.t.descriptor=legacy;const html=a.render();assert.match(html,/历史办理契约（只读）/);assert.match(html,/历史影响/);assert.doesNotMatch(html,/<form|class="primary"|data-guide="commit"/);assert.equal(a.c.decisionReady(a.t),false);
 });
+
+function withComparison(comparison){
+ const a=app();
+ a.c.state.overview.material_review.records=[{object_id:'r',version:1,
+   source_anchor:{region:'A1'},values:{invoice_no:'2635',invoice_total:'156.00'},comparison}];
+ // 焦点字段由契约的 presentation 声明，没有它就只显示"请展开记录查看"。
+ a.t.descriptor.presentation={type_label:'采购发票',explanation:'请核对读取结果',
+   records:[{id:'r',focus_fields:comparison.map(c=>c.field)}]};
+ return a;
+}
+
+test('derived fields say what they were computed from, not "原值尚未定位"',()=>{
+ // 税局的进项清单没有"价税合计"这一列，系统由金额加税额算出。
+ // 笼统说"原值尚未定位"会让人去找一个根本不存在的列。
+ const html=withComparison([
+   {field:'invoice_total',source_value:null,value:'156.00',state:'DERIVED',
+    region:'发票!K4:L4',derivation:'net_amount + tax'}]).render();
+ assert.equal(/原值尚未定位/.test(html),false);
+ assert.match(html,/原件无此列，由.*算出/);
+});
+
+test('a genuinely unlocated field still says so',()=>{
+ const html=withComparison([
+   {field:'invoice_no',source_value:null,value:'2635',state:'UNLOCATED',region:''}]).render();
+ assert.match(html,/原值尚未定位/);
+});
+
+test('an empty source field is distinguished from a derived one',()=>{
+ const html=withComparison([
+   {field:'invoice_no',source_value:null,value:null,state:'MISSING',region:'发票!E4'}]).render();
+ assert.match(html,/原件此字段为空/);
+ assert.equal(/原件无此列/.test(html),false);
+});
