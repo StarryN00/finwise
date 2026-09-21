@@ -168,3 +168,15 @@ def test_formal_operator_page_connects_real_write_workflows_without_external_ass
         assert client.get('/static/' + asset).status_code == 200
     response = client.get("/static/operator.html")
     assert response.status_code == 200
+
+
+def test_html_pages_are_revalidated_while_versioned_assets_stay_cacheable(client):
+    """页面没有版本查询串，缓存住之后新增的脚本既不会被请求也不会报错，
+    表现为"功能加了但界面上没有"。这种沉默的陈旧必须从响应头上挡掉。"""
+    page = client.get("/static/operator.html")
+    assert page.status_code == 200
+    assert "no-cache" in page.headers.get("cache-control", "")
+
+    asset = client.get("/static/operator.js?v=login-flow-1")
+    assert asset.status_code == 200
+    assert "no-cache" not in asset.headers.get("cache-control", "")

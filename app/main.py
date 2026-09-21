@@ -65,7 +65,22 @@ def create_app(settings: Optional[Settings] = None, *, initialize: bool = True) 
         return JSONResponse(status_code=422, content={"error": {"code": "VALIDATION_ERROR", "message": "请求未通过契约校验", "details": details}})
 
     static_dir = settings.root / "static"
-    app.mount("/static", StaticFiles(directory=static_dir), name="static")
+
+    class HtmlNoCacheStatic(StaticFiles):
+        """HTML 页面不缓存，带版本号的 js/css 仍然照常缓存。
+
+        页面本身没有版本查询串，浏览器会长期沿用旧副本。新增一个脚本之后，
+        旧页面既不会请求它，也不会报错，表现为"功能加了但界面上没有"——
+        这种沉默的陈旧比一次网络往返昂贵得多。
+        """
+
+        async def get_response(self, path, scope):
+            response = await super().get_response(path, scope)
+            if path.endswith(".html"):
+                response.headers["Cache-Control"] = "no-cache, must-revalidate"
+            return response
+
+    app.mount("/static", HtmlNoCacheStatic(directory=static_dir), name="static")
 
     @app.get("/styles.css", include_in_schema=False)
     def root_stylesheet() -> FileResponse:
