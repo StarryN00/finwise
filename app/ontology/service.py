@@ -121,6 +121,28 @@ def historical_prerequisite(job, plans, baseline_status):
     }
 
 
+def _progress_with_digestion(progress, material_review):
+    """把"系统还没消化完"算进资料分析这一步。
+
+    消化中的定义只有一个：事项还在系统手里（handling.owner 是 SYSTEM）。
+    人能做的事一件都不在其中 —— 那些属于第三步。
+    """
+    pending = [task for task in material_review.get('tasks', [])
+               if not task.get('deferred') and (task.get('handling') or {}).get('owner') == 'SYSTEM']
+    if not pending:
+        return progress
+    stages = []
+    for stage in progress['stages']:
+        if stage['id'] == 'analysis' and stage['status'] == 'COMPLETED':
+            stage = {**stage, 'status': 'PARTIAL',
+                     'summary': f"{stage['summary']}；还有 {len(pending)} 项系统尚未消化完，完成后才进入待确认"}
+        stages.append(stage)
+    completed = sum(stage['status'] == 'COMPLETED' for stage in stages)
+    return {**progress, 'stages': stages, 'completed_count': completed,
+            'overall_percent': int(completed / len(stages) * 100),
+            'current_stage': next((stage['id'] for stage in stages if stage['status'] != 'COMPLETED'), 'delivery')}
+
+
 class OntologyService:
     def __init__(self, store: ObjectStore):
         self.store = store
@@ -2620,6 +2642,9 @@ class OntologyService:
             material_review = self.materials.task_action_projection(scope, material_review)
             material_review = self.material_guidance.project(scope,material_review,actor_id=actor_id)
         material_review['action_metrics'] = self._action_metrics(scope)
+        # 第二步不是"解析完就完了"：系统要把每件事消化到有结论，才轮到人。
+        # 否则界面上「资料分析 ✓」会和第三步里一堆「等待系统检查」同时成立，自相矛盾。
+        progress = _progress_with_digestion(progress, material_review)
         material_review['next_step'] = self._workbench_next_step(
             progress, material_review, current_artifacts, blockers, cards, vouchers, groups, baseline_validation)
         return {
