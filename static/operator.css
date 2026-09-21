@@ -61,3 +61,5 @@ body:has(dialog[open]) #main .primary,body:has(dialog[open]) #sidebar .primary{v
 
 .profile-card{margin-top:12px}.profile-card h3{margin:0 0 8px;font-size:17px;overflow-wrap:anywhere}.profile-card .facts{margin:10px 0;font-size:14px;overflow-wrap:anywhere}.profile-card .evidence{margin:10px 0;padding-left:18px;font-size:13px;color:var(--muted)}.profile-card .evidence li{margin:4px 0;overflow-wrap:anywhere}.profile-card .row{margin-top:16px;gap:12px;flex-wrap:wrap}.profile-card .primary,.profile-card .secondary{min-height:40px}
 @media(max-width:760px){.profile-card{padding:16px}.profile-card .row{display:grid;grid-template-columns:minmax(0,1fr)}.profile-card .primary,.profile-card .secondary{width:100%;min-height:44px}}
+
+.scope-preview{margin:12px 0;border:1px solid var(--line);border-radius:6px;padding:12px;background:#f9fbff}.scope-preview>div{display:grid;grid-template-columns:150px minmax(0,1fr);gap:8px;padding:3px 0;font-size:12px}.scope-preview dt{color:var(--muted);font-family:ui-monospace,SFMono-Regular,Menlo,monospace}.scope-preview dd{margin:0;overflow-wrap:anywhere}#newScopeForm label{display:block;margin:12px 0}#newScopeForm input{width:100%}

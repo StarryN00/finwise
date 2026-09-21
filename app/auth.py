@@ -117,18 +117,23 @@ async def authorize_api(request: Request) -> None:
             raise HTTPException(422, "请求必须为合法 JSON")
         if not isinstance(body, dict):
             raise HTTPException(422, "请求必须为对象")
-        raw_scope = body if path == "/scopes" else body.get("scope")
+        raw_scope = body if path in {"/scopes", "/scopes/provision"} else body.get("scope")
     try:
         scope = Scope.model_validate(raw_scope)
     except ValidationError:
         raise HTTPException(422, "必须提供完整且有效的 Scope")
-    authorize_scope(request, scope)
+    # 开设处理范围是唯一作用在"尚未授权的范围"上的写入：新建时按定义还没有授权。
+    # 它由处理函数自己守住边界——只允许开设不存在的范围，且只授权给开设人，
+    # 因此不能借它挤进别人已有的数据。
+    provisioning = path == "/scopes/provision"
+    if not provisioning:
+        authorize_scope(request, scope)
     read_only = path in {"/workbench", "/query", "/objects/detail", "/history", "/baseline/candidate"} or request.method == "GET"
     if read_only:
         return
     if principal["role"] not in ROLES - {"viewer"}:
         raise PermissionDenied("当前角色只可查看，不能写入")
-    if path != "/commands":
+    if path != "/commands" and not provisioning:
         request.app.state.service._ensure_period_open(scope)
     if not principal.get("test_mode") and (path.startswith("/demo/") or path.endswith("/complete") or (path == "/commands" and body.get("action") == "complete_run")):
         raise PermissionDenied("演示数据及 Worker 完成回调不对业务用户开放")

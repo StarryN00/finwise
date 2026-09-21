@@ -18,6 +18,7 @@
   <script src="operator-mapping.js?v=guided-decision-2" defer></script>
   <script src="operator-parse-plans.js?v=structure-plan-1" defer></script>
   <script src="operator-profile-cards.js?v=profile-cards-1" defer></script>
+  <script src="operator-new-scope.js?v=new-scope-1" defer></script>
   <script src="operator.js?v=login-flow-1" defer></script>
 </head>
 <body>
@@ -25,7 +26,7 @@
   <div class="layout">
     <aside id="sidebar" class="sidebar" aria-label="登录或企业与期间">
       <form id="loginForm" class="login"><h2>登录工作台</h2><p class="small muted">请输入用户名和密码。</p><label>用户名<input id="username" autocomplete="username" required></label><label>密码<input id="password" type="password" autocomplete="current-password" required></label><button class="primary" type="submit">登录</button></form>
-      <section id="scopeChooser" class="hidden" aria-label="处理范围"><div class="row"><h2>处理范围</h2><button id="closeSidebar" class="text mobile-only" aria-label="关闭企业列表">关闭</button></div><label class="sr-only" for="search">搜索企业、执照编号、账套或期间</label><input id="search" type="search" placeholder="搜索企业、执照编号、账套或期间"><div id="scopeList" class="scope-list"></div><p class="side-note">仅显示当前账号有权访问的企业与期间。</p></section>
+      <section id="scopeChooser" class="hidden" aria-label="处理范围"><div class="row"><h2>处理范围</h2><div class="row"><button id="newScope" class="text" data-action="new-scope">新建企业</button><button id="closeSidebar" class="text mobile-only" aria-label="关闭企业列表">关闭</button></div></div><label class="sr-only" for="search">搜索企业、执照编号、账套或期间</label><input id="search" type="search" placeholder="搜索企业、执照编号、账套或期间"><div id="scopeList" class="scope-list"></div><p class="side-note">仅显示当前账号有权访问的企业与期间。</p></section>
     </aside>
     <button id="scrim" class="scrim hidden" aria-label="关闭企业列表" tabindex="-1"></button>
     <main id="main" class="main">

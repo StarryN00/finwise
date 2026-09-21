@@ -136,7 +136,7 @@ async function exclusive(fn) {
 function renderScopes() {
   const term=$('search').value.trim().toLowerCase();
   $('scopeList').innerHTML=state.scopes.map((item,i)=>({item,i})).filter(({item})=>[companyName(item),licenseNumber(item),ledgerName(item),...Object.values(item.scope)].join(' ').toLowerCase().includes(term)).map(({item,i})=>
-    `<button class="scope ${state.selected===i?'selected':''}" data-scope="${i}" ${state.busy?'disabled':''} aria-pressed="${state.selected===i}"><span class="scope-main"><strong>${esc(companyName(item))}</strong><span class="scope-license" title="营业执照编号：${esc(licenseNumber(item))}">${esc(licenseNumber(item))}</span><span>${esc(item.scope.accounting_period_id)}</span></span><span class="scope-tools">${badge(item.blockers.length?'已阻断':item.baseline.validation.status!=='VALID'?'待核实':'处理中',item.blockers.length?'red':'yellow')}<br>${item.blockers.length?`${item.blockers.length} 组阻断`:`${item.pending_confirmation_cards} 项待审阅`}</span></button>`).join('')||'<p class="muted small">没有匹配的授权范围</p>';
+    `<button class="scope ${state.selected===i?'selected':''}" data-scope="${i}" ${state.busy?'disabled':''} aria-pressed="${state.selected===i}"><span class="scope-main"><strong>${esc(companyName(item))}</strong><span class="scope-license" title="营业执照编号：${esc(licenseNumber(item))}">${esc(licenseNumber(item))}</span><span>${esc(item.scope.accounting_period_id)}</span></span><span class="scope-tools">${badge(item.blockers.length?'已阻断':item.baseline.validation.status!=='VALID'?'待核实':'处理中',item.blockers.length?'red':'yellow')}<br>${item.blockers.length?`${item.blockers.length} 组阻断`:`${item.pending_confirmation_cards} 项待审阅`}</span></button>`).join('')||'<p class="muted small">没有匹配的授权范围。点上方「新建企业」开设第一个处理范围。</p>';
 }
 async function loadPortfolio() {
   const sessionEpoch=state.sessionEpoch,sequence=++state.portfolioSequence;
@@ -358,6 +358,7 @@ function render() {
   else html+=renderProgress()+renderPrerequisite()+renderStructure()+`<div class="work-grid">${state.category?renderCategory():renderTask()}${renderResults()}</div><nav class="secondary-nav" aria-label="本期详情"><button class="text" data-action="artifacts">全部资料</button><button class="text" data-action="groups">业务对象与处理工具</button><button class="text" data-action="vouchers">本期凭证</button><button class="text" data-action="profile-cards-open">待确认结构${typeof profileCardBadgeCount==='function'&&profileCardBadgeCount()?` ${profileCardBadgeCount()}`:''}</button><button class="text" data-action="history">往期与归档</button><button class="text" data-action="upload" ${readonly()?'disabled':''}>补充资料</button><button class="text" data-action="refresh">刷新状态</button></nav>`;
   $('workspace').innerHTML=html;
   if(typeof installProfileCardActions==='function')installProfileCardActions();
+  if(typeof installNewScopeActions==='function')installNewScopeActions();
   if(typeof installHistoricalActions==='function'&&state.view==='current') {
     const nav=document.querySelector('.secondary-nav');
     const job=state.overview.historical_preparation;
@@ -559,9 +560,10 @@ $('baselineFile').addEventListener('change',()=>exclusive(async()=>{
   notify('期初核对原件已保存，尚未核实。请补齐另一项来源或生成余额核对结果。');
 }));
 document.addEventListener('submit',event=>{
-  if(!['loginForm','uploadForm','parseForm'].includes(event.target.id))return;
+  if(!['loginForm','uploadForm','parseForm','newScopeForm'].includes(event.target.id))return;
   event.preventDefault();const form=event.target;
   exclusive(async()=>{
+    if(form.id==='newScopeForm')return submitNewScope();
     if(form.id==='loginForm') {state.sessionEpoch++;state.portfolioSequence++;await request('/api/v1/auth/login',{username:$('username').value,password:$('password').value});$('password').value='';await loadPortfolio();closeSidebar();return;}
     if(form.id==='uploadForm'){const materialTask=state.view==='materials'&&materialState().screen==='detail'?currentMaterialTask():null,materialGroup=materialState().group,uploadOriginView=state.view;const kind=$('uploadKind').value,artifact=await uploadFile($('uploadFile').files[0],'business',$('uploadPeriod').value,kind);if(artifact){closeDialog();await loadWorkbench();if(materialTask&&materialDetailStillOpen(materialGroup,materialTask.id))materialSupplementReceived(materialTask.id,artifact);if(Array.isArray(state.overview?.parse_plans)&&typeof parsePlanSupported==='function'&&parsePlanSupported(fileById(artifact.object_id),kind)&&artifact.data.observed_period===scope().accounting_period_id){if(state.view===uploadOriginView&&(!materialTask||materialDetailStillOpen(materialGroup,materialTask.id)))await openParsePlan(fileById(artifact.object_id),kind);return;}if(kind==='payroll'){if(state.view!==uploadOriginView||(materialTask&&!materialDetailStillOpen(materialGroup,materialTask.id))){notify('补充原件和格式识别任务已保存，可从资料入口查看。');return;}await openMapping(fileById(artifact.object_id));}}return;}
     const artifact=fileById(form.dataset.artifact),kind=$('parseKind').value;if(Array.isArray(state.overview?.parse_plans)&&typeof parsePlanSupported==='function'&&parsePlanSupported(artifact,kind)){await openParsePlan(artifact,kind);return;}if(kind==='payroll'){await openMapping(artifact);return;}await command('parse_artifact',artifact.object_id,artifact.version,artifact.data.parse_options||{document_kind:kind});
@@ -584,6 +586,8 @@ if(typeof installInvoiceAmountActions==='function')installInvoiceAmountActions()
 if(typeof installMappingActions==='function')installMappingActions();
 if(typeof installBankActions==='function')installBankActions();
 if(typeof installParsePlanActions==='function')installParsePlanActions();
+if(typeof installNewScopeActions==='function')installNewScopeActions();
+if(typeof installProfileCardActions==='function')installProfileCardActions();
 if(location.protocol==='file:'){
   if(typeof location.replace==='function')location.replace(OPERATOR_HTTP_ENTRY);
   else notify('真实工作台需要登录服务，请通过当前 Staging 服务地址打开。',true);

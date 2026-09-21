@@ -11,7 +11,7 @@ from app.ontology.contracts import ArtifactInput, CommandRequest, DemoRequest, F
 from app.ontology.baseline import BaselineConfirmation, VALIDATION_VERSION
 from app.ontology.errors import DomainError
 from app.ontology.service import OntologyService
-from app.auth import authorize_api, authorized_scopes, identity
+from app.auth import authorize_api, authorized_scopes, grant_scope, identity
 from app.action_types import catalog_contract
 
 router = APIRouter(prefix="/api/v1", dependencies=[Depends(authorize_api)])
@@ -191,6 +191,30 @@ def baseline_candidate(body: dict[str, Any], request: Request) -> dict[str, Any]
         balance_artifact_id=body["balance_artifact_id"],
         close_artifact_id=body["close_artifact_id"],
     )
+
+
+@router.post("/scopes/provision")
+def provision_scope(body: Scope, request: Request, context: tuple[str, str] = Depends(actor)) -> dict[str, Any]:
+    """开设一个新的处理范围，并授权给开设人。
+
+    只能开设"还不存在"的范围。已经存在的范围必须由管理员显式授权——
+    否则任何登录账号都能给自己开通别人企业的数据，这是越权而不是新建。
+    """
+    actor_id, role = context
+    if role == "viewer":
+        raise HTTPException(status_code=403, detail="只读账号不能开设处理范围")
+    ontology = service(request)
+    if ontology.store.list_objects("Scope", body):
+        raise HTTPException(status_code=409, detail="该处理范围已存在，请联系管理员授权后使用")
+    created = ontology.create_scope(body, actor_id=actor_id)
+    # 免认证的本地模式没有真实用户记录，授权表也用不上：那种模式下
+    # 可见范围本来就取自已建的 Scope 对象。
+    if not identity(request).get("test_mode"):
+        grant_scope(request.app.state.database, actor_id, body)
+    ontology.store.add_audit("SCOPE_PROVISIONED", actor_id, body, object_type="Scope",
+                             object_id=created["object_id"], object_version=created["version"],
+                             after={"scope": body.model_dump()}, reason="开设新处理范围并授权给开设人")
+    return {"scope": created}
 
 
 @router.post("/profile-cards")
