@@ -293,10 +293,15 @@ class ProblemReview:
             output=ReviewOutput.model_validate(response.output)
             result=self.verdict(output,packet,checks,refs,task)
             status=result['status']
-        except Exception:
+        except Exception as exc:
             output=None
             status='FAILED'
-            result={'status':status,'message':'本次复核未得到可验证的结果，原问题保留。可明确重试。'}
+            # 原因不能吞掉。只写"未得到可验证的结果"，界面上就只剩"分析失败"，
+            # 人无从判断是没配模型、超时、返回不合schema 还是复核本身没通过 ——
+            # 扫描件那边犯过同一个错，表现一模一样。
+            log.exception('problem_review_model_call_failed',extra={'job_id':job['object_id']})
+            result={'status':status,'message':'本次复核未得到可验证的结果，原问题保留。可明确重试。',
+                    'reason':f'{type(exc).__name__}: {exc}'[:500]}
         with self.store.database.transaction():
             current=self.store.get_object(job['object_id'],scope)
             if current['version']!=job['version'] or current['status']!='RUNNING':return True
@@ -307,7 +312,8 @@ class ProblemReview:
                 status='STALE';result={'status':status,'message':'复核期间依据已变化，结果未应用。'}
             self.store.revise_object(run['object_id'],run['version'],scope,
                 {**run['data'],'gateway':metadata,'suggestion':output.model_dump() if output else None,
-                 'result_status':status},status='FAILED' if status in {'FAILED','STALE'} else 'SUCCEEDED',created_by='system')
+                 'result_status':status,'failure_reason':result.get('reason','')},
+                status='FAILED' if status in {'FAILED','STALE'} else 'SUCCEEDED',created_by='system')
             self.finish(scope,current,status,result)
         return True
 

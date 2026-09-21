@@ -272,11 +272,13 @@ def test_gateway_uses_structure_schema_and_prompt(tmp_path):
     assert result.schema_version==VERSION and result.prompt_version=='structure-plan-prompt-v1'
     assert '不输出金额' in seen['messages'][0]['content']
     assert seen['temperature']==0
-    assert seen['max_tokens']==4096
+    assert seen['max_tokens']==8000  # 推理档额度，见 Settings.tokens_for
     assert 'INVOICE_HEADERS' in seen['messages'][0]['content']
 
 
-@pytest.mark.parametrize('budget,expected',[(1200,4096),(6000,6000),(16000,8192)])
+# 推理档的额度由 FINWISE_AGENT_REASONING_MAX_TOKENS 决定（默认 8000），
+# 不再是散落在各处的 min(8192,max(4096,...))；配得更高就按配的来。
+@pytest.mark.parametrize('budget,expected',[(1200,8000),(6000,8000),(16000,16000)])
 def test_gateway_structure_budget_and_truncated_output_rejected(tmp_path,budget,expected):
     seen={}
     def opener(request,timeout):

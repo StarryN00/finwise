@@ -28,6 +28,10 @@ class Settings:
     # 逐行抄录整份对账单的输出远大于普通判断任务：35 行就已经超出 1200。
     # 截断的表现是"输出不是合法 JSON"，很容易被误判成模型不会用 JSON。
     agent_vision_max_tokens: int = 16000
+    # 推理档会先花掉一大截额度在推理上，答案还没开始写就到顶了 ——
+    # 实测 1200 的默认额度下 PROBLEM_REVIEW 每次都返回空内容加 finish_reason=length，
+    # 界面上表现成"分析失败"，看不出是被截断。
+    agent_reasoning_max_tokens: int = 8000
     gateway_timeout_seconds: float = 45.0
     # 图像识别要逐行抄录，比判断类调用慢得多；切条重读还要一次发多张图。
     gateway_vision_timeout_seconds: float = 180.0
@@ -89,6 +93,7 @@ class Settings:
             agent_prompt_version=os.getenv("FINWISE_AGENT_PROMPT_VERSION", "finwise-agent-prompt-v1"),
             agent_max_tokens=env_int("FINWISE_AGENT_MAX_TOKENS", 1200),
             agent_vision_max_tokens=env_int("FINWISE_AGENT_VISION_MAX_TOKENS", 16000),
+            agent_reasoning_max_tokens=env_int("FINWISE_AGENT_REASONING_MAX_TOKENS", 8000),
             gateway_timeout_seconds=env_float("FINWISE_GATEWAY_TIMEOUT_SECONDS", 45.0),
             gateway_vision_timeout_seconds=env_float("FINWISE_GATEWAY_VISION_TIMEOUT_SECONDS", 180.0),
             gateway_max_retries=env_int("FINWISE_GATEWAY_MAX_RETRIES", 0),
@@ -98,6 +103,14 @@ class Settings:
     REASONING_STAGES = frozenset({"STRUCTURE_PLAN", "PROBLEM_REVIEW", "PAYROLL_MAPPING"})
     VISION_STAGES = frozenset({"SCANNED_DOCUMENT"})
     FAST_STAGES = frozenset({"MATERIAL_GUIDANCE"})
+
+    def tokens_for(self, stage: str) -> int:
+        """这一档任务给多少输出额度。和 model_for 同一套分档，别处不再各调各的。"""
+        if stage in self.VISION_STAGES:
+            return self.agent_vision_max_tokens
+        if stage in self.REASONING_STAGES:
+            return max(self.agent_reasoning_max_tokens, self.agent_max_tokens)
+        return self.agent_max_tokens
 
     def model_for(self, stage: str) -> str:
         """按任务选模型。只有配置了对应档位才切换，否则沿用默认模型。
