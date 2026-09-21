@@ -108,13 +108,23 @@ def test_failed_reextract_retires_old_facts_and_cannot_restore_via_reparse(clien
         with pytest.raises(PreconditionFailed):s.reparse_fact(typed,fact_id=old['object_id'],expected_version=old['version'],actor_id='fixture',parser_version='unsafe',normalized_value=old['data']['normalized_value'])
 
 
-def test_current_page_binding_and_unparsed_file_queue(client,scope):
+def test_one_file_is_one_check_and_only_its_own_records_can_be_submitted(client,scope):
+    """一份原件一条核对事项。
+
+    原来按 5 条分页，6 张发票就分成两条待办 —— 分页本来是给对照表用的，
+    不该定义事项身份，操作人看到的是"同一件事被拆成几条"。
+    记录绑定仍然严格：不属于这条事项的记录提交上来必须 409。
+    """
     a=uploaded(client,scope,xlsx_fixture([('发票',[INVOICE_HEADERS]+[[f'I-{i}','2026-03-01','100','13','13%','甲'] for i in range(6)])]))
     m=view(client,scope)['material_review'];assert m['counts']['files']==1 and m['counts']['file_states']['pending']==1
-    assert m['tasks'][0]['kind']=='PARSE'
+    assert m['tasks'][0]['kind']=='PARSE' and m['tasks'][0]['problem_kind']=='UNREADABLE'
     result=parse(client,scope,a).json()['effect'];a=result['artifact'];f=result['facts']
-    tasks=view(client,scope)['material_review']['tasks'];assert len(tasks)==2
-    response=command(client,scope,'verify_source_values',a['object_id'],a['version'],'cross-page',{'task_id':tasks[0]['id'],'records':[{'object_id':item['object_id'],'version':item['version']} for item in [f[0],f[5]]]})
+    checks=[t for t in view(client,scope)['material_review']['tasks'] if t['kind']=='VERIFY']
+    assert len(checks)==1 and len(checks[0]['record_ids'])==6
+    outsider=uploaded(client,scope,xlsx_fixture([('发票',[INVOICE_HEADERS,['I-OTHER','2026-03-01','100','13','13%','乙']])]),filename='另一份发票.xlsx')
+    other=parse(client,scope,outsider,key='parse-outsider').json()['effect']['facts'][0]
+    response=command(client,scope,'verify_source_values',a['object_id'],a['version'],'foreign-record',
+        {'task_id':checks[0]['id'],'records':[{'object_id':item['object_id'],'version':item['version']} for item in [f[0],other]]})
     assert response.status_code==409 and view(client,scope)['material_review']['counts']['source_verified']==0
 
 

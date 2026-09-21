@@ -376,8 +376,9 @@ class ProblemReview:
                 overlay={**old,'triage':task['triage']}
                 task['problem_review']=overlay
                 projected=[overlay if j['object_id']==old['object_id'] else j for j in projected]
-        from app.materials import review_counts
+        from app.materials import problem_buckets, review_counts
         material['counts'].update(review_counts(material['records'],kept))
+        material['problem_buckets']=problem_buckets(kept)
         material['counts'].update(
             human_issue_tasks=sum(t['kind']!='VERIFY' and not t['deferred'] and t['triage']['route']=='HUMAN' for t in kept),
             system_issue_tasks=sum(t['kind']!='VERIFY' and not t['deferred'] and t['triage']['route']=='SYSTEM' for t in kept))

@@ -867,6 +867,12 @@ class MaterialGuidance:
         if not period_open:
             return {**base, 'state': 'WAITING_EXTERNAL', 'owner': 'EXTERNAL', 'label': '等待期间开放',
                     'explanation': '当前期间不可写入，已有问题和意见继续保留。', 'action_label': ''}
+        # 系统已经自己验过的，不要人再确认一遍。事项仍然能点开抽查，
+        # 但标题不能还写着"待选择处理方式"—— 那会让人以为这里欠着一个动作。
+        if task.get('optional'):
+            return {**base, 'label': '已识别并自洽，无需处理',
+                    'explanation': '金额已与原件自报的全表合计核对一致；需要时可展开原件详情抽查。',
+                    'action_label': '抽查原件'}
         triage = task.get('triage') or {}
         if triage.get('route') == 'SYSTEM':
             review = task.get('problem_review') or {}
