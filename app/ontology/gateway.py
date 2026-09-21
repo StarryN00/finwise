@@ -218,6 +218,67 @@ class DeepSeekProvider:
             schema_version=({'PROBLEM_REVIEW':'problem-review-v1','PAYROLL_MAPPING':'payroll-mapping-v1', 'MATERIAL_GUIDANCE':'material-guidance-v2', 'STRUCTURE_PLAN':'structure-plan-v1'}).get(stage,AGENT_SCHEMA_VERSION),
         )
 
+    def read_images(self, *, images: list[str], instruction: str, schema_hint: str,
+                    hint: str = "") -> tuple[dict[str, Any], dict[str, Any]]:
+        """图像理解调用。扫描件只能由模型直接读数，因此调用方必须自行校验结果。
+
+        图片只允许出现在 user 消息里（system/assistant 携带图片会被拒），
+        所以指令与图片同处一条 user 消息。
+        """
+        if not images:
+            raise GatewayFailure("没有可识别的图像", "VISION_NO_IMAGE")
+        model = self.settings.model_for("SCANNED_DOCUMENT")
+        blocks: list[dict[str, Any]] = [{"type": "text", "text": instruction + ("\n" + hint if hint else "")}]
+        for url in images:
+            blocks.append({"type": "image_url", "image_url": {"url": url, "detail": "original"}})
+        body = {
+            "model": model,
+            "messages": [
+                {"role": "system", "content": schema_hint},
+                {"role": "user", "content": blocks},
+            ],
+            "temperature": 0,
+            "max_tokens": self.settings.agent_max_tokens,
+            "response_format": {"type": "json_object"},
+        }
+        request = Request(
+            self.settings.deepseek_base_url.rstrip("/") + "/chat/completions",
+            data=json.dumps(body, ensure_ascii=False).encode("utf-8"),
+            headers={
+                "Authorization": f"Bearer {self.settings.deepseek_api_key}",
+                "Content-Type": "application/json",
+                "Accept": "application/json",
+                "User-Agent": "finwise-agent-gateway/2",
+            },
+            method="POST",
+        )
+        started = time.monotonic()
+        try:
+            with self._opener(request, timeout=self.settings.gateway_timeout_seconds) as response:
+                response_body = json.loads(response.read().decode("utf-8"))
+        except HTTPError as error:
+            raise GatewayFailure(f"图像识别服务返回 HTTP {error.code}：{self._error_body(error)}",
+                                 "VISION_HTTP_ERROR") from error
+        except (URLError, TimeoutError, OSError) as error:
+            raise GatewayFailure(f"图像识别服务不可达：{error}", "VISION_UNREACHABLE") from error
+        except json.JSONDecodeError as error:
+            raise GatewayFailure("图像识别服务返回的不是合法 JSON", "VISION_INVALID_RESPONSE") from error
+        latency_ms = int((time.monotonic() - started) * 1000)
+        try:
+            content = response_body["choices"][0]["message"]["content"]
+        except (KeyError, IndexError, TypeError) as error:
+            raise GatewayFailure("图像识别返回缺少 choices.message.content", "VISION_INVALID_RESPONSE") from error
+        try:
+            output = json.loads(content)
+        except (json.JSONDecodeError, TypeError) as error:
+            raise GatewayFailure("图像识别输出不是合法 JSON，任务已暂停", "VISION_INVALID_JSON") from error
+        if not isinstance(output, dict):
+            raise GatewayFailure("图像识别输出必须是 JSON 对象", "VISION_INVALID_SCHEMA")
+        usage = response_body.get("usage") if isinstance(response_body.get("usage"), dict) else {}
+        return output, {"provider": "deepseek", "model_version": model, "images": len(images),
+                        "latency_ms": latency_ms, "usage": usage,
+                        "request_id": response_body.get("id") if isinstance(response_body.get("id"), str) else None}
+
     @staticmethod
     def _error_body(error: HTTPError) -> str:
         try:

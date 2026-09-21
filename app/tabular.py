@@ -820,6 +820,18 @@ def bank_footer_values(values):
         return False
 
 
+def scanned_pdf_placeholder(document_kind):
+    """图片型 PDF 的占位结果：没有记录，但明确说明原因，整份文件不算失败。"""
+    return {
+        "records": [],
+        "sheets": [{"sheet": "扫描件", "status": "SCANNED_IMAGE", "rows": 0,
+                    "reason": "图片型 PDF 没有可提取文字，需要图像识别后人工核对"}],
+        "errors": [],
+        "checks": {"overall": "PASS", "items": []},
+        "document_kind": document_kind,
+    }
+
+
 def extract_workbook(content, options: ParseOptions, period, resolver=None):
     """resolver(labels, kind) -> ProfileMapping | None
 
@@ -828,6 +840,11 @@ def extract_workbook(content, options: ParseOptions, period, resolver=None):
     """
     from app.document_layouts import special_sheet, extract_boc_pdf
     if content.startswith(b'%PDF'):
+        from app.scanned_statements import is_image_only_pdf
+        if is_image_only_pdf(content):
+            # 图片型扫描件没有可提取文字，文字型解析走不通。
+            # 不在这里硬失败：由上层决定是交给视觉模型，还是出一张待人工核对的卡片。
+            return scanned_pdf_placeholder(options.document_kind)
         return extract_boc_pdf(content, options.document_kind, period)
     sheets = read_workbook(content)
     special = [special_sheet(s, options.document_kind, period, options.bank_account_ref) for s in sheets]

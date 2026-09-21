@@ -10,6 +10,8 @@ dependencies = [
   "openpyxl>=3.1,<4",
   "xlrd>=2,<3",
   "pypdf>=5,<7",
+  # 扫描件对账单需要把 PDF 内嵌图取出来交给视觉模型
+  "pillow>=10,<12",
 ]
 
 [project.optional-dependencies]
