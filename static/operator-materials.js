@@ -28,7 +28,18 @@ function materialTasks(includeSkipped=false){
     return t.kind!=='VERIFY'&&user;
   });
 }
-function currentMaterialTask(){const ui=materialState();if(ui.screen==='detail')return state.overview.material_review.tasks.find(t=>t.id===ui.selected);if(ui.screen==='summary')return undefined;const tasks=materialTasks();return tasks.find(t=>t.id===ui.selected)||tasks[0];}
+function currentMaterialTask(){
+  const ui=materialState();
+  if(ui.screen==='summary')return undefined;
+  const tasks=state.overview.material_review?.tasks||[];
+  const chosen=tasks.find(t=>t.id===ui.selected);
+  if(chosen||ui.screen==='detail')return chosen;
+  // 没有明确选中时，落在当前那一栏的第一件；没选栏就跳过"已自洽"，
+  // 那一栏本来就不需要人处理。
+  const queue=materialQueue();
+  const scoped=ui.bucket?queue.filter(t=>t.problem_kind===ui.bucket):queue.filter(t=>t.problem_kind!=='VERIFIED');
+  return scoped[0]||queue[0];
+}
 function materialDraft(t){const ui=materialState();if(!ui.drafts.has(t.id)){const saved=materialStoredDraft(ui.key,t.id);ui.drafts.set(t.id,{note:typeof saved?.note==='string'?saved.note:'',reason:typeof saved?.reason==='string'?saved.reason:'',taskAction:saved?.taskAction&&typeof saved.taskAction==='object'?saved.taskAction:{},selected:new Set(),defer:saved?.defer===true,resume:saved?.resume===true,bill:saved?.bill&&typeof saved.bill==='object'?saved.bill:null});}return ui.drafts.get(t.id);}
 function materialIssueGroups(){
   const groups=new Map();
@@ -107,28 +118,67 @@ function renderActionMetrics(){
   const ratio=(Number(metrics.fallback_ratio||0)*100).toFixed(1);
   return `<details class="panel pad action-metrics"><summary>查看动作使用与兜底占比</summary><p class="small muted">当前账套期间内成功执行的已声明任务动作；每个数字均可查看对应审计命令。</p><div class="action-metrics-list"><button class="secondary" data-action="material-action-metric" data-metric="all">已执行动作 ${metrics.executed_action_count} 次</button><button class="secondary" data-action="material-action-metric" data-metric="fallback">兜底动作 ${metrics.fallback_action_count} 次（${ratio}%）</button>${metrics.items.map(item=>`<button class="text" data-action="material-action-metric" data-action-type="${esc(item.action_type_id)}">${esc(item.label)} ${item.count} 次 →</button>`).join('')}</div></details>`;
 }
+function materialBuckets(){return state.overview.material_review?.problem_buckets||[];}
+function materialBucketTasks(kind){
+  const ids=new Set((materialBuckets().find(b=>b.kind===kind)||{}).task_ids||[]);
+  return (state.overview.material_review?.tasks||[]).filter(t=>ids.has(t.id));
+}
+// 处理顺序就是四栏的顺序：读不出来的先补件，其次核对，再次业务判断，已自洽的最后。
+function materialQueue(){
+  const m=state.overview.material_review,tasks=m?.tasks||[],buckets=materialBuckets(),ui=materialState();
+  const ordered=buckets.length?buckets.flatMap(b=>b.task_ids).map(id=>tasks.find(t=>t.id===id)).filter(Boolean)
+                              :materialTasks();
+  return ordered.filter(t=>!ui.skipped.has(t.id));
+}
+function materialProblemHeadline(t){
+  const title=t.triage?.title||t.descriptor?.presentation?.type_label||t.title||'';
+  return (t.filename?t.filename+' · ':'')+title;
+}
+function renderProblemQueue(){
+  const ui=materialState(),t=currentMaterialTask(),buckets=materialBuckets();
+  const open=ui.bucket||t?.problem_kind||buckets.find(b=>b.needs_user&&b.count)?.kind;
+  const side=`<aside class="triage-side" aria-label="本期问题分类"><h3 id="materialListTitle" tabindex="-1">本期问题</h3>${buckets.map(b=>{
+    const expanded=open===b.kind&&b.count>0;
+    return `<section class="triage-bucket${b.count?'':' empty'}${expanded?' expanded':''}">`+
+      `<button type="button" class="triage-bucket-head" data-action="material-bucket" data-bucket="${esc(b.kind)}" aria-expanded="${expanded}" ${b.count?'':'disabled'}>`+
+      `<strong>${b.count}</strong><span>${esc(b.label)}</span><small>${b.record_count} 条${b.needs_user?'':' · 无需处理'}</small></button>`+
+      (expanded?`<ul class="triage-items">${materialBucketTasks(b.kind).map(x=>
+        `<li><button type="button" class="text${x.id===t?.id?' current':''}" data-action="material-pick" data-task="${esc(x.id)}" ${x.id===t?.id?'aria-current="true"':''}>${esc(materialProblemHeadline(x))}</button></li>`).join('')}</ul>`:'')+
+      `<p class="small muted">${esc(b.explanation)}</p></section>`;}).join('')}</aside>`;
+  const empty=`<section class="panel pad"><h3 id="materialTaskTitle" tabindex="-1">本期没有需要你处理的问题</h3><p>系统已核对的结果保留在右侧「已识别并自洽」；需要时可展开抽查。</p></section>`;
+  return `<div class="triage"><div class="triage-main">${t?renderDecisionTask(t):empty}</div>${side}</div>`;
+}
+function renderMaterialMore(){
+  const m=state.overview.material_review,c=m.counts,month=Number(scope().accounting_period_id.slice(-2));
+  const history=historicalIssueFlow();
+  return `<details class="panel pad triage-more"><summary>更多：原件、成果与处理记录</summary>
+  <div class="triage-more-links">
+    <button class="secondary" data-action="material-filter" data-filter="results">已有成果</button>
+    <button class="secondary" data-action="material-files">全部原件</button>
+    <button class="secondary" data-action="material-filter" data-filter="usable">账务可用 ${c.accounting_usable} 条</button>
+    <button class="secondary" data-action="material-filter" data-filter="deferred">等待外部 ${c.deferred} 项</button>
+    ${state.overview.bank_periods?'<button class="secondary" data-action="material-filter" data-filter="bank-periods">跨期流水交接</button>':''}
+    <button class="text" data-action="historical-details">历史处理记录</button>
+    <button class="text" data-action="records">处理记录</button>
+    <button class="text" data-action="refresh">刷新状态</button>
+  </div>
+  <p class="small muted">${month}月：原件、提取记录、人工事项与账务可用是不同口径，不相加。${history.done?'历史处理意见已保留。':'历史资料仍有未完成的核对事项。'}</p>
+  ${typeof renderActionMetrics==='function'?renderActionMetrics():''}</details>`;
+}
 function renderMaterialWorkbench(){
   if(typeof scheduleProblemReviewPoll==='function')scheduleProblemReviewPoll();
   const m=state.overview.material_review;
   if(!m)return '<section class="panel pad">办理服务尚未更新，请刷新。</section>';
-  const c=m.counts,ui=materialState(),history=historicalIssueFlow(),month=Number(scope().accounting_period_id.slice(-2));
-  if(ui.screen==='detail')return renderMaterialDetail();
+  const ui=materialState();
   if(ui.screen==='summary')return renderMaterialGroupResult();
-  const flow=m.flow?.counts||{},issues=flow.user_action??materialHumanIssueTasks().length,ready=flow.ready_to_confirm??0,systemIssues=flow.system_processing??c.selected_processing_tasks??0,systemChecks=flow.system_check??c.system_issue_tasks??0,external=flow.waiting_external??c.deferred??0;
-  const isResult=['results','usable','VERIFY','verified','bank-periods','other-period'].includes(ui.filter),allIssueCount=materialHumanIssueTasks().length;
-  const current=materialTasks(true)[0],tabs=[['all',`待你处理 ${issues} 项`],['ready',`待确认执行 ${ready} 项`],['system',`系统处理中 ${systemIssues} 项 · 系统检查 ${systemChecks} 项`],['deferred',`等待外部 ${external} 项`],['issues',`全部问题 ${m.tasks.filter(t=>t.kind!=='VERIFY').length} 项`],['results',`已完成 ${flow.completed??0}`]];
+  // 成果、原件、跨期这些是"看"，不是"办"，从下面的「更多」进；
+  // 主视图永远只有一件事：当前这个问题，和它的选项卡。
+  const aside=['results','usable','VERIFY','verified','bank-periods','other-period','deferred'].includes(ui.filter);
+  const body=aside?`<button class="text return-link" data-action="material-open-filter" data-filter="all">← 返回问题</button>${renderMaterialTask()}`
+                  :renderProblemQueue();
   return `<div id="materialWorkbench"><button class="text return-link" data-action="return-current">← 返回期间工作台</button>
-  ${materialNextStepPanel()}
-  ${renderActionMetrics()}
-  <details class="panel pad mat-history"><summary>查看历史处理交接</summary><p>${history.done?'已保留历史处理意见。':'历史资料仍有未完成的核对事项。'}${state.overview.baseline_validation.status==='VALID'?'期初已通过原有校验。':'期初余额仍待核实，不能据此放行账务。'}</p><button class="text" data-action="historical-details">查看历史处理记录</button></details>
-  <details class="panel pad mat-overview"><summary>${month}月资料概览与统计口径</summary><p class="small muted">原件、提取记录、人工任务与账务可用是不同口径，不相加。具体数量请通过下方分类按钮下钻。</p><button class="secondary" data-action="material-files">查看全部原件</button><details class="small muted mat-method"><summary>查看统计方法</summary>系统提取检查、人工原件核实、业务归属和账务门禁分别留痕；任务按原件与问题聚合，不与记录数相加。</details></details>
-  ${typeof renderProblemReviewOverview==='function'?renderProblemReviewOverview():''}
-  ${typeof renderMaterialGuidanceOverview==='function'?renderMaterialGuidanceOverview():''}
-  ${state.overview.bank_periods?'<section class="panel pad"><h3>跨期流水交接</h3><p>本期已确认其他期间归属 '+(state.overview.bank_periods.counts?.confirmed_other_period||0)+' 条（含仍有其他问题的记录）；其中无剩余资料问题 '+(c.other_period||0)+' 条。转入来源引用独立展示，不计作本期提取事实、原件核实或账务可用。</p><button type="button" class="secondary" data-action="material-filter" data-filter="bank-periods">查看转出与接续</button><button type="button" class="text" data-action="material-filter" data-filter="other-period">查看其他期间归属记录</button></section>':''}
-  <nav class="mat-filters" aria-label="资料办理导航">${tabs.map(([id,text])=>`<button class="secondary" data-action="material-filter" data-filter="${id}" aria-pressed="${id==='results'?['results','usable','verified'].includes(ui.filter):id==='issues'?['issues','period'].includes(ui.filter):ui.filter===id}">${text}</button>`).join('')}<button class="secondary" data-action="material-files">全部资料</button></nav>
-  ${!isResult?`<div class="mat-view-modes" role="group" aria-label="待办查看方式"><span class="small muted">查看方式</span><button class="text" data-action="material-mode" data-mode="issues" aria-pressed="${ui.viewMode==='issues'}">按问题查看</button><button class="text" data-action="material-mode" data-mode="files" aria-pressed="${ui.viewMode==='files'}">按原件查看</button></div>`:''}
-  ${!isResult?(ui.viewMode==='issues'?renderMaterialIssueGroups():renderMaterialFileGroups()):''}
-  ${isResult||!current?renderMaterialTask():''}${isResult&&typeof billResults==='function'?billResults():''}${isResult&&typeof invoiceAmountResults==='function'?invoiceAmountResults():''}<nav class="secondary-nav"><button class="text" data-action="records">处理记录</button><button class="text" data-action="refresh">刷新状态</button></nav></div>`;
+  ${body}
+  ${aside?'':renderMaterialMore()}</div>`;
 }
 function openMaterialWorkbench(){state.view='materials';state.category=null;closeDialog();const ui=materialState();ui.screen='list';ui.filter='all';ui.feedback='';materialSaveNavigation(true);render();document.querySelector('#materialWorkbench h2')?.focus({preventScroll:true});}
 function installMaterialActions(){
@@ -136,6 +186,8 @@ function installMaterialActions(){
   if(typeof installBankPeriodActions==='function')installBankPeriodActions();
   if(typeof installMaterialGuidanceActions==='function')installMaterialGuidanceActions();
   actions['material-open']=openMaterialWorkbench;
+  actions['material-pick']=b=>{const ui=materialState(),t=(state.overview.material_review?.tasks||[]).find(x=>x.id===b.dataset.task);if(!t){notify('该事项已变化，请刷新后重新选择。',true);return;}ui.selected=t.id;ui.bucket=t.problem_kind||ui.bucket;ui.screen='list';ui.filter='all';ui.page=0;ui.feedback='';materialSaveNavigation();render();$('materialTaskTitle')?.focus({preventScroll:true});};
+  actions['material-bucket']=b=>{const ui=materialState();ui.bucket=ui.bucket===b.dataset.bucket?'':b.dataset.bucket;ui.selected='';ui.filter='all';ui.screen='list';ui.page=0;materialSaveNavigation();render();$('materialListTitle')?.focus({preventScroll:true});};
   actions['material-open-task']=b=>{state.view='materials';state.category=null;closeDialog();openMaterialDetail(b.dataset.task,b);};
   actions['material-action-metric']=b=>{const metrics=state.overview.material_review.action_metrics,rows=metrics.items.filter(item=>b.dataset.metric==='all'||b.dataset.metric==='fallback'&&item.fallback||b.dataset.actionType===item.action_type_id).flatMap(item=>item.drilldown.map(row=>({...row,label:item.label})));openDialog('动作执行记录',rows.length?`<div class="table-wrap"><table><thead><tr><th>动作</th><th>时间</th><th>目标</th><th>命令记录</th></tr></thead><tbody>${rows.map(row=>`<tr><td>${esc(row.label)}</td><td>${esc(row.created_at)}</td><td class="mono">${esc(row.target_id)}</td><td class="mono">${esc(row.command_id)}</td></tr>`).join('')}</tbody></table></div>`:'<p>当前范围没有对应动作记录。</p>');};
   actions['material-locate']=b=>{const t=currentMaterialTask();if(t)openMaterialDetail(t.id,b);};

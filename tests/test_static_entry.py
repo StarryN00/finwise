@@ -139,9 +139,13 @@ def test_formal_operator_page_connects_real_write_workflows_without_external_ass
     assert '资料结构' in script and '账务可用' in script and 'material-open-filter' in script
     assert 'selected_processing_tasks' in script and '你当前无需操作' in script
     assert "badge('系统处理中','blue')" in script
-    assert '系统处理中 ${systemIssues} 项 · 系统检查 ${systemChecks} 项' in materials
-    assert '查看动作使用与兜底占比' in materials
-    assert "无剩余资料问题 '+(c.other_period||0)+' 条" in materials
+    # 第三步只有两块：中间当前问题与选项卡，右侧四类问题与数量。
+    assert 'class="triage"' in materials and 'triage-bucket-head' in materials
+    assert 'renderProblemQueue' in materials and 'materialQueue' in materials
+    assert '更多：原件、成果与处理记录' in materials
+    assert 'data-action="material-pick"' in materials
+    # 不再有"先点一下处理方式"这一层：主视图直接就是那张卡。
+    assert 'materialNextStepPanel()' not in materials.split('function materialNextStepPanel')[0]
     assert 'scrollIntoView' not in script and 'DEMO-IMPORT-' not in script
     assert '.problem-review-detail>.row{padding-bottom:12px;margin-bottom:12px}' in css
     assert '.problem-review-job>details,.problem-review-job>button{margin-top:12px}' in css
@@ -150,14 +154,14 @@ def test_formal_operator_page_connects_real_write_workflows_without_external_ass
     parser.close()
     assert parser.stack == []
     assert parser.external_assets == [
-            'operator.css?v=originals-collapsed-1',
+            'operator.css?v=triage-1',
         'operator-historical.js?v=guided-decision-2',
-            'operator-materials.js?v=action-types-1',
-        'operator-problem-review.js?v=action-types-1',
+            'operator-materials.js?v=triage-1',
+        'operator-problem-review.js?v=triage-1',
             'operator-material-navigation.js?v=action-types-1',
         'operator-bank-periods.js?v=bank-period-1',
             'operator-material-guidance.js?v=action-types-1',
-            'operator-decision.js?v=originals-collapsed-1',
+            'operator-decision.js?v=triage-1',
         'operator-bills.js?v=guided-decision-2',
         'operator-invoice-review.js?v=guided-decision-2',
         'operator-accounts.js?v=guided-decision-2',
@@ -176,7 +180,7 @@ def test_static_assets_are_always_revalidated(client):
     表现都是"功能加了但界面毫无反应，控制台也不报错"。
     这里只要求重新验证，文件没变仍然走 304。"""
     for path in ("/static/operator.html", "/static/operator.js?v=login-flow-1",
-                 "/static/operator.css?v=originals-collapsed-1"):
+                 "/static/operator.css?v=triage-1"):
         response = client.get(path)
         assert response.status_code == 200, path
         assert "no-cache" in response.headers.get("cache-control", ""), path
