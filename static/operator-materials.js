@@ -1,9 +1,9 @@
 'use strict';
-const materialUI={key:'',selected:'',filter:'all',page:0,viewMode:'issues',screen:'list',group:null,listOrigin:null,feedback:'',drafts:new Map(),skipped:new Set()};
+const materialUI={key:'',selected:'',filter:'all',bucket:'',page:0,viewMode:'issues',screen:'list',group:null,listOrigin:null,feedback:'',drafts:new Map(),skipped:new Set()};
 function resetMaterialState(){materialUI.key='';materialUI.selected='';materialUI.filter='all';materialUI.page=0;materialUI.viewMode='issues';materialUI.drafts.clear();materialUI.skipped.clear();}
 function materialState(){
   const key=JSON.stringify([state.user?.user_id,scopeKey(scope())]);
-  if(materialUI.key!==key){materialUI.key=key;materialUI.selected=storage('finwise.material.task.'+key)||'';materialUI.filter='all';materialUI.viewMode=storage('finwise.material.mode.'+key)||'issues';materialUI.page=0;materialUI.drafts.clear();materialUI.skipped.clear();restoreMaterialNavigation(materialUI);}
+  if(materialUI.key!==key){materialUI.key=key;materialUI.selected=storage('finwise.material.task.'+key)||'';materialUI.filter='all';materialUI.bucket='';materialUI.viewMode=storage('finwise.material.mode.'+key)||'issues';materialUI.page=0;materialUI.drafts.clear();materialUI.skipped.clear();restoreMaterialNavigation(materialUI);}
   return materialUI;
 }
 function materialCanWrite(){return !readonly()&&['operator','accountant','admin'].includes(state.role);}

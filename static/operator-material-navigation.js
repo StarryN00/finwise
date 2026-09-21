@@ -22,13 +22,15 @@ function materialSupplementReceived(taskId,artifact){
 }
 function materialNavigationSnapshot(){
   const ui=materialState();
-  return {key:ui.key,screen:ui.screen,filter:ui.filter,viewMode:ui.viewMode,selected:ui.selected,page:ui.page,group:ui.group,listOrigin:ui.listOrigin,scrollY:typeof window==='undefined'?0:window.scrollY};
+  return {key:ui.key,screen:ui.screen,filter:ui.filter,bucket:ui.bucket,viewMode:ui.viewMode,selected:ui.selected,page:ui.page,group:ui.group,listOrigin:ui.listOrigin,scrollY:typeof window==='undefined'?0:window.scrollY};
 }
 function restoreMaterialNavigation(ui,saved=materialNavStorage(ui.key)){
   ui.screen='list';ui.group=null;ui.listOrigin=null;ui.feedback='';
   if(!saved||saved.key!==ui.key||!['list','detail','summary'].includes(saved.screen))return;
   ui.screen=saved.screen;ui.filter=['all','ready','selected','issues','system','period','deferred','results','usable','verified','VERIFY','bank-periods','other-period'].includes(saved.filter)?saved.filter:'all';
   ui.viewMode=saved.viewMode==='files'?'files':'issues';ui.selected=typeof saved.selected==='string'?saved.selected:'';
+  // 展开的是哪一类问题，刷新后要还在原处。
+  ui.bucket=['UNREADABLE','UNVERIFIED','JUDGEMENT','VERIFIED'].includes(saved.bucket)?saved.bucket:'';
   ui.page=Number.isInteger(saved.page)?Math.max(0,saved.page):0;
   ui.group=saved.group&&Array.isArray(saved.group.entries)?saved.group:null;ui.listOrigin=saved.listOrigin||null;
   if(ui.screen!=='list'&&!ui.group)ui.screen='list';
