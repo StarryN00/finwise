@@ -414,7 +414,12 @@ def guidance(service, request: GuidanceRequest, actor_id: str, role: str):
     except Exception as exc:
         # Provider error bodies may contain sensitive strings: keep a bounded code,
         # never echo transport responses or a malformed model completion.
-        metadata = dict(metadata, error_code=exc.code if isinstance(exc, (GatewayFailure, CandidateRejected)) else 'GUIDANCE_REJECTED')
+        # 异常类名是我们自己代码里的固定名字（含 pydantic 的 ValidationError），
+        # 不含模型输出的任何内容；没有它就只剩笼统的 GUIDANCE_REJECTED，分不清
+        # 是落在闭集校验上还是 schema 上。
+        code = (exc.code if isinstance(exc, (GatewayFailure, CandidateRejected))
+                else f'GUIDANCE_REJECTED:{type(exc).__name__}')
+        metadata = dict(metadata, error_code=code)
         response = {'status': 'FAILED', 'descriptor_hash': request.descriptor_hash, 'suggestion': None,
                     'metadata': metadata, 'message': '本次未得到有效建议，资料未改动。可继续按规则办理，或记录原因交由人工判断。'}
         run_status = 'FAILED'
