@@ -160,7 +160,7 @@ def test_formal_operator_page_connects_real_write_workflows_without_external_ass
         'operator-problem-review.js?v=triage-1',
             'operator-material-navigation.js?v=triage-1',
         'operator-bank-periods.js?v=bank-period-1',
-            'operator-material-guidance.js?v=action-types-1',
+            'operator-material-guidance.js?v=triage-1',
             'operator-decision.js?v=triage-1',
         'operator-bills.js?v=guided-decision-2',
         'operator-invoice-review.js?v=guided-decision-2',
