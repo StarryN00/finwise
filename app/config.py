@@ -41,6 +41,11 @@ class Settings:
     # 推理档要先想再写，45 秒常常不够 —— 实测复核会以 read timeout 失败，
     # 表现和模型答不上来一模一样。
     gateway_reasoning_timeout_seconds: float = 180.0
+    # 把整条记录（摘要、往来单位、金额、账号、日期）原样发给模型服务商，而不是
+    # 只发字段名与枚举。脱敏包里模型看不到任何业务内容，只能答"缺字段，去要材料"；
+    # 放开之后它才可能就具体业务给出建议。
+    # 这是把客户财务数据交给外部服务商，默认关闭，由部署方明确打开。
+    agent_send_full_records: bool = False
     gateway_max_retries: int = 0
 
     @staticmethod
@@ -101,6 +106,7 @@ class Settings:
             agent_vision_max_tokens=env_int("FINWISE_AGENT_VISION_MAX_TOKENS", 16000),
             agent_reasoning_max_tokens=env_int("FINWISE_AGENT_REASONING_MAX_TOKENS", 8000),
             gateway_reasoning_timeout_seconds=env_float("FINWISE_GATEWAY_REASONING_TIMEOUT_SECONDS", 180.0),
+            agent_send_full_records=os.getenv("FINWISE_AGENT_SEND_FULL_RECORDS", "false").lower() in {"1", "true", "yes"},
             gateway_timeout_seconds=env_float("FINWISE_GATEWAY_TIMEOUT_SECONDS", 45.0),
             gateway_vision_timeout_seconds=env_float("FINWISE_GATEWAY_VISION_TIMEOUT_SECONDS", 180.0),
             gateway_max_retries=env_int("FINWISE_GATEWAY_MAX_RETRIES", 0),

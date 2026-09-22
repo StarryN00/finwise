@@ -215,6 +215,57 @@ OPTION_MEANINGS = {
 }
 
 
+_OUTPUT_SCHEMA = {'candidates': [{'option_id': 'available option id or null', 'reason': 'string',
+                  'uncertainties': ['string'], 'prefill': {}, 'confidence': '0..1',
+                  'evidence_refs': ['task or record-N from input'],
+                  'steps': [{'option_id': 'available option id', 'instruction': 'bounded instruction; separate human confirmation required'}]}],
+                  'candidate_count': '1..3'}
+
+
+def full_packet(task, records):
+    """整条记录原样交给模型：摘要、往来单位、金额、账号、日期都在里面。
+
+    脱敏包里模型只看得到字段名和枚举，所以不管什么问题，它能给的都是
+    "缺字段，去要材料" —— 实测 20 条建议几乎全是同一个选项。
+    要它就具体业务给建议，就得让它看见业务。
+
+    这会把客户财务数据发给配置的模型服务商，因此由 agent_send_full_records
+    显式打开，默认走 safe_packet。
+    """
+    descriptor = task['descriptor']
+    source = []
+    for index, record in enumerate(records[:100]):
+        source.append({
+            'reference': f'record-{index+1}',
+            'record_type': record.get('record_type'),
+            'state': record.get('state'),
+            'values': record.get('values') or {},
+            'issues': record.get('issues') or [],
+            'comparison': [{'field': c.get('field'), 'state': c.get('state'),
+                            'source_value': c.get('source_value'), 'value': c.get('value'),
+                            'region': c.get('region')}
+                           for c in (record.get('comparison') or [])][:80],
+            'has_period_exception': record.get('state') == 'PERIOD_EXCEPTION'})
+    options = [{'id': o['id'], 'label': o['label'], 'completion': o.get('completion', ''),
+                'not_effects': o.get('not_effects', [])}
+               for o in descriptor['options'] if o['available']]
+    if (task.get('triage') or {}).get('route') == 'SYSTEM':
+        options = []
+    why = descriptor.get('why') or {}
+    return {'task_kind': task['kind'],
+            'task': {'title': descriptor.get('title') or task.get('title', ''),
+                     'filename': task.get('filename', ''),
+                     'reason': task.get('reason', ''),
+                     'facts': why.get('facts', ''), 'rule': why.get('rule', ''),
+                     'period': descriptor.get('scope', {}).get('accounting_period_id', '')},
+            'records': source, 'options': options,
+            'evidence_refs': ['task', *[r['reference'] for r in source]],
+            'records_truncated': len(records) > 100,
+            'context_limit': '这是本企业该期间的真实记录。你仍然只能从 options 里选，不能编造原值、'
+                             '不能替用户确认，也不能声称问题已解决或账务已放行。',
+            'output_schema': _OUTPUT_SCHEMA}
+
+
 def safe_packet(task, records):
     descriptor = task['descriptor']
     source = []
@@ -239,11 +290,7 @@ def safe_packet(task, records):
             'records': source, 'options': options, 'evidence_refs': ['task', *[r['reference'] for r in source]],
             'records_truncated': len(records) > 100,
             'context_limit': '只有脱敏字段检查和可能的用户意见枚举，不是已核验业务事实；不能据此确定日期、账户或科目，金额抵消也不等于财务通过。',
-            'output_schema': {'candidates': [{'option_id': 'available option id or null', 'reason': 'string',
-                              'uncertainties': ['string'], 'prefill': {}, 'confidence': '0..1',
-                              'evidence_refs': ['task or record-N from input'],
-                              'steps': [{'option_id': 'available option id', 'instruction': 'bounded instruction; separate human confirmation required'}]}],
-                              'candidate_count': '1..3'}}
+            'output_schema': _OUTPUT_SCHEMA}
 
 
 def current_task(service, request):
@@ -265,10 +312,19 @@ def guidance(service, request: GuidanceRequest, actor_id: str, role: str):
     if task.get('deferred'):
         raise PreconditionFailed('本项已暂缓；先查看已记录原因，不重复调用模型')
     records = {r['object_id']: r for r in overview['material_review']['records']}
-    packet = safe_packet(task, [records[r] for r in task['record_ids']])
-    redacted = redact_user_text(request.user_text)
-    packet['user_opinion'] = {'status': redacted['status'], 'intents': redacted['intents'],
-                              'verified': False, 'executed': False}
+    bound = [records[r] for r in task['record_ids']]
+    full = service.store.database.settings.agent_send_full_records
+    packet = full_packet(task, bound) if full else safe_packet(task, bound)
+    if full:
+        # 全量模式下意见也原样送过去：把整条记录都给了模型，再把用户自己写的
+        # 一句话枚举成意图，既没有意义，也会让模型看不懂人到底想干什么。
+        redacted = {'status': 'EMPTY' if not request.user_text.strip() else 'FULL', 'intents': []}
+        packet['user_opinion'] = {'status': 'FULL', 'text': request.user_text,
+                                  'verified': False, 'executed': False}
+    else:
+        redacted = redact_user_text(request.user_text)
+        packet['user_opinion'] = {'status': redacted['status'], 'intents': redacted['intents'],
+                                  'verified': False, 'executed': False}
     config = model_binding(service)
     fingerprint = task_fingerprint(service, request.scope, task)
     run_id = 'modelrun_guidance_' + digest([request.scope.model_dump(), actor_id, request.request_id])

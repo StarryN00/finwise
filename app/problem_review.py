@@ -19,7 +19,7 @@ from app.ontology.store import digest
 TYPE = 'ProblemReview'
 STAGE = 'PROBLEM_REVIEW'
 VERSION = 'problem-review-v1'
-PROMPT = 'problem-review-prompt-v1'
+PROMPT = 'problem-review-prompt-v2'
 STATUS_ISSUE = '发票状态：发票状态须人工核对'
 BOUNDARY = '仅复核资料提醒，不代表人工核实、税务查验或账务可用。'
 log = logging.getLogger(__name__)
@@ -128,12 +128,18 @@ class ProblemReview:
             row = rows[identity]
             fields = []
             focuses=next((r['focus_fields'] for r in (task['descriptor'].get('presentation') or {}).get('records',[]) if r['id']==identity),[])
+            # 全量模式下把原值、提取值和定位一并交给模型；否则只放服务端已知的
+            # 字段名与有界枚举。看不到业务内容时，复核只能在"字段缺没缺"上打转。
+            full = self.store.database.settings.agent_send_full_records
+            from app.material_guidance import SAFE_FIELDS
             for c in row.get('comparison', []):
-                # Only server-known field names and bounded enums cross the gateway.
-                from app.material_guidance import SAFE_FIELDS
-                if c['field'] in SAFE_FIELDS and (not focuses or c['field'] in focuses):
-                    fields.append({'field':c['field'], 'check':c['state'] if c['state'] in {
-                        'DIRECT_MATCH','NORMALIZED_MATCH','DERIVED','MISSING','DIFFERENT','AMBIGUOUS','UNLOCATED'} else 'UNLOCATED'})
+                if not full and (c['field'] not in SAFE_FIELDS or (focuses and c['field'] not in focuses)):
+                    continue
+                entry = {'field':c['field'], 'check':c['state'] if c['state'] in {
+                    'DIRECT_MATCH','NORMALIZED_MATCH','DERIVED','MISSING','DIFFERENT','AMBIGUOUS','UNLOCATED'} else 'UNLOCATED'}
+                if full:
+                    entry.update(source_value=c.get('source_value'), value=c.get('value'), region=c.get('region'))
+                fields.append(entry)
             item = {'id':f'record-{i+1}', 'fields':fields,
                     'period_exception':row['state']=='PERIOD_EXCEPTION',
                     'source_valid':self.service.materials.source_valid(next(a for a in wb['artifacts'] if a['object_id']==task['artifact_id']))}
