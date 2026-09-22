@@ -19,7 +19,7 @@ from app.ontology.readiness import FIELDS
 
 STAGE = 'MATERIAL_GUIDANCE'
 SCHEMA = 'material-guidance-v2'
-PROMPT = 'material-guidance-prompt-v2'
+PROMPT = 'material-guidance-prompt-v3'
 JOB_TYPE = 'MaterialGuidanceJob'
 BOUNDARY = '仅保存处理意见和候选建议，尚未执行；不修改财务数据，不解除任何门禁。'
 
