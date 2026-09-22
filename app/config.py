@@ -24,7 +24,10 @@ class Settings:
     deepseek_base_url: str = "https://api.deepseek.com"
     deepseek_api_key: str = ""
     agent_prompt_version: str = "finwise-agent-prompt-v1"
-    agent_max_tokens: int = 1200
+    # 1200 是早期留下的额度，实测对这套系统里的任何一档都不够：DeepSeek 会先花
+    # 一截额度在推理上，答案还没开始写就到顶，返回空内容加 finish_reason=length。
+    # 同一条建议请求 1200 必然截断、8000 正常返回。
+    agent_max_tokens: int = 4000
     # 逐行抄录整份对账单的输出远大于普通判断任务：35 行就已经超出 1200。
     # 截断的表现是"输出不是合法 JSON"，很容易被误判成模型不会用 JSON。
     agent_vision_max_tokens: int = 16000
@@ -94,7 +97,7 @@ class Settings:
             deepseek_base_url=os.getenv("FINWISE_DEEPSEEK_BASE_URL", "https://api.deepseek.com"),
             deepseek_api_key=os.getenv("FINWISE_DEEPSEEK_API_KEY", ""),
             agent_prompt_version=os.getenv("FINWISE_AGENT_PROMPT_VERSION", "finwise-agent-prompt-v1"),
-            agent_max_tokens=env_int("FINWISE_AGENT_MAX_TOKENS", 1200),
+            agent_max_tokens=env_int("FINWISE_AGENT_MAX_TOKENS", 4000),
             agent_vision_max_tokens=env_int("FINWISE_AGENT_VISION_MAX_TOKENS", 16000),
             agent_reasoning_max_tokens=env_int("FINWISE_AGENT_REASONING_MAX_TOKENS", 8000),
             gateway_reasoning_timeout_seconds=env_float("FINWISE_GATEWAY_REASONING_TIMEOUT_SECONDS", 180.0),

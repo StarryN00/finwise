@@ -30,9 +30,13 @@ def test_reasoning_stages_get_their_own_budget_not_the_default_1200(tmp_path):
 
 
 def test_light_stages_keep_the_cheap_default(tmp_path):
-    provider, seen = calls(tmp_path, 'MATERIAL_GUIDANCE', json.dumps({'ok': True}), agent_max_tokens=1200)
+    """轻档沿用基础额度；但基础额度本身不能是 1200 ——
+    实测同一条建议请求 1200 必然被截断，8000 正常返回。"""
+    from app.config import Settings
+    assert Settings.__dataclass_fields__['agent_max_tokens'].default >= 4000
+    provider, seen = calls(tmp_path, 'MATERIAL_GUIDANCE', json.dumps({'ok': True}), agent_max_tokens=4000)
     provider.complete(stage='MATERIAL_GUIDANCE', request_payload={}, input_hash='t')
-    assert seen['max_tokens'] == 1200
+    assert seen['max_tokens'] == 4000
 
 
 def test_a_truncated_agent_reply_says_it_was_truncated(tmp_path):
