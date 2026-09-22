@@ -117,6 +117,19 @@ def task_fingerprint(service, scope, task):
                    model_binding(service)])
 
 
+class CandidateRejected(ValueError):
+    """模型答案没过本地校验。
+
+    只带一个服务端自己定义的固定代码 —— 校验项的名字不是模型内容，可以安全留痕；
+    模型原文仍然一个字都不外泄。没有这个代码时只能看到笼统的 GUIDANCE_REJECTED，
+    分不清是选项不在闭集里、引用编造还是步骤不合法。
+    """
+
+    def __init__(self, code):
+        super().__init__(code)
+        self.code = code
+
+
 def validate_candidates(value, task, packet):
     """Adapt v1 without fabricating model citations or executable prefills."""
     available = {o['id'] for o in packet['options']}
@@ -127,23 +140,23 @@ def validate_candidates(value, task, packet):
     seen = set()
     for output in outputs:
         if output.option_id is not None and output.option_id not in available:
-            raise ValueError('undeclared option')
+            raise CandidateRejected('OPTION_NOT_IN_CLOSED_SET')
         if output.option_id in seen:
-            raise ValueError('duplicate option')
+            raise CandidateRejected('DUPLICATE_OPTION')
         seen.add(output.option_id)
         if output.prefill or not math.isfinite(output.confidence) or any(len(s) > 500 or not s.strip() for s in output.uncertainties):
-            raise ValueError('invalid candidate')
+            raise CandidateRejected('INVALID_CANDIDATE_FIELDS')
         item = output.model_dump()
         if not legacy:
             if not set(output.evidence_refs) <= refs or len(set(output.evidence_refs)) != len(output.evidence_refs):
-                raise ValueError('invalid evidence refs')
+                raise CandidateRejected('INVALID_EVIDENCE_REFS')
             if any(not s.instruction.strip() or s.option_id not in available for s in output.steps):
-                raise ValueError('invalid step option')
+                raise CandidateRejected('INVALID_STEP_OPTION')
             if output.option_id is None:
                 if output.steps:
-                    raise ValueError('null option cannot carry actionable steps')
+                    raise CandidateRejected('STEPS_WITHOUT_OPTION')
             elif output.steps and output.steps[0].option_id != output.option_id:
-                raise ValueError('first step must match candidate option')
+                raise CandidateRejected('STEP_OPTION_MISMATCH')
         else:
             item.update(evidence_refs=[], steps=[], legacy=True)
         if output.confidence < .7:
@@ -345,7 +358,7 @@ def guidance(service, request: GuidanceRequest, actor_id: str, role: str):
     except Exception as exc:
         # Provider error bodies may contain sensitive strings: keep a bounded code,
         # never echo transport responses or a malformed model completion.
-        metadata = dict(metadata, error_code=exc.code if isinstance(exc, GatewayFailure) else 'GUIDANCE_REJECTED')
+        metadata = dict(metadata, error_code=exc.code if isinstance(exc, (GatewayFailure, CandidateRejected)) else 'GUIDANCE_REJECTED')
         response = {'status': 'FAILED', 'descriptor_hash': request.descriptor_hash, 'suggestion': None,
                     'metadata': metadata, 'message': '本次未得到有效建议，资料未改动。可继续按规则办理，或记录原因交由人工判断。'}
         run_status = 'FAILED'
