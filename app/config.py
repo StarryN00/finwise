@@ -121,12 +121,19 @@ class Settings:
         """这一档任务等多久。和 model_for / tokens_for 同一套分档。"""
         if stage in self.VISION_STAGES:
             return self.gateway_vision_timeout_seconds
-        if stage in self.REASONING_STAGES:
+        if stage in self.REASONING_STAGES or self.agent_send_full_records:
             return max(self.gateway_reasoning_timeout_seconds, self.gateway_timeout_seconds)
         return self.gateway_timeout_seconds
 
     def tokens_for(self, stage: str) -> int:
-        """这一档任务给多少输出额度。和 model_for 同一套分档，别处不再各调各的。"""
+        """这一档任务给多少输出额度。和 model_for 同一套分档，别处不再各调各的。
+
+        全量模式下模型看到的是整条业务记录，答得也更具体更长 —— 实测建议档在
+        4000 下有一多半以 finish_reason=length 截断。所以全量时给所有档抬到
+        推理档的额度。
+        """
+        if self.agent_send_full_records and stage not in self.VISION_STAGES:
+            return max(self.agent_reasoning_max_tokens, self.agent_max_tokens)
         if stage in self.VISION_STAGES:
             return self.agent_vision_max_tokens
         if stage in self.REASONING_STAGES:

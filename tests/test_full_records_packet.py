@@ -77,3 +77,32 @@ def test_the_boundary_still_travels_with_the_full_packet():
     """看得见业务不等于可以替人决定。"""
     limit = full_packet(task(), [record()])['context_limit']
     assert '只能从 options 里选' in limit and '不能替用户确认' in limit
+
+
+def settings(**overrides):
+    from pathlib import Path
+    import dataclasses
+    base = Settings(root=Path('.'), database_path=Path('x.db'), storage_path=Path('a'),
+                    agent_max_tokens=4000, agent_reasoning_max_tokens=8000,
+                    gateway_timeout_seconds=45.0, gateway_reasoning_timeout_seconds=180.0)
+    return dataclasses.replace(base, **overrides)
+
+
+def test_full_records_need_a_bigger_answer_budget_on_every_tier():
+    """看到整条业务记录后模型答得更具体也更长 ——
+    实测建议档在 4000 下有一多半以 finish_reason=length 截断。"""
+    off, on = settings(), settings(agent_send_full_records=True)
+    assert off.tokens_for('MATERIAL_GUIDANCE') == 4000
+    assert on.tokens_for('MATERIAL_GUIDANCE') == 8000
+    assert on.tokens_for('PROBLEM_REVIEW') == 8000
+
+
+def test_full_records_also_need_the_longer_wait():
+    assert settings().timeout_for('MATERIAL_GUIDANCE') == 45.0
+    assert settings(agent_send_full_records=True).timeout_for('MATERIAL_GUIDANCE') == 180.0
+
+
+def test_the_vision_tier_keeps_its_own_much_larger_budget():
+    """扫描件要逐行抄录，额度本来就比推理档高，不能被压下来。"""
+    on = settings(agent_send_full_records=True, agent_vision_max_tokens=16000)
+    assert on.tokens_for('SCANNED_DOCUMENT') == 16000
