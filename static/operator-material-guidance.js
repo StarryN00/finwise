@@ -17,9 +17,9 @@ function materialGuidanceLabel(c,o,index,labels){
   let label=raw||o?.label||'';
   if(!label){
     const reason=String(c?.reason||'');
-    label=/暂缓|等待/.test(reason)?'暂缓并保留问题':/补充|附件|依据|资料/.test(reason)?'补充可核验依据':/归属|期间|月份|交易日期/.test(reason)?'确认业务期间归属':/核对|人工|确认/.test(reason)?'人工核对后记录意见':`建议方案 ${index+1}`;
+    label=/暂缓|暂停|等待/.test(reason)?'暂缓并保留问题':/补充|附件|依据|资料/.test(reason)?'补充可核验依据':/归属|期间|月份|交易日期/.test(reason)?'确认业务期间归属':/核对|人工|确认/.test(reason)?'人工核对后记录意见':`建议方案 ${index+1}`;
   }
-  if(labels){const count=labels[label]||0;labels[label]=count+1;if(count){const reason=String(c?.reason||'');const alternative=/暂缓|等待/.test(reason)?'先暂缓，等信息确认':/补充|附件|依据|资料/.test(reason)?'补充依据后再处理':/归属|期间|月份|交易日期/.test(reason)?'按实际业务月份归属':/核对|人工|确认/.test(reason)?'人工核对后记录':`建议方案 ${index+1}`;label=alternative===label?`${label}（方案 ${index+1}）`:alternative;}}
+  if(labels){const count=labels[label]||0;labels[label]=count+1;if(count){const reason=String(c?.reason||'');const alternative=/暂缓|暂停|等待/.test(reason)?'先暂缓，等信息确认':/补充|附件|依据|资料/.test(reason)?'补充依据后再处理':/归属|期间|月份|交易日期/.test(reason)?'按实际业务月份归属':/核对|人工|确认/.test(reason)?'人工核对后记录':`建议方案 ${index+1}`;label=alternative===label?`${label}（方案 ${index+1}）`:alternative;}}
   return label;
 }
 function materialGuidancePlainReason(c,label){
