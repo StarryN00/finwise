@@ -77,9 +77,53 @@ def test_historical_prerequisite_does_not_replace_current_period_progress(client
     prerequisite = overview['progress']['prerequisite']
     assert prerequisite['status'] == 'ACTION_REQUIRED'
     assert prerequisite['does_not_block'] == ['资料整理', '资料核对']
-    assert overview['progress']['current_stage'] == 'source'
-    assert overview['progress']['stages'][1]['name'] == '资料分析'
-    assert not overview['progress']['stages'][1]['summary'].startswith('历史')
+    # 历史衔接现在在主线上占第 2 格，但它没有接管本期那几步：本期阶段的名字和
+    # 结论仍然是自己的，没有被历史的内容改写。这是这个测试原本要守的东西。
+    analysis = next(i for i in overview['progress']['stages'] if i['id'] == 'analysis')
+    assert analysis['name'] == 'AI 处理'
+    assert not analysis['summary'].startswith('历史')
+    # 历史有待你处理的问题时，主线指针就指第 2 步 —— 原来指针指 source 而
+    # next_step 同时说"先处理期初与历史衔接"，两处对不上。现在一致。
+    assert overview['progress']['current_stage'] == 'history'
+    assert overview['material_review']['next_step']['action']['kind'] == 'HISTORICAL' 
+
+
+def test_a_brand_new_enterprise_is_pointed_at_history_before_current_material(client, scope):
+    """新手的第二步是导入历史资料，不是直接传当月。
+
+    原来这里直接落到 UPLOAD：刚建好企业的人被引导去传本期资料，
+    「导入历史资料」整格被跳过，等到制证时才被期初门禁拦住。
+    """
+    service = client.app.state.service
+    typed = Scope(**scope)
+    service.create_scope(typed)
+
+    overview = service.workbench(typed)
+    step = overview['material_review']['next_step']
+
+    assert step['action'] == {'kind': 'HISTORICAL', 'label': '导入历史资料'}
+    assert overview['progress']['current_stage'] == 'history'
+    assert '也可以先添加本期资料' in step['explanation'], '历史不是硬门禁，说明里要讲清'
+
+
+def test_once_this_month_has_material_the_history_rung_stops_interrupting(client, scope):
+    """历史不阻断资料整理：已经在整理本期资料的人不该被拦回第 2 步。"""
+    service = client.app.state.service
+    typed = Scope(**scope)
+    service.create_scope(typed)
+    service.create_artifact(ArtifactInput(
+        scope=typed, filename='本期进项发票.xlsx',
+        content_base64=base64.b64encode(b'current period original').decode(),
+        observed_period=typed.accounting_period_id), actor_id='fixture')
+
+    overview = service.workbench(typed)
+    step = overview['material_review']['next_step']
+
+    assert (step['action'] or {}).get('kind') != 'HISTORICAL', '不该把人从本期资料拦回第 2 步'
+    # 但第 2 步仍然没打勾 —— 不打断不等于不欠。欠的那一格要一直看得见，
+    # 否则到制证时才被期初门禁拦住，人不知道是哪一步没做。
+    history = next(i for i in overview['progress']['stages'] if i['id'] == 'history')
+    assert history['status'] == 'NOT_STARTED'
 
 
 def test_readiness_shows_human_baseline_proof_then_removes_stale_proof(client, scope):

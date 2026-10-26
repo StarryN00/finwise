@@ -23,6 +23,7 @@ from app.ontology.errors import (
     ScopeViolation,
     VersionConflict,
 )
+from app import main_flow
 from app.ontology.store import ObjectStore, digest, new_id
 from app.ontology.procurement import ENGINE_VERSION, PAYMENT_TOLERANCE, procurement_amounts
 from app.ontology.baseline import VALIDATION_VERSION, previous_period, validate_confirmation
@@ -62,6 +63,38 @@ for _role in ("operator", "accountant", "admin"):
     ROLE_PERMISSIONS[_role].update({'execute_task_action', 'revoke_task_action'})
 for _role in ("accountant", "reviewer", "admin"):
     ROLE_PERMISSIONS[_role].add("review_historical_issue_plan")
+
+
+def _scope_stage(scope):
+    """第 1 步。能读到这个工作台就意味着处理范围已经建好了。
+
+    它不是"永远打勾的装饰"：新用户在还没有任何企业时根本到不了这里
+    （界面停在企业选择），所以这一格打勾对他是真实的进度反馈 ——
+    他确实刚完成了第一步。
+    """
+    return {"status": "COMPLETED", "summary": f"账套 {scope.ledger_id} · 期间 {scope.accounting_period_id}",
+            "completed_count": 1, "total_count": 1}
+
+
+def _history_stage(prerequisite, job):
+    """第 2 步，完全由期初衔接派生，不新增任何判断口径。
+
+    NOT_STARTED 和 WAITING 要分开：前者是"一份历史账表都还没传"，新用户
+    就卡在这里；后者是已经在处理或已记录意见、只差期初核实。两者在
+    `next_step` 里的待遇不同（见 `_workbench_next_step`）。
+    """
+    status = prerequisite["status"]
+    if status == "VALID":
+        return {"status": "COMPLETED", "summary": prerequisite["summary"],
+                "completed_count": 1, "total_count": 1}
+    stage_status = "BLOCKED" if status == "ACTION_REQUIRED" else ("WAITING" if job else "NOT_STARTED")
+    return {"status": stage_status, "summary": prerequisite["summary"],
+            # WAITING 指系统正在处理或只差期初核实：这种时候本期资料整理照常进行，
+            # 主线指针不该停在这一格。要人动手（BLOCKED）和一份都没传（NOT_STARTED）
+            # 都要捕获指针 —— 后者正是新用户真实卡住的地方。
+            "can_wait": stage_status == "WAITING",
+            "completed_count": prerequisite.get("recorded_count", 0),
+            "total_count": prerequisite.get("issue_count", 0)}
 
 
 def historical_prerequisite(job, plans, baseline_status):
@@ -137,10 +170,7 @@ def _progress_with_digestion(progress, material_review):
             stage = {**stage, 'status': 'PARTIAL',
                      'summary': f"{stage['summary']}；还有 {len(pending)} 项系统尚未消化完，完成后才进入待确认"}
         stages.append(stage)
-    completed = sum(stage['status'] == 'COMPLETED' for stage in stages)
-    return {**progress, 'stages': stages, 'completed_count': completed,
-            'overall_percent': int(completed / len(stages) * 100),
-            'current_stage': next((stage['id'] for stage in stages if stage['status'] != 'COMPLETED'), 'delivery')}
+    return {**progress, **main_flow.summarize(stages)}
 
 
 class OntologyService:
@@ -1940,6 +1970,17 @@ class OntologyService:
         if material_step and material_step.get('owner') == 'USER':
             return {'version': 'workbench-next-step-v1', **material_step}
         if not current_artifacts:
+            # 新企业什么都还没有时，先指历史资料 —— 主线第 2 步在第 3 步之前。
+            # 原来这里直接落到 UPLOAD，新用户被引导去传当月资料，第 2 步整格跳过。
+            # 但历史**不是**硬门禁：prerequisite.does_not_block 明确写了资料整理
+            # 与资料核对不受它影响，所以只在"一份本期原件都没有、且历史一份都
+            # 没传"时才指它；已经在整理本期资料的人不会被拦回去。
+            history_stage = next((stage for stage in progress.get('stages', [])
+                                  if stage['id'] == 'history'), {})
+            if history_stage.get('status') == 'NOT_STARTED':
+                return {'version': 'workbench-next-step-v1', 'state': 'NEEDS_INPUT', 'owner': 'USER',
+                        'title': '导入历史资料', 'explanation': '先提供上期的科目余额表和序时账，作为本期期初依据；也可以先添加本期资料，历史不影响资料整理。',
+                        'task_id': None, 'action': {'kind': 'HISTORICAL', 'label': '导入历史资料'}}
             return {'version': 'workbench-next-step-v1', 'state': 'NEEDS_INPUT', 'owner': 'USER',
                     'title': '接收本期业务资料', 'explanation': '本期还没有业务原件，请添加需要办理的资料。',
                     'task_id': None, 'action': {'kind': 'UPLOAD', 'label': '添加本期资料'}}
@@ -2611,22 +2652,25 @@ class OntologyService:
             voucher_stage = {"status": "COMPLETED" if confirmed_vouchers == len(vouchers) else "PARTIAL", "summary": f"当前有效复核 {confirmed_vouchers} / {len(vouchers)} 个版本" + ("；其余待复核或来源已变化" if confirmed_vouchers < len(vouchers) else ""), "completed_count": confirmed_vouchers, "total_count": len(vouchers)}
         imported_deliveries = sum(item["status"] == "EXTERNAL_IMPORTED" for item in deliveries)
         delivery_stage = {"status": "COMPLETED" if deliveries and imported_deliveries == len(deliveries) else ("PARTIAL" if deliveries else "NOT_STARTED"), "summary": f"已完成 {imported_deliveries} / {len(deliveries)} 个交付包" if deliveries else "尚未形成交付包", "completed_count": imported_deliveries, "total_count": len(deliveries)}
-        stage_items = [
-            {"id": "source", "name": "资料接收", **source_stage},
-            {"id": "analysis", "name": "资料分析", **analysis_stage},
-            {"id": "validation", "name": "待确认与校验", **validation_stage},
-            {"id": "voucher", "name": "凭证复核", **voucher_stage},
-            {"id": "delivery", "name": "交付归档", **delivery_stage},
-        ]
-        completed_stages = sum(item["status"] == "COMPLETED" for item in stage_items)
-        progress = {"stages": stage_items, "completed_count": completed_stages, "total_count": len(stage_items),
-                    "overall_percent": int(completed_stages / len(stage_items) * 100),
-                    "current_stage": next((item["id"] for item in stage_items if item["status"] != "COMPLETED"), "delivery")}
+        # 期初衔接要先算出来：主线第 2 步由它派生。`historical_prerequisite`
+        # 的语义一点没变 —— 它仍然是期初门禁的输入，不是月度阶段；这里只是
+        # 把同一个事实在"给人看的那条路"上也摆出一格，否则新用户看进度条
+        # 无法知道"导入历史资料"算不算做完了。
         historical_preparation = self.historical.view(scope)
         historical_issue_plans = self.historical_plans.view(scope, historical_preparation)
-        progress["prerequisite"] = historical_prerequisite(
+        prerequisite = historical_prerequisite(
             historical_preparation, historical_issue_plans, baseline_validation["status"]
         )
+        progress = main_flow.build({
+            "scope": _scope_stage(scope),
+            "history": _history_stage(prerequisite, historical_preparation),
+            "source": source_stage,
+            "analysis": analysis_stage,
+            "confirmation": validation_stage,
+            "voucher": voucher_stage,
+            "delivery": delivery_stage,
+        })
+        progress["prerequisite"] = prerequisite
         readiness = build_readiness(scope, artifacts=artifacts, facts=facts, baseline=baseline,
                                    baseline_valid=baseline_validation["status"] == "VALID",
                                    checked_groups=checked_groups, checked_vouchers=checked_vouchers,

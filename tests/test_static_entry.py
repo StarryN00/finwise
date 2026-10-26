@@ -89,7 +89,7 @@ def test_formal_operator_page_connects_real_write_workflows_without_external_ass
     parser.close()
     assert parser.stack == []
     assert parser.external_assets == [
-            'operator.css?v=verify-bulk-2',
+            'operator.css?v=main-flow-1',
         'operator-historical.js?v=guided-decision-2',
             'operator-materials.js?v=verify-bulk-2',
         'operator-problem-review.js?v=triage-1',
@@ -103,7 +103,7 @@ def test_formal_operator_page_connects_real_write_workflows_without_external_ass
         'operator-mapping.js?v=guided-decision-2',
         'operator-parse-plans.js?v=structure-plan-1', 'operator-profile-cards.js?v=profile-cards-1', 'operator-new-scope.js?v=new-scope-1',
         'operator-voucher-proposals.js?v=voucher-proposals-1',
-        'operator.js?v=triage-2']
+        'operator.js?v=main-flow-1']
     for asset in parser.external_assets:
         assert client.get('/static/' + asset).status_code == 200
     response = client.get("/static/operator.html")
@@ -114,8 +114,8 @@ def test_static_assets_are_always_revalidated(client):
     """资源上的 ?v= 是手写的，改了文件忘了改版本号必然会发生 —— 实测发生过两次，
     表现都是"功能加了但界面毫无反应，控制台也不报错"。
     这里只要求重新验证，文件没变仍然走 304。"""
-    for path in ("/static/operator.html", "/static/operator.js?v=triage-2",
-                 "/static/operator.css?v=triage-1"):
+    for path in ("/static/operator.html", "/static/operator.js?v=main-flow-1",
+                 "/static/operator.css?v=main-flow-1"):
         response = client.get(path)
         assert response.status_code == 200, path
         assert "no-cache" in response.headers.get("cache-control", ""), path
