@@ -25,12 +25,29 @@ class DecisionScope(Scope):
     records: list[RecordScope]
 
 
+class RuleDraft(BaseModel):
+    """确认这张卡片之后会沉淀成什么。不沉淀的卡片等于白问一次。
+
+    卡片本身仍然只是描述：这里记录的是"确认后应当登记哪条规则"，
+    真正的写入由命令执行，描述层不授权也不下发。
+    """
+    model_config = ConfigDict(extra='forbid')
+    kind: Literal['SOURCE_PROFILE', 'COUNTERPARTY_ALIAS', 'ACCOUNT_MAPPING', 'NONE'] = 'NONE'
+    key: str = ''
+    summary: str = ''
+    scope_level: Literal['PLATFORM', 'TENANT', 'ENTITY'] = 'ENTITY'
+
+
 class WhyDescriptor(BaseModel):
     model_config = ConfigDict(extra='forbid')
     facts: str
     rule: str
     recommendation: str
-    origin: Literal['RULE'] = 'RULE'
+    # 这张卡片是谁提的：命中既有规则、模型提案、还是人工录入。
+    # 锁死成 RULE 会让规则目录成为唯一的出卡来源，模型永远进不来。
+    origin: Literal['RULE', 'AGENT', 'HUMAN'] = 'RULE'
+    confidence: int = Field(default=100, ge=0, le=100)
+    yields: Optional[RuleDraft] = None
     evidence: list[RecordScope]
 
 

@@ -39,7 +39,7 @@ def main():
     storage=Path(environment['FINWISE_STORAGE_PATH']).resolve()
     assert database.parent==root/'data/staging-juxianda-2026-01-from-2025' and storage==database.parent/'artifacts'
     before=objects(database);files=manifest(storage)
-    protected_files={str(f):digest(f.read_bytes().hex()) for f in [root/'static/index.html',root/'static/app.js']}
+    protected_files={str(f):digest(f.read_bytes().hex()) for f in [root/'static/operator.html',root/'static/operator.js']}
     backup=root/'data/backups'/('pre-problem-review-'+utcnow().replace(':','-'))
     copy_dataset(database.parent,backup)
     assert objects(backup/'finwise.db')==before and manifest(backup/'artifacts')==files

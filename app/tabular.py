@@ -11,7 +11,9 @@ from xml.etree import ElementTree
 
 from pydantic import BaseModel, ConfigDict, Field, StrictStr
 
-PARSER_VERSION = "tabular-v5"
+# v6：价税合计等算出来的字段改由净额与税额的已核对合计推出，
+# 早于 v6 存下的核对结论不能和现在的相比，必须重新读一遍。
+PARSER_VERSION = "tabular-v6"
 MAX_BYTES = 16 * 1024 * 1024
 MAX_EXPANDED_BYTES = 64 * 1024 * 1024
 MAX_CELLS = 200_000
@@ -243,7 +245,44 @@ GENERIC_RECORD_TYPES = {
 }
 
 
-def header_mapping(row, kind):
+def profile_mapping_columns(profile, kind):
+    """把版式的字段->列下标直接当作 mapping。缺必要字段则视为不可执行。"""
+    if not profile.covers(kind):
+        return None
+    return {field: list(columns) for field, columns in profile.fields.items()}
+
+
+def single_column_amounts(profile, raw, issues):
+    """单列金额版式：收付方向只能来自符号或已声明的方向取值，绝不推定。"""
+    value = raw("amount")
+    if value is None or profile.is_null(value):
+        return "0.00", "0.00"
+    try:
+        magnitude = Decimal(money_value(value))
+    except ValueError as exc:
+        issues.append("amount：" + str(exc))
+        return None, None
+    if profile.amount_model == "SIGNED_SINGLE":
+        if magnitude < 0:
+            return format(-magnitude, ".2f"), "0.00"
+        return "0.00", format(magnitude, ".2f")
+    token = raw("direction")
+    text = "" if token is None else str(token).strip()
+    if text in profile.direction_expense:
+        return format(abs(magnitude), ".2f"), "0.00"
+    if text in profile.direction_income:
+        return "0.00", format(abs(magnitude), ".2f")
+    issues.append("direction：方向取值不在版式声明范围内，须人工核对")
+    return None, None
+
+
+def header_mapping(row, kind, profile=None):
+    """别名表优先；别名未覆盖时由已确认的版式供给列下标。
+
+    版式给的是指针（字段在第几列），不是业务值，因此两条路径产出的 mapping 形状一致。
+    """
+    if profile is not None:
+        return profile_mapping_columns(profile, kind)
     labels = [re.sub(r"\s+", "", str(x or "")) for x in row]
     fields = BANK_FIELDS if kind == "bank_statement" else INVOICE_FIELDS if kind in {"purchase_invoices", "sales_invoices"} else GENERIC_FIELDS[kind]
     mapping = {field: [labels.index(name) for name in names if name in labels] for field, names in fields.items()}
@@ -632,7 +671,7 @@ def extract_generic_row(sheet, row, headers, mapping, kind, period, bank_account
             "period_check": "PASS" if row_period == period else "PERIOD_EXCEPTION"}
 
 
-def extract_row(sheet, row, headers, mapping, kind, period, bank_account):
+def extract_row(sheet, row, headers, mapping, kind, period, bank_account, profile=None, document_period=None):
     if kind in GENERIC_RECORD_TYPES:
         return extract_generic_row(sheet, row, headers, mapping, kind, period, bank_account, None)
     values, number, issues, fields = row["values"], row["row"], [], {}
@@ -721,16 +760,19 @@ def extract_row(sheet, row, headers, mapping, kind, period, bank_account):
                            for field in ("transaction_id", "counterparty", "counterparty_account", "summary", "note")})
         # A blank opposite-side amount is a structural zero in bank exports;
         # malformed non-blank values must remain unknown and never become zero.
-        expense_raw, income_raw = raw("expense"), raw("income")
         def bank_amount(field, value):
-            if value is None:
+            # 版式可以声明 "-" 之类的占位符等同于空白；未声明的非法值仍保持未知。
+            if value is None or (profile is not None and profile.is_null(value)):
                 return "0.00"
             try:
                 return money_value(value)
             except ValueError as exc:
                 issues.append(field + "：" + str(exc))
                 return None
-        expense, income = bank_amount("expense", expense_raw), bank_amount("income", income_raw)
+        if profile is not None and profile.amount_model != "TWO_COLUMN":
+            expense, income = single_column_amounts(profile, raw, issues)
+        else:
+            expense, income = bank_amount("expense", raw("expense")), bank_amount("income", raw("income"))
         normalized.update({"expense": expense, "income": income, "balance": amount("balance", optional=True), "bank_account_ref": bank_account})
         if not bank_account:
             issues.append("bank_account_ref：本方账户待人工核对")
@@ -743,11 +785,36 @@ def extract_row(sheet, row, headers, mapping, kind, period, bank_account):
             normalized["receipt_total"] = income
         else:
             issues.append("direction：收入支出方向不明确，须核对冲正或汇总记录")
+    # 税局导出的发票清单在表头写明税款所属期。进项发票的期间归属是勾选所属期，
+    # 不是开票日期：7 月开的差旅票在 8 月勾选抵扣是常规业务，不该报成期间异常。
+    # 但开票月与所属期不一致确实需要会计判断费用归属，所以如实提示，不静默通过。
+    attributed = day[:7] if day else None
+    if kind in {"purchase_invoices", "sales_invoices"} and document_period:
+        if attributed and attributed != document_period:
+            issues.append(f"period：开票日期 {day} 不在税款所属期 {document_period} 内，"
+                          "属跨期抵扣，请确认费用归属期间")
+        attributed = document_period
+        normalized["period"] = document_period
     return {"record_type": record_type, "source_anchor": {"row": number, "region": f"{sheet}!A{number}:{column_name(len(headers))}{number}"},
             "original_value": {"sheet": sheet, "row": number, "headers": headers, "values": values, "cell_types": row["types"], "formulas": row["formulas"]},
             "normalized_value": normalized, "field_sources": fields, "extraction_issues": list(dict.fromkeys(issues)),
             "extraction_confidence": 0.0 if issues else 1.0,
-            "period_check": "PASS" if day and day[:7] == period else "PERIOD_EXCEPTION"}
+            "period_check": "PASS" if attributed == period else "PERIOD_EXCEPTION"}
+
+
+def bank_statistics_row(values):
+    """对账单末尾的笔数/金额统计行：字段与交易行完全不同，登记为参考行，不作交易解析。
+
+    两行式页脚（标题行 + 数值行）由 bank_footer_header/bank_footer_values 成对处理，
+    这里必须避让，否则会拆散那一对、把数值行当成交易。
+    """
+    if bank_footer_header(values):
+        return False
+    labels = [str(v or '').strip() for v in values if str(v or '').strip()]
+    return bool(labels) and any(
+        label.endswith('笔数') or label in {'借方发生总额', '贷方发生总额', '交易笔数'}
+        for label in labels[:6]
+    )
 
 
 def bank_footer_header(values):
@@ -765,9 +832,31 @@ def bank_footer_values(values):
         return False
 
 
-def extract_workbook(content, options: ParseOptions, period):
+def scanned_pdf_placeholder(document_kind):
+    """图片型 PDF 的占位结果：没有记录，但明确说明原因，整份文件不算失败。"""
+    return {
+        "records": [],
+        "sheets": [{"sheet": "扫描件", "status": "SCANNED_IMAGE", "rows": 0,
+                    "reason": "图片型 PDF 没有可提取文字，需要图像识别后人工核对"}],
+        "errors": [],
+        "checks": {"overall": "PASS", "items": []},
+        "document_kind": document_kind,
+    }
+
+
+def extract_workbook(content, options: ParseOptions, period, resolver=None):
+    """resolver(labels, kind) -> ProfileMapping | None
+
+    别名表未覆盖的表头交给版式库；版式库也未命中时，工作表照旧标记 UNRECOGNIZED，
+    由上层决定是请求模型提案还是出一张待确认卡片。解析层不因此中断整份文件。
+    """
     from app.document_layouts import special_sheet, extract_boc_pdf
     if content.startswith(b'%PDF'):
+        from app.scanned_statements import is_image_only_pdf
+        if is_image_only_pdf(content):
+            # 图片型扫描件没有可提取文字，文字型解析走不通。
+            # 不在这里硬失败：由上层决定是交给视觉模型，还是出一张待人工核对的卡片。
+            return scanned_pdf_placeholder(options.document_kind)
         return extract_boc_pdf(content, options.document_kind, period)
     sheets = read_workbook(content)
     special = [special_sheet(s, options.document_kind, period, options.bank_account_ref) for s in sheets]
@@ -797,7 +886,29 @@ def extract_workbook(content, options: ParseOptions, period):
         if prefer_base and sheet["name"] == "信息汇总表":
             summaries.append({"sheet": sheet["name"], "status": "REFERENCE_ONLY", "reason": "已使用发票基础信息，明细汇总页不再次计数", "rows": len(nonempty)})
             continue
-        header = next(((r, header_mapping(r["values"], options.document_kind)) for r in nonempty[:20] if header_mapping(r["values"], options.document_kind)), None)
+        # 已确认的版式优先于别名表。别名表是通用猜测，版式是针对这张表头确认过的事实；
+        # 让猜测赢会产生"匹配成功但映射错列"的静默错误（例如把"交易时间"的时分秒当成交易日期）。
+        header = None
+        profile = None
+        if resolver is not None:
+            for candidate_row in nonempty[:20]:
+                resolved = resolver(candidate_row["values"], options.document_kind)
+                if resolved is None:
+                    continue
+                mapped = header_mapping(candidate_row["values"], options.document_kind, profile=resolved)
+                if mapped:
+                    header, profile = (candidate_row, mapped), resolved
+                    break
+        if header is None:
+            header = next(((r, header_mapping(r["values"], options.document_kind)) for r in nonempty[:20] if header_mapping(r["values"], options.document_kind)), None)
+        if header is None and options.document_kind == "opening_balance":
+            # 账套导出的余额表是两行表头，"借方金额"在同一行里出现三次，
+            # 逐列名匹配接不住。改按科目树解析，记录形状保持一致。
+            from app.opening_balances import OpeningBalanceError, as_extracted
+            try:
+                return as_extracted(sheet, period=period)
+            except OpeningBalanceError:
+                pass
         if header is None:
             summaries.append({"sheet": sheet["name"], "status": "UNRECOGNIZED", "reason": "未找到当前资料类型所需的明确列标题", "rows": len(nonempty)})
             continue
@@ -811,6 +922,9 @@ def extract_workbook(content, options: ParseOptions, period):
             first = str(next((v for v in candidate["values"] if v not in (None, "")), "")).strip()
             # This two-row footer uses completely different columns from transactions.
             # Keep its source coordinates and totals, never parse it as a bank entry.
+            if options.document_kind == 'bank_statement' and bank_statistics_row(candidate['values']):
+                references.append({'row': candidate['row'], 'reason': 'BANK_STATISTICS', 'values': candidate['values']})
+                continue
             if options.document_kind == 'bank_statement' and bank_footer_header(candidate['values']):
                 footer_row = candidate['row']
                 references.append({'row': footer_row, 'reason': 'BANK_TOTAL_HEADER', 'values': candidate['values']})
@@ -856,9 +970,12 @@ def extract_workbook(content, options: ParseOptions, period):
                         continue
                 records.append(extract_generic_row(sheet["name"], candidate, row["values"], mapping, options.document_kind, period, options.bank_account_ref, document_period))
             else:
-                records.append(extract_row(sheet["name"], candidate, row["values"], mapping, options.document_kind, period, options.bank_account_ref))
+                records.append(extract_row(sheet["name"], candidate, row["values"], mapping, options.document_kind, period, options.bank_account_ref, profile, document_period))
             parsed += 1
-        summaries.append({"sheet": sheet["name"], "status": "EXTRACTED", "rows": parsed, "header_row": row["row"], "document_period": document_period, "reference_rows": references})
+        summary = {"sheet": sheet["name"], "status": "EXTRACTED", "rows": parsed, "header_row": row["row"], "document_period": document_period, "reference_rows": references}
+        if profile is not None:
+            summary["mapping_origin"] = "PROFILE"
+        summaries.append(summary)
     extracted = {"records": records, "sheets": summaries,
                  "errors": [] if records else ["没有提取到可定位的记录，请核对资料类型、表头及文件内容"]}
     # Reconcile the full extraction, including out-of-period records. These are

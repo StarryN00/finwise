@@ -1,5 +1,6 @@
 """Historical originals are prepared automatically, never approved by a worker."""
 import base64
+import threading
 import time
 from concurrent.futures import ThreadPoolExecutor
 
@@ -347,3 +348,31 @@ def test_real_lifespan_automatically_processes_upload_without_clicking(app, scop
         while time.monotonic() < deadline and service.historical.get(typed)["status"] in {"QUEUED", "RUNNING"}:
             time.sleep(.05)
         assert service.historical.get(typed)["status"] == "READY_FOR_CONFIRMATION"
+
+
+def test_a_worker_that_outlives_stop_is_reported_not_swallowed(client, scope, caplog):
+    """超时没退出的后台线程仍在往同一个库里写。
+
+    静默返回会让"已经停了"这个假设一路带到后面 —— 之后任何看不懂的写入
+    都无从追溯来源。这里只要求留痕，不改变 stop 的超时行为。
+    """
+    import logging
+    runner = client.app.state.service.historical
+    # 这个线程故意不理会 stop_event，模拟一次卡在长任务里的 run_once。
+    release, started = threading.Event(), threading.Event()
+    def stuck():
+        started.set()
+        release.wait(30)
+    runner.thread = threading.Thread(target=stuck, name="historical-preparation", daemon=True)
+    runner.thread.start()
+    assert started.wait(5)
+    leaked = runner.thread
+    leaked.join = lambda timeout=None: threading.Thread.join(leaked, 0.05)
+    try:
+        with caplog.at_level(logging.ERROR):
+            runner.stop()
+        assert "historical_worker_did_not_stop" in caplog.text
+        assert runner.thread is leaked, "线程没退出时不能把引用清掉，那等于假装已经停了"
+    finally:
+        release.set()
+        threading.Thread.join(leaked, 5)

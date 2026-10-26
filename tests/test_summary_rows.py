@@ -54,12 +54,16 @@ def test_reparse_supersedes_false_facts_preserves_history_and_is_idempotent(clie
     content = xlsx_fixture([('数据', [BANK, ['2026-03-01', 100, 0, 100], FOOTER, ['1', 100, '0', 0]])])
     source = uploaded(client, scope, content)
     classify = tabular.bank_footer_header
+    statistics = tabular.bank_statistics_row
+    # 模拟旧解析器：当时两种页脚识别都还不存在，页脚会被当成两条交易。
     monkeypatch.setattr(tabular, 'bank_footer_header', lambda values: False)
+    monkeypatch.setattr(tabular, 'bank_statistics_row', lambda values: False)
     monkeypatch.setattr(service_module, 'PARSER_VERSION', 'tabular-v4')
     old = parse(client, scope, source, kind='bank_statement').json()['effect']
     assert len(old['facts']) == 3
     monkeypatch.setattr(tabular, 'bank_footer_header', classify)
-    monkeypatch.setattr(service_module, 'PARSER_VERSION', 'tabular-v5')
+    monkeypatch.setattr(tabular, 'bank_statistics_row', statistics)
+    monkeypatch.setattr(service_module, 'PARSER_VERSION', 'tabular-v6')
     response = parse(client, scope, old['artifact'], kind='bank_statement', key='upgrade-footer')
     assert response.status_code == 200, response.text
     new = response.json()['effect']

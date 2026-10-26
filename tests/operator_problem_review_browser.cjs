@@ -47,8 +47,11 @@ const root=path.resolve(__dirname,'..');
   });
   assert.equal(writes.length,0);
   assert.equal(await page.locator('form').count(),1);
-  const evidenceY=(await page.locator('.decision-evidence').boundingBox()).y,reviewY=(await page.locator('.problem-review-detail').boundingBox()).y,formY=(await page.locator('.decision-handling').boundingBox()).y;
-  assert(evidenceY<reviewY&&reviewY<formY);
+  // 原件明细默认折叠：先看问题和处理方式，要查才展开。
+  assert.equal(await page.locator('.decision-originals[open]').count(),0);
+  await page.locator('.decision-originals > summary').click();
+  const reviewY=(await page.locator('.problem-review-detail').boundingBox()).y,formY=(await page.locator('.decision-handling').boundingBox()).y,evidenceY=(await page.locator('.decision-evidence').boundingBox()).y;
+  assert(reviewY<formY&&formY<evidenceY);
   await page.locator('#materialNote').fill('已填业务说明，不得丢失');
   fail=true;await page.locator('[data-action="problem-review-retry"]').click();await page.getByRole('status').filter({hasText:'隔离测试请求失败'}).waitFor();
   assert.equal(await page.locator('#materialNote').inputValue(),'已填业务说明，不得丢失');assert.equal(await page.evaluate(()=>reads),0);

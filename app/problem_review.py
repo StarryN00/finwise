@@ -19,7 +19,7 @@ from app.ontology.store import digest
 TYPE = 'ProblemReview'
 STAGE = 'PROBLEM_REVIEW'
 VERSION = 'problem-review-v1'
-PROMPT = 'problem-review-prompt-v1'
+PROMPT = 'problem-review-prompt-v2'
 STATUS_ISSUE = '发票状态：发票状态须人工核对'
 BOUNDARY = '仅复核资料提醒，不代表人工核实、税务查验或账务可用。'
 log = logging.getLogger(__name__)
@@ -128,12 +128,18 @@ class ProblemReview:
             row = rows[identity]
             fields = []
             focuses=next((r['focus_fields'] for r in (task['descriptor'].get('presentation') or {}).get('records',[]) if r['id']==identity),[])
+            # 全量模式下把原值、提取值和定位一并交给模型；否则只放服务端已知的
+            # 字段名与有界枚举。看不到业务内容时，复核只能在"字段缺没缺"上打转。
+            full = self.store.database.settings.agent_send_full_records
+            from app.material_guidance import SAFE_FIELDS
             for c in row.get('comparison', []):
-                # Only server-known field names and bounded enums cross the gateway.
-                from app.material_guidance import SAFE_FIELDS
-                if c['field'] in SAFE_FIELDS and (not focuses or c['field'] in focuses):
-                    fields.append({'field':c['field'], 'check':c['state'] if c['state'] in {
-                        'DIRECT_MATCH','NORMALIZED_MATCH','DERIVED','MISSING','DIFFERENT','AMBIGUOUS','UNLOCATED'} else 'UNLOCATED'})
+                if not full and (c['field'] not in SAFE_FIELDS or (focuses and c['field'] not in focuses)):
+                    continue
+                entry = {'field':c['field'], 'check':c['state'] if c['state'] in {
+                    'DIRECT_MATCH','NORMALIZED_MATCH','DERIVED','MISSING','DIFFERENT','AMBIGUOUS','UNLOCATED'} else 'UNLOCATED'}
+                if full:
+                    entry.update(source_value=c.get('source_value'), value=c.get('value'), region=c.get('region'))
+                fields.append(entry)
             item = {'id':f'record-{i+1}', 'fields':fields,
                     'period_exception':row['state']=='PERIOD_EXCEPTION',
                     'source_valid':self.service.materials.source_valid(next(a for a in wb['artifacts'] if a['object_id']==task['artifact_id']))}
@@ -293,10 +299,15 @@ class ProblemReview:
             output=ReviewOutput.model_validate(response.output)
             result=self.verdict(output,packet,checks,refs,task)
             status=result['status']
-        except Exception:
+        except Exception as exc:
             output=None
             status='FAILED'
-            result={'status':status,'message':'本次复核未得到可验证的结果，原问题保留。可明确重试。'}
+            # 原因不能吞掉。只写"未得到可验证的结果"，界面上就只剩"分析失败"，
+            # 人无从判断是没配模型、超时、返回不合schema 还是复核本身没通过 ——
+            # 扫描件那边犯过同一个错，表现一模一样。
+            log.exception('problem_review_model_call_failed',extra={'job_id':job['object_id']})
+            result={'status':status,'message':'本次复核未得到可验证的结果，原问题保留。可明确重试。',
+                    'reason':f'{type(exc).__name__}: {exc}'[:500]}
         with self.store.database.transaction():
             current=self.store.get_object(job['object_id'],scope)
             if current['version']!=job['version'] or current['status']!='RUNNING':return True
@@ -307,7 +318,8 @@ class ProblemReview:
                 status='STALE';result={'status':status,'message':'复核期间依据已变化，结果未应用。'}
             self.store.revise_object(run['object_id'],run['version'],scope,
                 {**run['data'],'gateway':metadata,'suggestion':output.model_dump() if output else None,
-                 'result_status':status},status='FAILED' if status in {'FAILED','STALE'} else 'SUCCEEDED',created_by='system')
+                 'result_status':status,'failure_reason':result.get('reason','')},
+                status='FAILED' if status in {'FAILED','STALE'} else 'SUCCEEDED',created_by='system')
             self.finish(scope,current,status,result)
         return True
 
@@ -376,11 +388,9 @@ class ProblemReview:
                 overlay={**old,'triage':task['triage']}
                 task['problem_review']=overlay
                 projected=[overlay if j['object_id']==old['object_id'] else j for j in projected]
-        states=Counter(r['state'] for r in material['records'])
-        material['counts'].update(needs_review=states['NEEDS_REVIEW'],awaiting_verification=states['AWAITING_VERIFICATION'],
-            system_checked=states['AWAITING_VERIFICATION']+states['SOURCE_VERIFIED'],
-            issue_tasks=sum(t['kind']!='VERIFY' and not t['deferred'] for t in kept),
-            active_tasks=sum(not t['deferred'] for t in kept),deferred=sum(t['deferred'] for t in kept))
+        from app.materials import problem_buckets, review_counts
+        material['counts'].update(review_counts(material['records'],kept))
+        material['problem_buckets']=problem_buckets(kept)
         material['counts'].update(
             human_issue_tasks=sum(t['kind']!='VERIFY' and not t['deferred'] and t['triage']['route']=='HUMAN' for t in kept),
             system_issue_tasks=sum(t['kind']!='VERIFY' and not t['deferred'] and t['triage']['route']=='SYSTEM' for t in kept))
@@ -435,4 +445,8 @@ class ProblemReview:
 
     def stop(self):
         self.stop_event.set()
-        if self.thread:self.thread.join(timeout=5)
+        if self.thread:
+            self.thread.join(timeout=5)
+            # 见 historical.stop：超时未退出的后台线程仍在写同一个库，不能静默。
+            if self.thread.is_alive():log.error("problem_review_worker_did_not_stop",extra={"worker":self.thread.name})
+            else:self.thread=None

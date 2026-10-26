@@ -5,6 +5,7 @@ import pytest
 
 from app.invoice_checks import AMOUNT_ISSUE, BLUE_LABEL, CONFIRM_LABEL
 from app.problem_evidence import RULE_VERSION, STATUS_ISSUE, check_problem_evidence, full_red_checks
+from app.tabular import PARSER_VERSION
 
 
 BLUE = '26322000000633306346'
@@ -33,6 +34,9 @@ def inputs(scope, splits=('-100.00',)):
         facts.append(dict(object_id=f'f{i}', version=1, scope=deepcopy(scope), status='NEEDS_REVIEW', data=data))
     artifact = dict(object_id='a', version=2, scope=deepcopy(scope), status='ACTIVE',
                     data={'sha256': 'a'*64, 'observed_period': '2026-03', 'parse_status': 'PARSED_WITH_ISSUES',
+                          # 真实原件解析后一定带着解析器版本；缺了它会被当成旧版本，
+                          # 多出一条「按新版规则重新识别」的任务。
+                          'parse_version': PARSER_VERSION,
                           'parsed_fact_ids': [f['object_id'] for f in facts]})
     return [artifact], facts, {'a': True}
 

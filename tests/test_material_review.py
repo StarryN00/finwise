@@ -2,7 +2,7 @@ from copy import deepcopy
 import pytest
 from pydantic import ValidationError
 from app.ontology.contracts import Scope
-from app.materials import VerifyInput
+from app.materials import VerifyInput,VERIFY_TASK_RECORD_LIMIT
 from conftest import command
 from test_tabular_ingestion import uploaded,parse,xlsx_fixture,INVOICE_HEADERS
 
@@ -100,7 +100,7 @@ def test_failed_reextract_retires_old_facts_and_cannot_restore_via_reparse(clien
     import pytest
     a,f=setup(client,scope);s=client.app.state.service;typed=Scope(**scope)
     monkeypatch.setattr('app.ontology.service.PARSER_VERSION','failed-parser')
-    def fail(*args):raise ExtractionError('unsupported fixture')
+    def fail(*args, **kwargs):raise ExtractionError('unsupported fixture')
     monkeypatch.setattr('app.ontology.service.extract_workbook',fail)
     response=command(client,scope,'parse_artifact',a['object_id'],a['version'],'failed-reparse',{'document_kind':'purchase_invoices'})
     assert response.status_code==200
@@ -111,36 +111,56 @@ def test_failed_reextract_retires_old_facts_and_cannot_restore_via_reparse(clien
         with pytest.raises(PreconditionFailed):s.reparse_fact(typed,fact_id=old['object_id'],expected_version=old['version'],actor_id='fixture',parser_version='unsafe',normalized_value=old['data']['normalized_value'])
 
 
-def test_cross_page_verification_is_one_atomic_task_and_unparsed_file_queue(client,scope):
+def test_one_file_is_one_check_and_only_its_own_records_can_be_submitted(client,scope):
+    """一份原件一条核对事项。
+
+    原来按 5 条分页，6 张发票就分成两条待办 —— 分页本来是给对照表用的，
+    不该定义事项身份，操作人看到的是"同一件事被拆成几条"。
+    记录绑定仍然严格：不属于这条事项的记录提交上来必须 409。
+    """
     a=uploaded(client,scope,xlsx_fixture([('发票',[INVOICE_HEADERS]+[[f'I-{i}','2026-03-01','100','13','13%','甲'] for i in range(6)])]))
     m=view(client,scope)['material_review'];assert m['counts']['files']==1 and m['counts']['file_states']['pending']==1
-    assert m['tasks'][0]['kind']=='PARSE'
+    assert m['tasks'][0]['kind']=='PARSE' and m['tasks'][0]['problem_kind']=='UNREADABLE'
     result=parse(client,scope,a).json()['effect'];a=result['artifact'];f=result['facts']
-    tasks=view(client,scope)['material_review']['tasks'];assert len(tasks)==1 and len(tasks[0]['record_ids'])==6
+    checks=[t for t in view(client,scope)['material_review']['tasks'] if t['kind']=='VERIFY']
+    assert len(checks)==1 and len(checks[0]['record_ids'])==6
+    outsider=uploaded(client,scope,xlsx_fixture([('发票',[INVOICE_HEADERS,['I-OTHER','2026-03-01','100','13','13%','乙']])]),filename='另一份发票.xlsx')
+    other=parse(client,scope,outsider,key='parse-outsider').json()['effect']['facts'][0]
+    response=command(client,scope,'verify_source_values',a['object_id'],a['version'],'foreign-record',
+        {'task_id':checks[0]['id'],'records':[{'object_id':item['object_id'],'version':item['version']} for item in [f[0],other]]})
+    assert response.status_code==409 and view(client,scope)['material_review']['counts']['source_verified']==0
+    # 不分页的意义就在这里：这条事项的 6 条能一次提交完，不用分两次。
     records=[{'object_id':item['object_id'],'version':item['version']} for item in f]
-    response=command(client,scope,'verify_source_values',a['object_id'],a['version'],'cross-page',{'task_id':tasks[0]['id'],'records':records})
+    response=command(client,scope,'verify_source_values',a['object_id'],a['version'],'whole-file',
+        {'task_id':checks[0]['id'],'records':records})
     assert response.status_code==200,response.text
     assert response.json()['effect']['verified_count']==6
     assert view(client,scope)['material_review']['counts']['source_verified']==6
 
 
-def test_verification_task_limit_and_input_boundary(client,scope):
+def test_submit_limit_still_applies_although_one_file_is_one_task(client,scope):
+    """一份原件一条事项，所以 101 条记录也只有一条事项，不再切成 [100, 1]。
+
+    但提交上限仍然是 VERIFY_TASK_RECORD_LIMIT —— 事项比上限大时，
+    一次提交不完整个文件。
+    """
     a=uploaded(client,scope,xlsx_fixture([('发票',[INVOICE_HEADERS]+[[f'I-{i}','2026-03-01','100','13','13%','甲'] for i in range(101)])]))
-    result=parse(client,scope,a).json()['effect'];tasks=[t for t in view(client,scope)['material_review']['tasks'] if t['kind']=='VERIFY']
-    assert [len(t['record_ids']) for t in tasks]==[100,1]
+    result=parse(client,scope,a).json()['effect']
+    tasks=[t for t in view(client,scope)['material_review']['tasks'] if t['kind']=='VERIFY']
+    assert len(tasks)==1 and len(tasks[0]['record_ids'])==101
     refs=[{'object_id':item['object_id'],'version':item['version']} for item in result['facts']]
-    VerifyInput.model_validate({'task_id':tasks[0]['id'],'records':refs[:100]})
+    VerifyInput.model_validate({'task_id':tasks[0]['id'],'records':refs[:VERIFY_TASK_RECORD_LIMIT]})
     with pytest.raises(ValidationError):
         VerifyInput.model_validate({'task_id':tasks[0]['id'],'records':refs})
 
 
-def test_cross_page_verification_rolls_back_every_record_on_one_stale_version(client,scope):
+def test_one_stale_version_rolls_back_every_record_in_the_task(client,scope):
     a=uploaded(client,scope,xlsx_fixture([('发票',[INVOICE_HEADERS]+[[f'I-{i}','2026-03-01','100','13','13%','甲'] for i in range(6)])]))
     result=parse(client,scope,a).json()['effect'];a=result['artifact'];facts=result['facts']
     task=next(t for t in view(client,scope)['material_review']['tasks'] if t['kind']=='VERIFY')
     records=[{'object_id':item['object_id'],'version':item['version']} for item in facts]
     records[-1]['version']+=1
-    response=command(client,scope,'verify_source_values',a['object_id'],a['version'],'cross-page-stale',{'task_id':task['id'],'records':records})
+    response=command(client,scope,'verify_source_values',a['object_id'],a['version'],'stale-one-of-many',{'task_id':task['id'],'records':records})
     assert response.status_code==409
     assert view(client,scope)['material_review']['counts']['source_verified']==0
 

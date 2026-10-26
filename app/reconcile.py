@@ -240,6 +240,13 @@ def _invoice_checks(extracted, kind):
                     item["comparison"] = "FLOAT_REPRESENTATION_ONLY"
                     item["message"] += "仅原始浮点表示尾差；保留声明原值，未放宽分钱差异。"
                 results.append(item)
+            # 价税合计常常没有可比的整表合计 —— 原件里干脆没有这一列，
+            # 或者有这一列但没有唯一的整表声明。正确性仍可由输入保证：
+            # 净额与税额都已逐笔加总核对无误，且每一条的价税合计确实等于两者之和。
+            derived = _total_from_verified_inputs(rows, results)
+            if derived is not None:
+                results = [derived if item["code"] == "INVOICE_TOTAL_INVOICE_TOTAL" else item
+                           for item in results]
             items.extend(results)
             if all(item["status"] == "MATCH" for item in results):
                 covered.update(index for index, _ in rows)
@@ -248,6 +255,43 @@ def _invoice_checks(extracted, kind):
     overall = ("REVIEW" if any(i["status"] in {"MISMATCH", "SUSPECT"} for i in items) else
                "MATCH" if records and len(covered) == len(records) and not missing_sheet else "UNATTESTED")
     return {"version": VERSION, "items": items, "overall": overall}
+
+
+def _total_from_verified_inputs(rows, results):
+    """价税合计没有可比的整表合计时，由已核对的净额与税额给出结论，而不是"无法验证"。
+
+    只有三件事同时成立才算：净额合计已 MATCH、税额合计已 MATCH，
+    且每一条记录的价税合计确实等于自己的净额加税额。
+    任何一条对不上就退回原来的"无法验证"，不放宽。
+
+    两种情形都走这里：原件根本没有这一列（税局的进项清单只有金额与税额，
+    系统相加得出），以及原件有这一列但没有唯一的整表合计可比 —— 后者的
+    逐条相加是对原件那一列的真正交叉核对，比前者更强。
+    """
+    total = next((item for item in results if item["code"] == "INVOICE_TOTAL_INVOICE_TOTAL"), None)
+    if total is None or total["status"] != "NOT_AVAILABLE":
+        return None
+    inputs = [item for item in results
+              if item["code"] in {"INVOICE_TOTAL_NET_AMOUNT", "INVOICE_TOTAL_TAX"}]
+    if len(inputs) != 2 or any(item["status"] != "MATCH" for item in inputs):
+        return None
+    checked = derived = 0
+    for _, record in rows:
+        value = record.get("normalized_value") or {}
+        net, tax, gross = (_decimal(value.get(name))
+                           for name in ("net_amount", "tax", "invoice_total"))
+        if net is None or tax is None or gross is None or net + tax != gross:
+            return None
+        checked += 1
+        derived += bool(value.get("invoice_total_derivation"))
+    if not checked:
+        return None
+    message = (f"价税合计原件无此列，由净额加税额得出；两者的全表合计均已核对一致，"
+               f"且 {checked} 条记录逐条相加相符。" if derived == checked else
+               f"价税合计没有可比的整表合计；净额与税额的全表合计均已核对一致，"
+               f"且 {checked} 条记录的价税合计逐条等于自身的净额加税额。")
+    return _item("INVOICE_TOTAL_INVOICE_TOTAL", "MATCH", message,
+                 [item["regions"][0] for item in inputs if item.get("regions")][:1])
 
 
 def reconcile(extracted, kind):

@@ -6,7 +6,7 @@ from contextlib import asynccontextmanager
 
 from fastapi import FastAPI, Request
 from fastapi.exceptions import RequestValidationError
-from fastapi.responses import FileResponse, JSONResponse, Response
+from fastapi.responses import JSONResponse, RedirectResponse, Response
 from fastapi.staticfiles import StaticFiles
 from fastapi.middleware.cors import CORSMiddleware
 
@@ -65,19 +65,30 @@ def create_app(settings: Optional[Settings] = None, *, initialize: bool = True) 
         return JSONResponse(status_code=422, content={"error": {"code": "VALIDATION_ERROR", "message": "请求未通过契约校验", "details": details}})
 
     static_dir = settings.root / "static"
-    app.mount("/static", StaticFiles(directory=static_dir), name="static")
 
-    @app.get("/styles.css", include_in_schema=False)
-    def root_stylesheet() -> FileResponse:
-        return FileResponse(static_dir / "styles.css", media_type="text/css")
+    class RevalidatingStatic(StaticFiles):
+        """静态资源一律要求重新验证。
 
-    @app.get("/app.js", include_in_schema=False)
-    def root_script() -> FileResponse:
-        return FileResponse(static_dir / "app.js", media_type="application/javascript")
+        资源上挂的 ?v= 版本号是手写的，改了文件忘了改版本号是必然会发生的事 ——
+        实测就发生过两次：一次是新增脚本后旧 HTML 不去请求它，一次是改了
+        operator.js 而版本号没动。两次的表现都一样：功能确实加了，界面上却
+        毫无反应，控制台也没有报错。这种沉默的陈旧比一次条件请求昂贵得多。
 
+        这里只是要求重新验证，不是禁止缓存：文件没变时仍然走 304。
+        """
+
+        async def get_response(self, path, scope):
+            response = await super().get_response(path, scope)
+            response.headers["Cache-Control"] = "no-cache, must-revalidate"
+            return response
+
+    app.mount("/static", RevalidatingStatic(directory=static_dir), name="static")
+
+    # 根路径只负责把人送到期间工作台。早先的 index.html / app.js / styles.css
+    # 是第一代单企业页面，已删除，不要再在这里挂第二个入口。
     @app.get("/", include_in_schema=False)
-    def index() -> FileResponse:
-        return FileResponse(static_dir / "index.html")
+    def index() -> RedirectResponse:
+        return RedirectResponse(url="/static/operator.html", status_code=307)
 
     @app.get("/favicon.ico", include_in_schema=False)
     def favicon() -> Response:

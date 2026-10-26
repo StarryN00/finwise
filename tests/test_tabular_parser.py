@@ -46,7 +46,7 @@ def test_absent_rate_column_is_extractable_but_existing_tax_gate_still_blocks(cl
     fact = parse(client, scope, uploaded(client, scope, content)).json()["effect"]["facts"][0]
     assert fact["status"] == "PARSED"
     data = fact["data"]
-    assert data["parser_version"] == PARSER_VERSION == "tabular-v5"
+    assert data["parser_version"] == PARSER_VERSION == "tabular-v6"
     assert data["normalized_value"]["tax"] == "12.34"
     assert data["normalized_value"]["tax_rate"] is None
     assert data["field_sources"]["tax_rate"]["region"] == ""
@@ -300,7 +300,7 @@ def test_xls_formatting_width_does_not_change_anchor_or_fact_identity(monkeypatc
     }
     with monkeypatch.context() as legacy:
         legacy.setattr(ontology_service, "PARSER_VERSION", "tabular-v3")
-        legacy.setattr(ontology_service, "extract_workbook", lambda *args: {"records": [legacy_record], "sheets": [], "errors": []})
+        legacy.setattr(ontology_service, "extract_workbook", lambda *args, **kwargs: {"records": [legacy_record], "sheets": [], "errors": []})
         before = parse(client, scope, source, kind="payroll", key="legacy-payroll").json()["effect"]
     assert before["artifact"]["data"]["parse_version"] == "tabular-v3"
     after = parse(client, scope, before["artifact"], kind="payroll", key="upgrade-payroll").json()["effect"]
@@ -308,7 +308,7 @@ def test_xls_formatting_width_does_not_change_anchor_or_fact_identity(monkeypatc
     old, new = before["facts"][0], after["facts"][0]
     assert new["object_id"] == old["object_id"]
     assert new["version"] > old["version"]
-    assert new["data"]["parser_version"] == "tabular-v5"
+    assert new["data"]["parser_version"] == "tabular-v6"
     assert new["data"]["source_anchor"] == old["data"]["source_anchor"]
     assert len(new["data"]["original_value"]["headers"]) == 35
     assert len(new["data"]["original_value"]["values"]) == 35

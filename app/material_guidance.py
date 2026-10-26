@@ -19,7 +19,7 @@ from app.ontology.readiness import FIELDS
 
 STAGE = 'MATERIAL_GUIDANCE'
 SCHEMA = 'material-guidance-v2'
-PROMPT = 'material-guidance-prompt-v2'
+PROMPT = 'material-guidance-prompt-v3'
 JOB_TYPE = 'MaterialGuidanceJob'
 BOUNDARY = '仅保存处理意见和候选建议，尚未执行；不修改财务数据，不解除任何门禁。'
 
@@ -117,6 +117,19 @@ def task_fingerprint(service, scope, task):
                    model_binding(service)])
 
 
+class CandidateRejected(ValueError):
+    """模型答案没过本地校验。
+
+    只带一个服务端自己定义的固定代码 —— 校验项的名字不是模型内容，可以安全留痕；
+    模型原文仍然一个字都不外泄。没有这个代码时只能看到笼统的 GUIDANCE_REJECTED，
+    分不清是选项不在闭集里、引用编造还是步骤不合法。
+    """
+
+    def __init__(self, code):
+        super().__init__(code)
+        self.code = code
+
+
 def validate_candidates(value, task, packet):
     """Adapt v1 without fabricating model citations or executable prefills."""
     available = {o['id'] for o in packet['options']}
@@ -127,23 +140,23 @@ def validate_candidates(value, task, packet):
     seen = set()
     for output in outputs:
         if output.option_id is not None and output.option_id not in available:
-            raise ValueError('undeclared option')
+            raise CandidateRejected('OPTION_NOT_IN_CLOSED_SET')
         if output.option_id in seen:
-            raise ValueError('duplicate option')
+            raise CandidateRejected('DUPLICATE_OPTION')
         seen.add(output.option_id)
         if output.prefill or not math.isfinite(output.confidence) or any(len(s) > 500 or not s.strip() for s in output.uncertainties):
-            raise ValueError('invalid candidate')
+            raise CandidateRejected('INVALID_CANDIDATE_FIELDS')
         item = output.model_dump()
         if not legacy:
             if not set(output.evidence_refs) <= refs or len(set(output.evidence_refs)) != len(output.evidence_refs):
-                raise ValueError('invalid evidence refs')
+                raise CandidateRejected('INVALID_EVIDENCE_REFS')
             if any(not s.instruction.strip() or s.option_id not in available for s in output.steps):
-                raise ValueError('invalid step option')
+                raise CandidateRejected('INVALID_STEP_OPTION')
             if output.option_id is None:
                 if output.steps:
-                    raise ValueError('null option cannot carry actionable steps')
+                    raise CandidateRejected('STEPS_WITHOUT_OPTION')
             elif output.steps and output.steps[0].option_id != output.option_id:
-                raise ValueError('first step must match candidate option')
+                raise CandidateRejected('STEP_OPTION_MISMATCH')
         else:
             item.update(evidence_refs=[], steps=[], legacy=True)
         if output.confidence < .7:
@@ -202,6 +215,57 @@ OPTION_MEANINGS = {
 }
 
 
+_OUTPUT_SCHEMA = {'candidates': [{'option_id': 'available option id or null', 'reason': 'string',
+                  'uncertainties': ['string'], 'prefill': {}, 'confidence': '0..1',
+                  'evidence_refs': ['task or record-N from input'],
+                  'steps': [{'option_id': 'available option id', 'instruction': 'bounded instruction; separate human confirmation required'}]}],
+                  'candidate_count': '1..3'}
+
+
+def full_packet(task, records):
+    """整条记录原样交给模型：摘要、往来单位、金额、账号、日期都在里面。
+
+    脱敏包里模型只看得到字段名和枚举，所以不管什么问题，它能给的都是
+    "缺字段，去要材料" —— 实测 20 条建议几乎全是同一个选项。
+    要它就具体业务给建议，就得让它看见业务。
+
+    这会把客户财务数据发给配置的模型服务商，因此由 agent_send_full_records
+    显式打开，默认走 safe_packet。
+    """
+    descriptor = task['descriptor']
+    source = []
+    for index, record in enumerate(records[:100]):
+        source.append({
+            'reference': f'record-{index+1}',
+            'record_type': record.get('record_type'),
+            'state': record.get('state'),
+            'values': record.get('values') or {},
+            'issues': record.get('issues') or [],
+            'comparison': [{'field': c.get('field'), 'state': c.get('state'),
+                            'source_value': c.get('source_value'), 'value': c.get('value'),
+                            'region': c.get('region')}
+                           for c in (record.get('comparison') or [])][:80],
+            'has_period_exception': record.get('state') == 'PERIOD_EXCEPTION'})
+    options = [{'id': o['id'], 'label': o['label'], 'completion': o.get('completion', ''),
+                'not_effects': o.get('not_effects', [])}
+               for o in descriptor['options'] if o['available']]
+    if (task.get('triage') or {}).get('route') == 'SYSTEM':
+        options = []
+    why = descriptor.get('why') or {}
+    return {'task_kind': task['kind'],
+            'task': {'title': descriptor.get('title') or task.get('title', ''),
+                     'filename': task.get('filename', ''),
+                     'reason': task.get('reason', ''),
+                     'facts': why.get('facts', ''), 'rule': why.get('rule', ''),
+                     'period': descriptor.get('scope', {}).get('accounting_period_id', '')},
+            'records': source, 'options': options,
+            'evidence_refs': ['task', *[r['reference'] for r in source]],
+            'records_truncated': len(records) > 100,
+            'context_limit': '这是本企业该期间的真实记录。你仍然只能从 options 里选，不能编造原值、'
+                             '不能替用户确认，也不能声称问题已解决或账务已放行。',
+            'output_schema': _OUTPUT_SCHEMA}
+
+
 def safe_packet(task, records):
     descriptor = task['descriptor']
     source = []
@@ -226,11 +290,7 @@ def safe_packet(task, records):
             'records': source, 'options': options, 'evidence_refs': ['task', *[r['reference'] for r in source]],
             'records_truncated': len(records) > 100,
             'context_limit': '只有脱敏字段检查和可能的用户意见枚举，不是已核验业务事实；不能据此确定日期、账户或科目，金额抵消也不等于财务通过。',
-            'output_schema': {'candidates': [{'option_id': 'available option id or null', 'reason': 'string',
-                              'uncertainties': ['string'], 'prefill': {}, 'confidence': '0..1',
-                              'evidence_refs': ['task or record-N from input'],
-                              'steps': [{'option_id': 'available option id', 'instruction': 'bounded instruction; separate human confirmation required'}]}],
-                              'candidate_count': '1..3'}}
+            'output_schema': _OUTPUT_SCHEMA}
 
 
 def current_task(service, request):
@@ -252,10 +312,19 @@ def guidance(service, request: GuidanceRequest, actor_id: str, role: str):
     if task.get('deferred'):
         raise PreconditionFailed('本项已暂缓；先查看已记录原因，不重复调用模型')
     records = {r['object_id']: r for r in overview['material_review']['records']}
-    packet = safe_packet(task, [records[r] for r in task['record_ids']])
-    redacted = redact_user_text(request.user_text)
-    packet['user_opinion'] = {'status': redacted['status'], 'intents': redacted['intents'],
-                              'verified': False, 'executed': False}
+    bound = [records[r] for r in task['record_ids']]
+    full = service.store.database.settings.agent_send_full_records
+    packet = full_packet(task, bound) if full else safe_packet(task, bound)
+    if full:
+        # 全量模式下意见也原样送过去：把整条记录都给了模型，再把用户自己写的
+        # 一句话枚举成意图，既没有意义，也会让模型看不懂人到底想干什么。
+        redacted = {'status': 'EMPTY' if not request.user_text.strip() else 'FULL', 'intents': []}
+        packet['user_opinion'] = {'status': 'FULL', 'text': request.user_text,
+                                  'verified': False, 'executed': False}
+    else:
+        redacted = redact_user_text(request.user_text)
+        packet['user_opinion'] = {'status': redacted['status'], 'intents': redacted['intents'],
+                                  'verified': False, 'executed': False}
     config = model_binding(service)
     fingerprint = task_fingerprint(service, request.scope, task)
     run_id = 'modelrun_guidance_' + digest([request.scope.model_dump(), actor_id, request.request_id])
@@ -345,7 +414,12 @@ def guidance(service, request: GuidanceRequest, actor_id: str, role: str):
     except Exception as exc:
         # Provider error bodies may contain sensitive strings: keep a bounded code,
         # never echo transport responses or a malformed model completion.
-        metadata = dict(metadata, error_code=exc.code if isinstance(exc, GatewayFailure) else 'GUIDANCE_REJECTED')
+        # 异常类名是我们自己代码里的固定名字（含 pydantic 的 ValidationError），
+        # 不含模型输出的任何内容；没有它就只剩笼统的 GUIDANCE_REJECTED，分不清
+        # 是落在闭集校验上还是 schema 上。
+        code = (exc.code if isinstance(exc, (GatewayFailure, CandidateRejected))
+                else f'GUIDANCE_REJECTED:{type(exc).__name__}')
+        metadata = dict(metadata, error_code=code)
         response = {'status': 'FAILED', 'descriptor_hash': request.descriptor_hash, 'suggestion': None,
                     'metadata': metadata, 'message': '本次未得到有效建议，资料未改动。可继续按规则办理，或记录原因交由人工判断。'}
         run_status = 'FAILED'
@@ -373,6 +447,20 @@ def guidance(service, request: GuidanceRequest, actor_id: str, role: str):
                         after={'status': run_status, 'gateway': metadata, 'descriptor_hash': request.descriptor_hash})
     return response
 
+
+
+def _problem_headline(task, handling):
+    """这件事是什么、一句话说清。取不到具体说法时才退回办理状态的通用措辞。"""
+    descriptor = task.get('descriptor') or {}
+    triage = task.get('triage') or {}
+    presentation = descriptor.get('presentation') or {}
+    title = (triage.get('title') or presentation.get('type_label')
+             or descriptor.get('title') or task.get('title') or handling['label'])
+    explanation = (triage.get('explanation') or presentation.get('explanation')
+                   or (descriptor.get('why') or {}).get('rule') or handling['explanation'])
+    if task.get('filename'):
+        title = f"{task['filename']} · {title}"
+    return title, explanation
 
 class MaterialGuidance:
     """Durable candidate-only jobs, polled by the owner's existing worker.
@@ -784,7 +872,10 @@ class MaterialGuidance:
         completed_records = sum(row.get('state') in {'SOURCE_VERIFIED', 'BUSINESS_CONFIRMED', 'ISSUE_CONFIRMED', 'OTHER_PERIOD'}
                                 for row in projected.get('records', []))
         status_counts = Counter(task['handling']['state'] for task in projected['tasks'])
-        user_status_counts = Counter(task['handling']['state'] for task in projected['tasks']
+        # 算术已核对的抽查任务保留着，是为了"有问题顺着明细往前查"的入口，
+        # 不是为了把人叫过来逐条比对。它不进待办计数，也不会被推成下一步。
+        pushable = [task for task in projected['tasks'] if not task.get('optional')]
+        user_status_counts = Counter(task['handling']['state'] for task in pushable
                                      if task['handling']['owner'] == 'USER')
         system_checks = [task for task in projected['tasks']
                          if task['handling']['owner'] == 'SYSTEM'
@@ -808,6 +899,7 @@ class MaterialGuidance:
             'failed': status_counts['FAILED'],
             'stale': status_counts['STALE'],
             'completed': status_counts['COMPLETED'],
+            'optional_checks': sum(bool(task.get('optional')) for task in projected['tasks']),
         }
         projected['flow'] = {
             'version': 'material-handling-v1',
@@ -817,7 +909,7 @@ class MaterialGuidance:
             'task_counts': task_counts,
             'record_counts': {'completed': completed_records,
                               'total': len(projected.get('records', []))},
-            'next_step': self._material_next_step(projected['tasks'], task_counts),
+            'next_step': self._material_next_step(pushable, task_counts),
         }
         # Compatibility counters keep old callers stable while ensuring a saved
         # opinion is no longer presented as unfinished user work.
@@ -863,6 +955,12 @@ class MaterialGuidance:
         if not period_open:
             return {**base, 'state': 'WAITING_EXTERNAL', 'owner': 'EXTERNAL', 'label': '等待期间开放',
                     'explanation': '当前期间不可写入，已有问题和意见继续保留。', 'action_label': ''}
+        # 系统已经自己验过的，不要人再确认一遍。事项仍然能点开抽查，
+        # 但标题不能还写着"待选择处理方式"—— 那会让人以为这里欠着一个动作。
+        if task.get('optional'):
+            return {**base, 'label': '已识别并自洽，无需处理',
+                    'explanation': '金额已与原件自报的全表合计核对一致；需要时可展开原件详情抽查。',
+                    'action_label': '抽查原件'}
         triage = task.get('triage') or {}
         if triage.get('route') == 'SYSTEM':
             review = task.get('problem_review') or {}
@@ -946,11 +1044,17 @@ class MaterialGuidance:
                          and item['handling']['owner'] == 'USER'), None)
             if task:
                 handling = task['handling']
-                action_labels = {'READY_TO_CONFIRM': '进入确认', 'NEEDS_DECISION': '选择处理方式',
+                action_labels = {'READY_TO_CONFIRM': '进入确认', 'NEEDS_DECISION': '去处理这个问题',
                                  'NEEDS_INPUT': '补充确认信息', 'STALE': '重新核对',
                                  'FAILED': '查看原因并重试'}
-                return {'state': state, 'owner': 'USER', 'title': handling['label'],
-                        'explanation': handling['explanation'], 'task_id': task['id'],
+                # 首页写的是这个问题本身，不是"待选择处理方式"。后者既没说是什么问题，
+                # 又让人以为还要先选一次"处理方式"，进去才发现就是这张卡。
+                title, explanation = _problem_headline(task, handling)
+                return {'state': state, 'owner': 'USER', 'title': title,
+                        'explanation': explanation, 'task_id': task['id'],
+                        'remaining': sum(1 for item in tasks
+                                         if item['handling']['owner'] == 'USER'
+                                         and item['handling']['state'] in set(priorities)),
                         'action': {'kind': 'MATERIAL_TASK', 'label': action_labels[state],
                                    'task_id': task['id']}}
         if counts['system_total']:

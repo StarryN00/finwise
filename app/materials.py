@@ -12,6 +12,79 @@ from app.action_types import ACTION_TYPE_BY_ID, FALLBACK_IDS
 VERIFY_TASK_RECORD_LIMIT = 100
 
 
+def arithmetic_ok(artifact):
+    """这份原件是否通过了可验证的算术核对。
+
+    MATCH 表示逐笔加总与原件自报的合计一致；PASS 表示银行流水的余额链完整。
+    UNATTESTED 只说明没有可比的合计，不等于核对过。
+    """
+    checks = artifact['data'].get('parse_checks') or {}
+    return checks.get('overall') in {'MATCH', 'PASS'}
+
+
+# 操作人面对的只有四种形态。出现第五种，说明是分类漏了，不是又要加一种形态。
+# 分类只看"这件事要人做什么决定"，不看它内部是哪个环节报出来的。
+PROBLEM_KINDS = {
+    'UNREADABLE': ('读不出来', '系统没能从原件取到数，需要你补件或手工填。'),
+    'UNVERIFIED': ('读出来但系统验不了', '数已经取到，但系统没有可比的依据或对不上，需要你核对。'),
+    'JUDGEMENT': ('需要业务判断', '原件里本来就没有这个信息，只能由你判断。'),
+    'VERIFIED': ('已识别并自洽', '系统已核对一致，无需处理；需要时可抽查。'),
+}
+# 系统自己该做完的事（比如解析规则升级后重读一遍），不是给人的问题。
+SYSTEM_KIND = 'SYSTEM_WORK'
+
+
+def problem_kind(kind, action, rows):
+    """这件事要人做什么决定。"""
+    if kind == 'VERIFY':
+        return 'VERIFIED' if rows and all(r.get('arithmetic_verified') for r in rows) else 'UNVERIFIED'
+    if kind == 'PARSE':
+        return 'UNREADABLE' if action == 'parse' or not rows else 'UNVERIFIED'
+    return 'JUDGEMENT'
+
+
+def problem_buckets(tasks):
+    """右侧那四栏：每类问题各有几件、分别是哪些。
+
+    顺序就是处理顺序：读不出来的先补件，其次核对，再次业务判断，
+    已自洽的放最后 —— 那一栏只是让人看见系统做了什么，不需要操作。
+    """
+    order = ('UNREADABLE', 'UNVERIFIED', 'JUDGEMENT', 'VERIFIED')
+    live = [t for t in tasks if not t['deferred']]
+    buckets = []
+    for key in order:
+        items = [t for t in live if t.get('problem_kind') == key]
+        label, explanation = PROBLEM_KINDS[key]
+        buckets.append({'kind': key, 'label': label, 'explanation': explanation,
+                        'count': len(items),
+                        'record_count': sum(len(t['record_ids']) for t in items),
+                        'task_ids': [t['id'] for t in items],
+                        'needs_user': key != 'VERIFIED'})
+    return buckets
+
+
+def review_counts(records, tasks):
+    """记录状态与任务数的口径只此一处。
+
+    problem_review 的复核覆盖层原来自己又算了一遍，两边定义一旦分叉，
+    界面上的数字就对不上：算术已核对的记录在那边没有减掉，
+    「待核对」一直停在原数不动。
+    """
+    states = Counter(r['state'] for r in records)
+    verified = sum(1 for r in records if r.get('arithmetic_verified'))
+    return {'needs_review': states['NEEDS_REVIEW'],
+            # awaiting_verification 仍是记录状态的真实计数，加总恒等式依赖它。
+            # 界面上该提醒人去做的只是没通过算术核对的那部分。
+            'awaiting_verification': states['AWAITING_VERIFICATION'],
+            'awaiting_verification_active': states['AWAITING_VERIFICATION'] - verified,
+            'arithmetic_verified': verified,
+            'system_checked': states['AWAITING_VERIFICATION'] + states['SOURCE_VERIFIED'],
+            'issue_tasks': sum(t['kind'] != 'VERIFY' and not t['deferred'] for t in tasks),
+            'optional_tasks': sum(bool(t.get('optional')) and not t['deferred'] for t in tasks),
+            'active_tasks': sum(not t['deferred'] and not t.get('optional') for t in tasks),
+            'deferred': sum(t['deferred'] for t in tasks)}
+
+
 def compare_fields(data):
     """Align values using their recorded source, never a label/value guess."""
     original=data.get('original_value') or {}
@@ -213,13 +286,14 @@ class MaterialReview:
             records.append({**row,'state':state,'issues':issues,'eligible':eligible,
                 'period_assignment':period_assignment,
                 'automatic_invoice_check':auto_check,
+                'arithmetic_verified':arithmetic_ok(a) and not issues,
                 'invoice_amount_confirmation':invoice_confirmation,
                 'bill_supported':bill, 'bill_confirmation':confirmation,
                 'original_value':f['data'].get('original_value',{}),
                 'comparison':compare_fields(f['data']),
                 'verification':verified.get(f['object_id'])})
         tasks=[]
-        def task(kind,artifact,title,rows,reason,action):
+        def task(kind,artifact,title,rows,reason,action,optional=False,problem=None):
             if reason.startswith('bank_account_ref：'):title='确认流水所属银行'
             binding={'artifact_id':artifact['object_id'],'version':artifact['version'],'sha256':artifact['data'].get('sha256'),
                      'records':[(r['object_id'],r['version']) for r in rows],'kind':kind,'reason':reason}
@@ -227,22 +301,43 @@ class MaterialReview:
             response=next((r for r in responses if r['data'].get('task_id')==key and r['status']=='DEFERRED'),None)
             tasks.append({'id':key,'kind':kind,'artifact_id':artifact['object_id'],'artifact_version':artifact['version'],
                 'filename':artifact['data']['filename'],'title':title,'reason':reason,'record_ids':[r['object_id'] for r in rows],
-                'action':action,'deferred':bool(response),'response':response})
+                'action':action,'deferred':bool(response),'response':response,
+                # 可选任务仍然能点开、能手动核实，只是不占"还有多少要办"。
+                'optional':optional,
+                'problem_kind':problem or problem_kind(kind,action,rows)})
         for a in files.values():
             status=a['data'].get('parse_status','RECEIVED')
             if status=='RECONCILIATION_FAILED':
                 task('PARSE',a,'核对解析对账差异',[],
                      '；'.join(a['data'].get('parse_errors',[])) or '原件明细与对账依据不一致，请核对结构方案','parse')
                 continue
+            from app.tabular import PARSER_VERSION
             if status in {'RECEIVED','FAILED'}:
-                from app.tabular import PARSER_VERSION
                 retryable=status=='RECEIVED' or a['data'].get('parse_version')!=PARSER_VERSION
                 task('PARSE',a,'识别资料' if status=='RECEIVED' else '处理识别失败',[],
                      '；'.join(a['data'].get('parse_errors',[])) or '原件已保存，尚未提取', 'parse' if retryable else 'supplement')
+            # 解析规则升级后，早先存下的核对结论是按旧规则算的，不能和现在的比。
+            # 没有这个入口的话只能让客户重新上传一遍原件 —— 原件根本没变，没有道理。
+            # 绑了工资字段对应或结构方案的原件不能直接重解析，那些要走各自的方案入口。
+            elif (status in {'PARSED','PARSED_WITH_ISSUES'}
+                  and a['data'].get('parse_version')!=PARSER_VERSION
+                  and not a['data'].get('payroll_mapping_id') and not a['data'].get('plan_ref')):
+                task('PARSE',a,'按新版规则重新识别',[],
+                     f"本份原件是按 {a['data'].get('parse_version') or '早期版本'} 识别的，当前规则为 {PARSER_VERSION}；"
+                     '重新识别后核对结论才与现在一致。原件不变。','parse',problem=SYSTEM_KIND)
             eligible=[r for r in records if r['source_artifact_id']==a['object_id'] and r['state']=='AWAITING_VERIFICATION' and not r.get('automatic_invoice_check')]
-            for start in range(0,len(eligible),VERIFY_TASK_RECORD_LIMIT):
-                task('VERIFY',a,'核对原件与提取值',eligible[start:start+VERIFY_TASK_RECORD_LIMIT],
-                     '请逐条比较原始数据与提取值；仅选择当前事项中已经核对的记录。','verify')
+            # 算术已经核过的不再当作待办。全表净额与税额逐笔加总等于原件自报合计、
+            # 银行余额逐行衔接 —— 这是真的核对过。让人对着 27 行点"确认一致"是仪式，
+            # 而且仪式做多了会让人不看就点，比不做更坏。
+            # 但入口保留：要顺着明细往前排查时，仍然能逐条比对、也仍然能手动核实。
+            # 算术覆盖不到的是摘要与对方名称，它们在定科目时由人看到，
+            # 最终还有科目余额表与银行勾稽兜底。
+            if eligible:
+                checked=all(r.get('arithmetic_verified') for r in eligible)
+                task('VERIFY',a,'抽查原件与提取值' if checked else '核对原件与提取值',eligible,
+                     f'{len(eligible)} 条金额已通过全表合计核对，无需逐条确认；需要时可展开原件详情抽查。' if checked
+                     else f'系统没有可比的合计来自证这 {len(eligible)} 条，需要你核对原件。','verify',
+                     optional=checked)
             problem_records=[r for r in records if r['source_artifact_id']==a['object_id'] and r['state'] in {'PERIOD_EXCEPTION','NEEDS_REVIEW'}]
             reasons=dict.fromkeys(reason for r in problem_records for reason in r['issues'])
             for reason in reasons:
@@ -282,17 +377,16 @@ class MaterialReview:
         counts=Counter(r['state'] for r in records)
         parse_counts=Counter('failed' if a['data'].get('parse_status') in {'FAILED','RECONCILIATION_FAILED'} else 'pending' if a['data'].get('parse_status','RECEIVED')=='RECEIVED' else 'extracted' for a in files.values())
         return {'version':'material-review-v2','records':records,'tasks':tasks,
+            'problem_buckets':problem_buckets(tasks),
             'categories':[{**c,'source_verified_count':sum(r['state']=='SOURCE_VERIFIED' for r in records if r['category_id']==c['id'])} for c in categories],
             'counts':{'files':len(files),'unassigned_files':sum(aid not in files for c in readiness['categories'] if c['id']=='unassigned' for aid in c['artifact_ids']),'file_states':dict(parse_counts),'records':len(records),'source_verified':counts['SOURCE_VERIFIED'],
-                'awaiting_verification':counts['AWAITING_VERIFICATION'],'needs_review':counts['NEEDS_REVIEW'],
+                **review_counts(records,tasks),
                 'other_period':counts['OTHER_PERIOD'],
                 'business_confirmed':counts['BUSINESS_CONFIRMED'], 'bill_confirmed':sum(c['status']=='CONFIRMED' for c in bill_confirmations.values()),
                 'issue_confirmed':counts['ISSUE_CONFIRMED'], 'invoice_amount_confirmed':len(invoice_confirmations),
-                'system_checked':counts['AWAITING_VERIFICATION']+counts['SOURCE_VERIFIED'],
-                'issue_tasks':sum(t['kind']!='VERIFY' and not t['deferred'] for t in tasks),
                 'period_exceptions':counts['PERIOD_EXCEPTION'],'accounting_usable':sum(r['state']=='CHECKED' and r['object_id'] not in unusable and valid_source.get(r['source_artifact_id'],False) for r in readiness['records']),
                 'supplement_issues':len({(b['group_id'],e) for c in categories for b in c.get('business_issues',[]) for e in b.get('missing_evidence',[])}),
-                'deferred':sum(t['deferred'] for t in tasks),'active_tasks':sum(not t['deferred'] for t in tasks)}}
+                }}
 
     def execute(self, scope, action, target, version, actor, payload):
         self.service._ensure_period_open(scope)

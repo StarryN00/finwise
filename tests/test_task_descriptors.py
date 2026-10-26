@@ -78,6 +78,13 @@ def test_projection_is_additive_and_does_not_change_existing_tasks_counts_or_gat
         overview['material_review']['counts'].pop('selected_processing_tasks', None)
         overview['material_review'].pop('flow', None)
         overview['material_review'].pop('next_step', None)
+        # 资料分析这一步现在要等系统把每件事消化完（没有事项还归 SYSTEM）才算完成，
+        # 所以它和 flow / next_step 一样，是这层投影的派生结果，不是"既有字段"。
+        # 门禁没有依赖它：prerequisite 与业务校验都不看阶段状态。
+        overview['progress'].pop('stages')
+        overview['progress'].pop('completed_count')
+        overview['progress'].pop('overall_percent')
+        overview['progress'].pop('current_stage')
         overview['problem_review'].pop('triage_tasks')
     assert current == previous
 

@@ -11,7 +11,7 @@ from app.ontology.contracts import ArtifactInput, CommandRequest, DemoRequest, F
 from app.ontology.baseline import BaselineConfirmation, VALIDATION_VERSION
 from app.ontology.errors import DomainError
 from app.ontology.service import OntologyService
-from app.auth import authorize_api, authorized_scopes, identity
+from app.auth import authorize_api, authorized_scopes, grant_scope, identity
 from app.action_types import catalog_contract
 
 router = APIRouter(prefix="/api/v1", dependencies=[Depends(authorize_api)])
@@ -193,6 +193,72 @@ def baseline_candidate(body: dict[str, Any], request: Request) -> dict[str, Any]
     )
 
 
+@router.post("/scopes/provision")
+def provision_scope(body: Scope, request: Request, context: tuple[str, str] = Depends(actor)) -> dict[str, Any]:
+    """开设一个新的处理范围，并授权给开设人。
+
+    只能开设"还不存在"的范围。已经存在的范围必须由管理员显式授权——
+    否则任何登录账号都能给自己开通别人企业的数据，这是越权而不是新建。
+    """
+    actor_id, role = context
+    if role == "viewer":
+        raise HTTPException(status_code=403, detail="只读账号不能开设处理范围")
+    ontology = service(request)
+    if ontology.store.list_objects("Scope", body):
+        raise HTTPException(status_code=409, detail="该处理范围已存在，请联系管理员授权后使用")
+    created = ontology.create_scope(body, actor_id=actor_id)
+    # 免认证的本地模式没有真实用户记录，授权表也用不上：那种模式下
+    # 可见范围本来就取自已建的 Scope 对象。
+    if not identity(request).get("test_mode"):
+        grant_scope(request.app.state.database, actor_id, body)
+    ontology.store.add_audit("SCOPE_PROVISIONED", actor_id, body, object_type="Scope",
+                             object_id=created["object_id"], object_version=created["version"],
+                             after={"scope": body.model_dump()}, reason="开设新处理范围并授权给开设人")
+    return {"scope": created}
+
+
+@router.post("/vouchers/adopt")
+def adopt_bank_voucher(body: dict[str, Any], request: Request,
+                       context: tuple[str, str] = Depends(actor)) -> dict[str, Any]:
+    """采纳一笔流水的凭证提案。采纳是人的动作，提案本身不写入任何账务。"""
+    actor_id, _ = context
+    scope = Scope.model_validate(body["scope"])
+    return {"voucher": service(request).adopt_bank_voucher(
+        scope, fact_id=body["fact_id"], expected_version=int(body["fact_version"]),
+        lines=body.get("lines") or [], summary=body.get("summary") or "",
+        basis=body.get("basis") or [], actor_id=actor_id)}
+
+
+@router.post("/vouchers/reconciliation")
+def bank_voucher_reconciliation(body: ScopeQuery, request: Request) -> dict[str, Any]:
+    """期初 + 已采纳凭证的银行发生，与对账单自报的期末余额核对。"""
+    return service(request).bank_voucher_reconciliation(body.scope)
+
+
+@router.post("/vouchers/propose")
+def voucher_proposals(body: ScopeQuery, request: Request) -> dict[str, Any]:
+    """按已上传的历史凭证，为本期银行流水提出凭证。只读，不写入任何账务。"""
+    return service(request).voucher_proposals(body.scope)
+
+
+@router.post("/profile-cards")
+def profile_cards(body: ScopeQuery, request: Request) -> dict[str, Any]:
+    """列出本处理范围内认不出结构的原件，每份一张待确认卡片。"""
+    return service(request).profile_cards(body.scope)
+
+
+@router.post("/profile-cards/confirm")
+def confirm_profile_card(body: dict[str, Any], request: Request,
+                         context: tuple[str, str] = Depends(actor)) -> dict[str, Any]:
+    """确认一张识别卡并登记版式。确认是人的动作，卡片本身不授权任何写入。"""
+    actor_id, _ = context
+    scope = Scope.model_validate(body["scope"])
+    card = body.get("card")
+    if not isinstance(card, dict):
+        raise HTTPException(status_code=400, detail="缺少卡片内容")
+    return service(request).confirm_profile_card(scope, card=card, actor_id=actor_id)
+
+
 @router.post("/query")
 def query(body: QueryRequest, request: Request) -> dict[str, Any]:
     return service(request).query(body.scope, body.question)
@@ -238,6 +304,46 @@ def replay_run(run_id: str, body: ScopeQuery, request: Request, context: tuple[s
 @router.post("/objects/detail")
 def object_detail(body: dict[str, Any], request: Request) -> dict[str, Any]:
     return service(request).object_detail(body["object_id"], Scope.model_validate(body["scope"]), body.get("version"))
+
+
+@router.get("/artifacts/{artifact_id}/pages/{page}")
+def artifact_page_image(
+    artifact_id: str,
+    page: int,
+    request: Request,
+    tenant_id: str = Query(...),
+    organization_id: str = Query(...),
+    legal_entity_id: str = Query(...),
+    ledger_id: str = Query(...),
+    accounting_period_id: str = Query(...),
+    baseline_id: str = Query(...),
+) -> Response:
+    """取扫描件某一页的图像，供操作人对照识别结果核对原件。
+
+    只从已存档的原件里取图，不生成、不改写任何像素：核对的依据必须是原件本身。
+    """
+    from app.scanned_statements import is_image_only_pdf, page_images
+
+    scope = Scope(tenant_id=tenant_id, organization_id=organization_id,
+                  legal_entity_id=legal_entity_id, ledger_id=ledger_id,
+                  accounting_period_id=accounting_period_id, baseline_id=baseline_id)
+    artifact = service(request).store.get_object(artifact_id, scope)
+    if artifact["object_type"] != "SourceArtifact":
+        raise DomainError("该对象不是原始资料", "NOT_AN_ARTIFACT", 404)
+    root = request.app.state.settings.storage_path.resolve()
+    path = (root / artifact["data"]["storage_path"]).resolve()
+    if not path.is_relative_to(root) or not path.is_file():
+        raise DomainError("原始文件存储缺失", "ARTIFACT_STORAGE_MISSING", 404)
+    content = path.read_bytes()
+    if hashlib.sha256(content).hexdigest() != artifact["data"].get("sha256"):
+        raise DomainError("原件内容与登记摘要不一致", "ARTIFACT_CONTENT_MISMATCH", 409)
+    if not is_image_only_pdf(content):
+        raise DomainError("该原件不是图片型扫描件", "NOT_A_SCANNED_IMAGE", 404)
+    images = page_images(content)
+    if not 1 <= page <= len(images):
+        raise DomainError(f"该扫描件共 {len(images)} 页", "PAGE_OUT_OF_RANGE", 404)
+    return Response(content=images[page - 1], media_type="image/png",
+                    headers={"Cache-Control": "private, max-age=300"})
 
 
 @router.get("/artifacts/{artifact_id}/content")

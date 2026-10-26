@@ -85,10 +85,39 @@ function decisionFocusFields(t,r){
   const names=(r.issues||[]).map(i=>i.split('：')[0]);
   return (r.comparison||[]).filter(c=>names.includes(c.field)||names.includes(decisionFieldName(c.field))||names.includes(c.source_label)).map(c=>c.field);
 }
+function decisionDerivationText(derivation){
+  if(!derivation)return '';
+  const text=String(derivation);
+  // 后端记的是字段名表达式，直接展示对操作人没有意义。
+  return text.split('+').map(part=>decisionFieldName(part.trim())||part.trim()).join(' + ');
+}
 function decisionFieldName(k){
   const material=typeof materialFieldLabels!=='undefined'?materialFieldLabels[k]:'';
   const common=typeof fieldLabels!=='undefined'?fieldLabels[k]:'';
   return material||common||'来源字段';
+}
+function decisionOptionButton(x,cls,pressed){
+  return '<button type="button" class="'+cls+'" data-guide="option" data-option="'+esc(x.id)+'" '+(!decisionOptionAvailable(x)||!materialCanWrite()?'disabled':'')+' aria-pressed="'+(pressed===true)+'">'+esc(x.label)+'</button>';
+}
+function decisionOptionsNav(options,pressed,firstPrimary){
+  // 记录判断、暂停办理、转交复核这些兜底动作每张卡片都一样，和本张卡的具体问题无关。
+  // 七个按钮平铺出来，真正针对这个问题的那两个就被淹没了，所以收进「其他处理方式」。
+  // 整张卡片只有兜底动作时不能全收起来 —— 那样一个可点的处理方式都不剩。
+  const specific=options.filter(x=>x.fallback!==true),generic=options.filter(x=>x.fallback===true);
+  const main=specific.length?specific:generic,extra=specific.length?generic:[];
+  const first=firstPrimary?main.findIndex(decisionOptionAvailable):-1;
+  const open=extra.some(x=>pressed(x)===true)?' open':'';
+  return '<nav class="decision-options" aria-label="选择处理方式">'+main.map((x,i)=>decisionOptionButton(x,i===first?'primary':'secondary',pressed(x))).join('')+'</nav>'+
+    (extra.length?'<details class="decision-more-options"'+open+'><summary>其他处理方式 · '+extra.length+' 项</summary><nav class="decision-options" aria-label="其他处理方式">'+extra.map(x=>decisionOptionButton(x,'secondary',pressed(x))).join('')+'</nav></details>':'');
+}
+function decisionOriginals(t){
+  // 代账公司是靠最后的科目余额表核对结果，有问题才顺着明细往前查。
+  // 所以原件明细默认折叠放在处理动作后面：先看清问题和怎么处理，要查再展开。
+  const n=state.overview.material_review.records.filter(r=>t.record_ids.includes(r.object_id)).length;
+  // 系统的二次复核状态是系统自己的事，不是操作人要做的决定 —— 和原件明细
+  // 一起收在这里，排查时才看。
+  const review=typeof renderProblemReviewDetail==='function'?renderProblemReviewDetail(t):'';
+  return '<details class="decision-originals"><summary>原件详情 · '+n+' 条记录</summary>'+decisionEvidence(t)+review+'</details>';
 }
 function decisionEvidence(t){
   const {all,rows}=decisionEvidenceRows(t),g=decisionGuide(t);
@@ -96,7 +125,15 @@ function decisionEvidence(t){
   const keyValues=r=>{
     const fields=decisionFocusFields(t,r),comparisons=(r.comparison||[]).filter(x=>fields.includes(x.field));
     if(!comparisons.length)return '请展开记录查看原始字段；当前未提供具体字段定位。';
-    return comparisons.map(x=>decisionFieldName(x.field)+'：'+(x.source_value==null?(x.state==='MISSING'?'原件此字段为空':'原值尚未定位'):String(x.source_value))+(x.region?' · '+x.region:'')).join('；');
+    // 说清楚"为什么没有原值"。价税合计这类字段税局清单里根本没有这一列，
+    // 是由金额加税额算出来的；笼统说"原值尚未定位"会让人去找一个不存在的列。
+    const shown=x=>{
+      if(x.source_value!=null)return String(x.source_value);
+      if(x.state==='MISSING')return '原件此字段为空';
+      if(x.state==='DERIVED')return '原件无此列，由'+(decisionDerivationText(x.derivation)||'其他字段')+'算出';
+      return '原值尚未定位';
+    };
+    return comparisons.map(x=>decisionFieldName(x.field)+'：'+shown(x)+(x.region?' · '+x.region:'')).join('；');
   };
   const identity=r=>{const v=r.values||{};return v.invoice_no||v.acceptance_no||v.person_name||v.transaction_id||'记录 '+(all.indexOf(r)+1);};
   const context=r=>{const v=r.values||{};return [v.invoice_date||v.transaction_date||v.issue_date||v.period,v.invoice_total??v.amount??v.actual_salary].filter(v=>v!==undefined&&v!==null).join(' · ');};
@@ -107,13 +144,9 @@ function decisionEvidence(t){
     detail=focused.length?materialComparison({...display,comparison:focused}) : materialComparison(display);
     if(focused.length)detail+='<details class="decision-full"><summary>查看本条完整字段对照</summary>'+materialComparison(display)+'</details>';
   }
-  return '<section class="decision-evidence" aria-label="问题数据清单"><h4>问题数据 · '+all.length+' 条</h4><p class="small muted">'+esc(t.filename||t.descriptor.why.facts)+' · 点击记录查看对照，仅切换查看，不会确认数据。</p>'+
-    (rows.length?'<div class="table-wrap"><table class="decision-key-table"><thead><tr><th>记录／日期与金额</th><th>问题字段的原值</th><th>来源位置</th><th>查看</th></tr></thead><tbody>'+rows.map(r=>'<tr '+(selected===r?'class="decision-selected"':'')+'><td>'+esc(identity(r))+'<small>'+esc(context(r))+'</small></td><td>'+esc(keyValues(r))+'</td><td>'+esc(r.source_anchor?.region||'来源定位未提供')+'</td><td><button type="button" class="text" data-guide="record" data-record="'+esc(r.object_id)+'" aria-pressed="'+(selected===r)+'">'+(selected===r?'当前记录':'查看对照')+'</button></td></tr>').join('')+'</tbody></table></div>'+materialPager(all.length):'<p>尚未形成可定位的提取记录。请查看原件与识别失败原因。</p>'+objectButton(t.artifact_id,'查看原件'))+
+  return '<section class="decision-evidence" aria-label="原件与提取值"><h4>原件与提取值 · '+all.length+' 条</h4><p class="small muted">'+esc(t.filename||t.descriptor.why.facts)+' · 点击记录查看对照，仅切换查看，不会确认数据。</p>'+
+    (rows.length?'<div class="table-wrap"><table class="decision-key-table"><thead><tr><th>记录／日期与金额</th><th>关键字段原值</th><th>来源位置</th><th>查看</th></tr></thead><tbody>'+rows.map(r=>'<tr '+(selected===r?'class="decision-selected"':'')+'><td>'+esc(identity(r))+'<small>'+esc(context(r))+'</small></td><td>'+esc(keyValues(r))+'</td><td>'+esc(r.source_anchor?.region||'来源定位未提供')+'</td><td><button type="button" class="text" data-guide="record" data-record="'+esc(r.object_id)+'" aria-pressed="'+(selected===r)+'">'+(selected===r?'当前记录':'查看对照')+'</button></td></tr>').join('')+'</tbody></table></div>'+materialPager(all.length):'<p>尚未形成可定位的提取记录。请查看原件与识别失败原因。</p>'+objectButton(t.artifact_id,'查看原件'))+
     (selected?'<details class="decision-source" open><summary>当前记录原件与提取值</summary>'+detail+'</details>':'')+'</section>';
-}
-function decisionEvidenceDisclosure(t,content){
-  const open=decisionGuide(t).evidenceOpen===true,count=decisionEvidenceRows(t).all.length;
-  return '<details class="decision-evidence-disclosure" '+(open?'open':'')+'><summary aria-controls="decision-evidence-body" aria-expanded="'+open+'">查看核对依据与原件对照（'+count+' 条）</summary><div id="decision-evidence-body">'+content+'</div></details>';
 }
 function decisionField(t,o,f){
   if(f.component==='textarea'){const id=decisionAdapters[o.id].fields[f.name],draft=materialDraft(t),fallback=o.fallback===true,value=fallback?(draft.taskAction?.[f.name]||''):draft[id==='materialReason'?'reason':'note'];return `<label for="${id}">${esc(f.label)}<textarea id="${id}" ${fallback?'data-task-action-field="'+esc(f.name)+'"':''} ${!decisionOptionAvailable(o)||!materialCanWrite()?'disabled':''} ${f.required?'required':''} maxlength="${f.max_length}" placeholder="${esc(f.placeholder)}">${esc(value||'')}</textarea></label>`;}
@@ -213,7 +246,7 @@ function decisionChoose(t,id,preserveSuggestion=false){
   const o=t.descriptor.options.find(o=>o.id===id);if(!decisionOptionAvailable(o))return;
   const g=decisionGuide(t);
   if(!preserveSuggestion){delete g.suggestionChoice;const entry=typeof materialDetailEntry==='function'?materialDetailEntry():null;if(entry)delete entry.suggestionPlan;}
-  g.option=id;g.chosen=true;g.step=0;g.reviewed='';g.evidenceOpen=false;materialDraft(t).defer=id==='defer_material_issue';materialDraft(t).resume=true;decisionRemember(t);decisionShowStep();
+  g.option=id;g.chosen=true;g.step=0;g.reviewed='';materialDraft(t).defer=id==='defer_material_issue';materialDraft(t).resume=true;decisionRemember(t);decisionShowStep();
 }
 function decisionNext(t,form){
   if(!decisionReady(t))return;
@@ -324,13 +357,13 @@ function decisionSuggestionRecorded(t,g,d,triage,recorded){
   const choice=g.suggestionChoice||{},channel=choice.channel||'auto',response=typeof materialGuidanceResponse==='function'?materialGuidanceResponse(t,channel):null,candidates=typeof materialGuidanceCandidates==='function'?materialGuidanceCandidates(t,response):[],candidate=candidates[choice.index],option=candidate?.option_id?t.descriptor.options.find(o=>o.id===candidate.option_id):null;
   const label=typeof materialGuidanceLabel==='function'&&candidate?materialGuidanceLabel(candidate,option,choice.index):option?.label||'已提交的处理意见';
   const opinionText=recorded?.text||recorded?.data?.text||recorded?.data?.reason||'';
-  return '<section class="panel mat-task decision-chat" data-task-id="'+esc(t.id)+'"><div class="focus-head"><h3 id="materialTaskTitle" tabindex="-1">'+esc(triage?.title||decisionPresentation(t)?.type_label||d.title)+'</h3><p class="decision-explanation">'+esc(triage?.explanation||decisionPresentation(t)?.explanation||d.why.rule)+'</p><small>'+esc(t.filename||d.why.facts)+'</small></div><div class="pad">'+decisionEvidence(t)+(typeof renderProblemReviewDetail==='function'?renderProblemReviewDetail(t):'')+'<section class="decision-handling decision-recorded" aria-label="系统处理状态"><h4 tabindex="-1" data-current-question>意见已记录，系统正在整理</h4><p><strong>你的意见：</strong>'+esc(label)+'</p>'+(opinionText?'<p>'+esc(opinionText)+'</p>':'')+'<p>目前没有需要你继续确认的内容。系统形成可执行方案后，会重新显示明确的确认动作。</p><p class="small muted">原问题和后续审核条件继续保留；这不是人工核实或账务完成。</p><p class="notice" role="status">'+esc(choice.message||'你的操作已完成，等待系统整理。')+'</p><div class="actions"><button type="button" class="secondary" data-action="material-return-list">返回问题列表</button></div></section></div></section>';
+  return '<section class="panel mat-task decision-chat" data-task-id="'+esc(t.id)+'"><div class="focus-head"><h3 id="materialTaskTitle" tabindex="-1">'+esc(triage?.title||decisionPresentation(t)?.type_label||d.title)+'</h3><p class="decision-explanation">'+esc(triage?.explanation||decisionPresentation(t)?.explanation||d.why.rule)+'</p><small>'+esc(t.filename||d.why.facts)+'</small></div><div class="pad">'+'<section class="decision-handling decision-recorded" aria-label="系统处理状态"><h4 tabindex="-1" data-current-question>意见已记录，系统正在整理</h4><p><strong>你的意见：</strong>'+esc(label)+'</p>'+(opinionText?'<p>'+esc(opinionText)+'</p>':'')+'<p>目前没有需要你继续确认的内容。系统形成可执行方案后，会重新显示明确的确认动作。</p><p class="small muted">原问题和后续审核条件继续保留；这不是人工核实或账务完成。</p><p class="notice" role="status">'+esc(choice.message||'你的操作已完成，等待系统整理。')+'</p><div class="actions"><button type="button" class="secondary" data-action="material-return-list">返回问题列表</button></div></section>'+decisionOriginals(t)+'</div></section>';
 }
 function decisionWaitingTask(t,d,triage,h){
   const title=triage?.title||decisionPresentation(t)?.type_label||d.title;
   const waiting=h.owner==='SYSTEM'?'系统负责下一步':h.owner==='EXTERNAL'?'等待外部资料或条件':'本项无需继续处理';
   const revoke=t.task_action?.valid?'<button type="button" class="text" data-guide="task-action-revoke">撤销本次处置</button>':'';
-  return '<section class="panel mat-task decision-chat" data-task-id="'+esc(t.id)+'"><div class="focus-head"><h3 id="materialTaskTitle" tabindex="-1">'+esc(title)+'</h3><p class="decision-explanation">'+esc(triage?.explanation||decisionPresentation(t)?.explanation||d.why.rule)+'</p><small>'+esc(t.filename||d.why.facts)+'</small></div><div class="pad">'+decisionEvidence(t)+(typeof renderProblemReviewDetail==='function'?renderProblemReviewDetail(t):'')+'<section class="decision-handling decision-waiting" aria-label="当前处理状态"><p class="small muted">'+esc(waiting)+'</p><h4 tabindex="-1" data-current-question>'+esc(h.label)+'</h4><p>'+esc(h.explanation)+'</p><div class="goal"><b>你现在要做什么</b>'+esc(h.owner==='USER'?'按提示继续办理。':'你当前无需操作。状态变化后，系统会给出明确的确认动作。')+'</div><details><summary>查看处理记录与撤销入口</summary><p class="small muted">处置对象 '+esc(t.task_action?.object_id||'')+' · 版本 '+esc(t.task_action?.version||'')+'</p>'+revoke+'</details><div class="actions"><button type="button" class="secondary" data-action="material-return-list">返回问题列表</button></div></section></div></section>';
+  return '<section class="panel mat-task decision-chat" data-task-id="'+esc(t.id)+'"><div class="focus-head"><h3 id="materialTaskTitle" tabindex="-1">'+esc(title)+'</h3><p class="decision-explanation">'+esc(triage?.explanation||decisionPresentation(t)?.explanation||d.why.rule)+'</p><small>'+esc(t.filename||d.why.facts)+'</small></div><div class="pad">'+'<section class="decision-handling decision-waiting" aria-label="当前处理状态"><p class="small muted">'+esc(waiting)+'</p><h4 tabindex="-1" data-current-question>'+esc(h.label)+'</h4><p>'+esc(h.explanation)+'</p><div class="goal"><b>你现在要做什么</b>'+esc(h.owner==='USER'?'按提示继续办理。':'你当前无需操作。状态变化后，系统会给出明确的确认动作。')+'</div><details><summary>查看处理记录与撤销入口</summary><p class="small muted">处置对象 '+esc(t.task_action?.object_id||'')+' · 版本 '+esc(t.task_action?.version||'')+'</p>'+revoke+'</details><div class="actions"><button type="button" class="secondary" data-action="material-return-list">返回问题列表</button></div></section>'+decisionOriginals(t)+'</div></section>';
 }
 function decisionOpenTaskActionRevoke(t){
   const decision=t.task_action;if(!decision?.valid)return;
@@ -340,14 +373,14 @@ function renderDecisionTask(t){
   const d=t.descriptor;
   if(!decisionValid(d)||!decisionBound(t))return '<section class="panel pad"><h3 id="materialTaskTitle" tabindex="-1">任务契约暂不支持或依据已变化</h3><p>请刷新或升级服务后重新核对。本项未执行。</p><button type="button" class="text" data-action="material-return-list">返回问题列表</button></section>';
   const triage=decisionTriage(t);
-  if(d.version==='decision-v1')return '<section class="panel mat-task decision-chat" data-task-id="'+esc(t.id)+'" data-decision-version="decision-v1"><div class="focus-head"><h3 id="materialTaskTitle" tabindex="-1">'+esc(triage?.title||d.title)+'</h3><p class="decision-explanation">'+esc(triage?.explanation||d.why.rule)+'</p></div><div class="pad">'+decisionEvidence(t)+'<section class="decision-handling"><h4>历史办理契约（只读）</h4><p>该事项使用旧版 decision-v1，仅保留查看；刷新服务端任务后才能执行当前动作。</p><details><summary>查看旧版动作与影响</summary>'+d.options.map(o=>'<p><strong>'+esc(o.label)+'</strong>：'+o.effects.map(decisionEffectText).map(esc).join('；')+'</p>').join('')+'</details><button type="button" class="secondary" data-action="material-return-list">返回问题列表</button></section></div></section>';
+  if(d.version==='decision-v1')return '<section class="panel mat-task decision-chat" data-task-id="'+esc(t.id)+'" data-decision-version="decision-v1"><div class="focus-head"><h3 id="materialTaskTitle" tabindex="-1">'+esc(triage?.title||d.title)+'</h3><p class="decision-explanation">'+esc(triage?.explanation||d.why.rule)+'</p></div><div class="pad">'+'<section class="decision-handling"><h4>历史办理契约（只读）</h4><p>该事项使用旧版 decision-v1，仅保留查看；刷新服务端任务后才能执行当前动作。</p><details><summary>查看旧版动作与影响</summary>'+d.options.map(o=>'<p><strong>'+esc(o.label)+'</strong>：'+o.effects.map(decisionEffectText).map(esc).join('；')+'</p>').join('')+'</details><button type="button" class="secondary" data-action="material-return-list">返回问题列表</button></section>'+decisionOriginals(t)+'</div></section>';
   const handling=decisionHandling(t);
   if(handling&&handling.owner!=='USER')return decisionWaitingTask(t,d,triage,handling);
-  if(decisionSystemTask(t))return '<section class="panel mat-task decision-chat" data-task-id="'+esc(t.id)+'"><div class="focus-head"><h3 id="materialTaskTitle" tabindex="-1">'+esc(triage?.title||'分流契约待检查')+'</h3><p class="decision-explanation">'+esc(triage?.explanation||'当前分流契约无法识别，请刷新后核对；本项未执行。')+'</p><small>'+esc(t.filename||d.why.facts)+'</small></div><div class="pad"><p class="small muted">下方初筛提示为原始规则记录，不是当前人工待办结论。</p>'+decisionEvidence(t)+(typeof renderProblemSourceAudit==='function'?renderProblemSourceAudit(triage?.source_audit):'')+('<section aria-label="系统已核对的数据"><h4>系统已核对的数据</h4>'+(typeof renderProblemReviewChecks==='function'?renderProblemReviewChecks(triage?.checks||[],true):'')+'</section>')+'<section class="decision-handling"><h4>下一步</h4><p>'+esc(triage?.next_action||'返回问题列表，交由系统检查负责人核对后刷新。')+'</p><p class="small muted">系统待检查不代表通过；不要求你在此确认、暂缓或补充上传。其他人工待办仍可继续处理。</p>'+(typeof renderProblemReviewDetail==='function'&&t.problem_review?renderProblemReviewDetail(t,true):'')+(t.deferred?'<p class="record-note">原暂缓记录：'+esc(t.response?.data?.reason||'原因已记录')+'</p>':'')+'<button type="button" class="secondary" data-action="material-return-list">返回问题列表</button></section></div></section>';
+  if(decisionSystemTask(t))return '<section class="panel mat-task decision-chat" data-task-id="'+esc(t.id)+'"><div class="focus-head"><h3 id="materialTaskTitle" tabindex="-1">'+esc(triage?.title||'分流契约待检查')+'</h3><p class="decision-explanation">'+esc(triage?.explanation||'当前分流契约无法识别，请刷新后核对；本项未执行。')+'</p><small>'+esc(t.filename||d.why.facts)+'</small></div><div class="pad"><p class="small muted">下方初筛提示为原始规则记录，不是当前人工待办结论。</p>'+(typeof renderProblemSourceAudit==='function'?renderProblemSourceAudit(triage?.source_audit):'')+('<section aria-label="系统已核对的数据"><h4>系统已核对的数据</h4>'+(typeof renderProblemReviewChecks==='function'?renderProblemReviewChecks(triage?.checks||[],true):'')+'</section>')+'<section class="decision-handling"><h4>下一步</h4><p>'+esc(triage?.next_action||'返回问题列表，交由系统检查负责人核对后刷新。')+'</p><p class="small muted">系统待检查不代表通过；不要求你在此确认、暂缓或补充上传。其他人工待办仍可继续处理。</p>'+(typeof renderProblemReviewDetail==='function'&&t.problem_review?renderProblemReviewDetail(t,true):'')+(t.deferred?'<p class="record-note">原暂缓记录：'+esc(t.response?.data?.reason||'原因已记录')+'</p>':'')+'<button type="button" class="secondary" data-action="material-return-list">返回问题列表</button></section>'+decisionOriginals(t)+'</div></section>';
   const g=decisionGuide(t),o=decisionOption(t),a=decisionAdapters[o.id],steps=decisionSteps(t,o),draft=materialDraft(t);
   const recorded=decisionRecordedOpinion(t);
   if(decisionRequiresChoice(t)&&(g.suggestionChoice?.submitted===true||recorded)&&g.chosen!==true)return decisionSuggestionRecorded(t,g,d,triage,recorded);
-  if(decisionRequiresChoice(t)&&g.chosen!==true)return '<section class="panel mat-task decision-chat" data-task-id="'+esc(t.id)+'"><div class="focus-head"><h3 id="materialTaskTitle" tabindex="-1">'+esc(triage?.title||decisionPresentation(t)?.type_label||d.title)+'</h3><p class="decision-explanation">'+esc(triage?.explanation||decisionPresentation(t)?.explanation||d.why.rule)+'</p></div><div class="pad">'+decisionEvidence(t)+(typeof renderProblemReviewDetail==='function'?renderProblemReviewDetail(t):'')+decisionAgentPanel(t)+'<section class="decision-handling"><h4 tabindex="-1" data-current-question>请选择处理方式</h4><p>未默认选择任何方案。选择只进入逐步核对，不会自动提交。</p><nav class="decision-options" aria-label="选择处理方式">'+d.options.map((x,i)=>'<button type="button" class="'+(i===d.options.findIndex(decisionOptionAvailable)?'primary':'secondary')+'" data-guide="option" data-option="'+esc(x.id)+'" aria-pressed="false" '+(!decisionOptionAvailable(x)||!materialCanWrite()?'disabled':'')+'>'+esc(x.label)+'</button>').join('')+'</nav><div class="mat-actionbar"><button type="button" class="text" data-action="material-skip">先看下一项</button></div></section></div></section>';
+  if(decisionRequiresChoice(t)&&g.chosen!==true)return '<section class="panel mat-task decision-chat" data-task-id="'+esc(t.id)+'"><div class="focus-head"><h3 id="materialTaskTitle" tabindex="-1">'+esc(triage?.title||decisionPresentation(t)?.type_label||d.title)+'</h3><p class="decision-explanation">'+esc(triage?.explanation||decisionPresentation(t)?.explanation||d.why.rule)+'</p></div><div class="pad">'+decisionAgentPanel(t)+'<section class="decision-handling"><h4 tabindex="-1" data-current-question>请选择处理方式</h4><p>未默认选择任何方案。选择只进入逐步核对，不会自动提交。</p>'+decisionOptionsNav(d.options,()=>false,true)+'<div class="mat-actionbar"><button type="button" class="text" data-action="material-skip">先看下一项</button></div></section>'+decisionOriginals(t)+'</div></section>';
   g.step=Math.max(0,Math.min(g.step,steps.length));
   if(!steps.length)g.reviewed='';
   if(g.reviewed&&g.reviewed!==decisionAnswerHash(t,o)){g.reviewed='';g.step=Math.min(g.step,steps.length-1);}
@@ -358,26 +391,18 @@ function renderDecisionTask(t){
   const answers=steps.slice(0,g.step).map((s,i)=>'<article class="decision-answer"><div><small>'+esc(s.title)+'</small><p>'+esc(s.fields.length?s.fields.map(f=>decisionValue(t,o,f)).join('；'):o.label)+'</p></div><button type="button" class="text" data-guide="edit" data-step="'+i+'">修改</button></article>').join('');
   const fields=steps.map((s,i)=>'<fieldset data-guide-step="'+i+'" '+(i!==g.step?'hidden disabled':disabled&&!s.fields.some(f=>f.slot==='record_selection')?'disabled':'')+'><legend tabindex="-1" '+(i===g.step?'data-current-question':'')+'>'+esc(s.title)+'</legend>'+(s.explanation?'<p>'+esc(s.explanation)+'</p>':'')+s.fields.map(f=>decisionField(t,o,f)).join('')+'</fieldset>').join('');
   const button=paused?'<button type="button" class="primary" data-guide="resume">继续：'+esc(o.label)+'</button>':!steps.length?'<button type="button" class="primary" data-guide="open" '+(disabled?'disabled':'')+'>'+esc(decisionConfirmationLabel(o))+'</button>':summary?'<button type="button" class="primary" data-guide="commit" '+(disabled?'disabled':'')+'>'+esc(decisionConfirmationLabel(o))+'</button>':'<button type="button" class="primary" data-guide="next" '+(disabled?'disabled':'')+'>下一步：'+esc(g.step+1===steps.length?'确认执行内容':steps[g.step+1].title)+'</button>';
-  const evidence='<div class="decision-evidence-meta"><p class="small">'+esc(d.why.facts)+'</p><small>办理期间：'+esc(d.scope.accounting_period_id)+' · '+esc(decisionStageLabel(d.stage))+'</small></div>'+decisionEvidence(t)+(typeof renderProblemReviewDetail==='function'?renderProblemReviewDetail(t):'')+result;
-  return '<section class="panel mat-task decision-chat" data-task-id="'+esc(t.id)+'" data-decision-version="'+esc(d.version)+'" data-operation-active="true"><div class="focus-head"><h3 id="materialTaskTitle" tabindex="-1">'+esc(triage?.title||presentation?.type_label||d.title)+'</h3><p class="decision-explanation">'+esc(triage?.explanation||presentation?.explanation||'当前尚未提供具体问题解释，请先核对原值和来源；不能据此判断客户缺少资料。')+'</p></div><div class="pad">'+decisionEvidenceDisclosure(t,evidence)+'<section class="decision-handling decision-handling-active"><h4 '+(!steps.length?'tabindex="-1" data-current-question':'')+'>接下来怎么处理</h4><div class="decision-question"><p>'+esc(triage?.next_action||d.why_now||d.why.recommendation)+'</p>'+list('需要明确的问题',triage?.questions||[])+list('系统规则',[d.why.rule])+'</div>'+
-    '<nav class="decision-options" aria-label="选择处理方式">'+d.options.map(x=>'<button type="button" class="secondary" data-guide="option" data-option="'+esc(x.id)+'" '+(!decisionOptionAvailable(x)||!materialCanWrite()?'disabled':'')+' aria-pressed="'+(x.id===o.id)+'">'+esc(x.label)+'</button>').join('')+'</nav>'+answers+
+  return '<section class="panel mat-task decision-chat" data-task-id="'+esc(t.id)+'" data-decision-version="'+esc(d.version)+'"><div class="focus-head"><h3 id="materialTaskTitle" tabindex="-1">'+esc(triage?.title||presentation?.type_label||d.title)+'</h3><p class="decision-explanation">'+esc(triage?.explanation||presentation?.explanation||'当前尚未提供具体问题解释；需要核对时展开下方「原件详情」看原值与来源，不能据此判断客户缺少资料。')+'</p><p class="small">'+esc(d.why.facts)+'</p><small>办理期间：'+esc(d.scope.accounting_period_id)+' · '+esc(decisionStageLabel(d.stage))+'</small></div><div class="pad">'+result+'<section class="decision-handling"><h4 '+(!steps.length?'tabindex="-1" data-current-question':'')+'>接下来怎么处理</h4><div class="decision-question"><p>'+esc(triage?.next_action||d.why_now||d.why.recommendation)+'</p>'+list('需要明确的问题',triage?.questions||[])+list('系统规则',[d.why.rule])+'</div>'+
+    decisionOptionsNav(d.options,x=>x.id===o.id,false)+answers+
     (t.deferred?'<div class="record-note">'+esc(t.response?.data.reason)+'</div>':'')+
     '<form id="'+a.form+'" data-artifact="'+esc(t.artifact_id)+'" novalidate>'+fields+
     (summary?'<div class="decision-summary"><h4 tabindex="-1" data-current-question>确认执行内容</h4><p><strong>'+esc(o.label)+'</strong> · '+esc(t.filename||d.why.facts)+'</p><p class="mat-completion">'+esc(o.completion)+'</p>'+list('执行后',o.effects)+list('不会改变',o.not_effects)+'</div>':'')+
     (o.unavailable_reason?'<p class="issue-banner">'+esc(o.unavailable_reason)+'</p>':'')+
     '<div class="mat-actionbar">'+button+(g.step?'<button type="button" class="text" data-guide="back">上一步</button>':'')+'<button type="button" class="text" data-action="material-skip">先看下一项</button></div></form>'+
-    list('执行条件',o.requires)+decisionAgentPanel(t)+'</section></div></section>';
+    list('执行条件',o.requires)+decisionAgentPanel(t)+'</section>'+decisionOriginals(t)+'</div></section>';
 }
 function decisionCapture(event){
   const card=event.target.closest?.('.decision-chat');if(!card)return;
   const t=currentMaterialTask();if(!t)return;
-  if(event.type==='click'){
-    const summary=event.target.closest?.('.decision-evidence-disclosure > summary');
-    if(summary)summary.setAttribute?.('aria-expanded',String(!summary.parentElement.open));
-  }
-  if(event.type==='toggle'){
-    if(event.target.matches?.('.decision-evidence-disclosure')){const g=decisionGuide(t);g.evidenceOpen=event.target.open===true;event.target.querySelector?.('summary')?.setAttribute?.('aria-expanded',String(g.evidenceOpen));decisionRemember(t);}return;
-  }
   if(event.type==='submit'){
     if(decisionAllowedSubmits.has(event.target)&&decisionCanSubmit(t)){decisionAllowedSubmits.delete(event.target);return;}
     event.preventDefault();event.stopImmediatePropagation();decisionNext(t,event.target);return;
@@ -408,7 +433,7 @@ function decisionCapture(event){
   if(b.dataset.guide==='record'){
     if(!decisionValid(t.descriptor)||!decisionBound(t))return;
     const r=decisionEvidenceRows(t).rows.find(r=>r.object_id===b.dataset.record);if(!r)return;
-    decisionGuide(t).sourceRecord=r.object_id;decisionGuide(t).evidenceOpen=true;decisionRemember(t);render();
+    decisionGuide(t).sourceRecord=r.object_id;decisionRemember(t);render();
     const source=document.querySelector?.('.decision-source');if(source)source.open=true;
     if(b.dataset.sourceJump==='true'){const title=source?.querySelector('summary');if(title){title.tabIndex=-1;title.focus();}}
     else [...(document.querySelectorAll?.('.decision-evidence [data-record]')||[])].find(el=>el.dataset.record===r.object_id)?.focus({preventScroll:true});return;
@@ -440,7 +465,6 @@ function decisionCapture(event){
   decisionRemember(t);decisionShowStep();
 }
 document.addEventListener('click',decisionCapture,true);
-document.addEventListener('toggle',decisionCapture,true);
 document.addEventListener('submit',decisionCapture,true);
 document.addEventListener('submit',event=>{
   if(event.target.id!=='taskActionRevokeForm')return;

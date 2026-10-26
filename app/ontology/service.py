@@ -5,6 +5,7 @@ import hashlib
 import json
 import unicodedata
 from copy import deepcopy
+from concurrent.futures import ThreadPoolExecutor, as_completed
 from decimal import Decimal, InvalidOperation
 from typing import Any, Callable
 
@@ -27,6 +28,7 @@ from app.ontology.procurement import ENGINE_VERSION, PAYMENT_TOLERANCE, procurem
 from app.ontology.baseline import VALIDATION_VERSION, previous_period, validate_confirmation
 from app.ontology.readiness import build_readiness
 from app.ontology.gateway import AGENT_SCHEMA_VERSION, GATEWAY_VERSION, AgentGateway, GatewayFailure
+from app.source_profiles import ProfileStore, scoped_resolver
 from app.tabular import ExtractionError, MAX_BYTES, PARSER_VERSION, ParseOptions, extract_workbook
 from app.payroll_mapping import PayrollMappingService
 from app.parse_plans import ParsePlanService, InspectRequest
@@ -119,9 +121,32 @@ def historical_prerequisite(job, plans, baseline_status):
     }
 
 
+def _progress_with_digestion(progress, material_review):
+    """把"系统还没消化完"算进资料分析这一步。
+
+    消化中的定义只有一个：事项还在系统手里（handling.owner 是 SYSTEM）。
+    人能做的事一件都不在其中 —— 那些属于第三步。
+    """
+    pending = [task for task in material_review.get('tasks', [])
+               if not task.get('deferred') and (task.get('handling') or {}).get('owner') == 'SYSTEM']
+    if not pending:
+        return progress
+    stages = []
+    for stage in progress['stages']:
+        if stage['id'] == 'analysis' and stage['status'] == 'COMPLETED':
+            stage = {**stage, 'status': 'PARTIAL',
+                     'summary': f"{stage['summary']}；还有 {len(pending)} 项系统尚未消化完，完成后才进入待确认"}
+        stages.append(stage)
+    completed = sum(stage['status'] == 'COMPLETED' for stage in stages)
+    return {**progress, 'stages': stages, 'completed_count': completed,
+            'overall_percent': int(completed / len(stages) * 100),
+            'current_stage': next((stage['id'] for stage in stages if stage['status'] != 'COMPLETED'), 'delivery')}
+
+
 class OntologyService:
     def __init__(self, store: ObjectStore):
         self.store = store
+        self.profiles = ProfileStore(store.database)
         self.gateway = AgentGateway(store.database.settings)
         self.historical = HistoricalPreparation(self)
         self.historical_plans = HistoricalIssuePlans(self)
@@ -356,7 +381,12 @@ class OntologyService:
             return {"artifact": artifact, "facts": facts, "sheets": artifact["data"].get("parse_sheets", []), "counts": counts, "errors": artifact["data"].get("parse_errors", [])}
         extracted = None
         try:
-            extracted = _mapped if _mapped is not None else extract_workbook(content, options, scope.accounting_period_id)
+            extracted = _mapped if _mapped is not None else extract_workbook(
+                content, options, scope.accounting_period_id,
+                resolver=scoped_resolver(self.profiles, scope))
+            if _mapped is None and any(sheet.get("status") == "SCANNED_IMAGE"
+                                       for sheet in extracted.get("sheets", [])):
+                extracted = self._read_scanned_statement(scope, content, options, extracted)
             if _mapped is None and options.document_kind == 'bank_statement':
                 extracted = self.bank_accounts.prepare(scope, artifact, extracted)
             if extracted.get('checks',{}).get('overall')=='REVIEW':
@@ -415,6 +445,12 @@ class OntologyService:
         parse_status = "PARSED" if facts and not errors and counts["needs_review"] == 0 and counts["period_exception"] == 0 else ("PARSED_WITH_ISSUES" if facts else "FAILED")
         data = deepcopy(artifact["data"])
         data.update({"parse_status": parse_status, "parse_version": PARSER_VERSION, "parse_options": current_options, "parse_errors": errors, "parse_sheets": extracted["sheets"], "parse_counts": counts, "parsed_fact_ids": fact_ids, "parsed_at": utcnow(), 'parse_checks':extracted.get('checks',{})})
+        self._carry_statement_totals(data, extracted)
+        # 扫描件识别没跑成时原因不能丢：原样落到 parse_errors 上，
+        # 否则界面只显示"识别失败"，人无从知道是没配模型、超时还是校验没过。
+        if extracted.get("scanned_reason"):
+            data["parse_errors"] = list(dict.fromkeys(
+                [*data.get("parse_errors", []), extracted["scanned_reason"]]))
         if _mapping_id:data['payroll_mapping_id']=_mapping_id
         if _plan_ref is not None:data['plan_ref']=deepcopy(_plan_ref)
         data.pop('bank_account_binding',None)
@@ -1949,6 +1985,525 @@ class OntologyService:
                 'title': '你当前无需操作', 'explanation': '当前没有需要你处理的事项。',
                 'task_id': None, 'waiting': [], 'action': None}
 
+    def _read_scanned_statement(self, scope, content, options, placeholder):
+        """图片型扫描件交给视觉模型多次读取取共识，再按同一形状产出记录。
+
+        没有配置视觉模型、或校验没过时都不抛异常：保留占位结果，
+        由上层出一张待人工核对的卡片。整份资料不因此算作解析失败。
+        """
+        from app.scanned_statements import (ScannedStatementError, read_with_consensus, to_records)
+        from app.statement_reader import GatewayStatementReader
+
+        settings = self.store.database.settings
+        if options.document_kind != "bank_statement":
+            return {**placeholder, "scanned_reason": "目前只支持扫描件银行对账单"}
+        if settings.agent_mode != "gateway":
+            return {**placeholder, "scanned_reason": "未启用 Agent Gateway，扫描件无法识别"}
+        try:
+            settings.model_for("SCANNED_DOCUMENT")
+        except ValueError as exc:
+            return {**placeholder, "scanned_reason": str(exc)}
+
+        reader = GatewayStatementReader(self.gateway.provider)
+        try:
+            statement, report = read_with_consensus(content, reader)
+        except (ScannedStatementError, GatewayFailure) as exc:
+            return {**placeholder, "scanned_reason": f"扫描件识别未完成：{exc}"}
+
+        records = to_records(statement, report, period=scope.accounting_period_id,
+                             bank_account=options.bank_account_ref,
+                             source_name="扫描件对账单")
+        from app.scanned_statements import page_images as _pages
+        try:
+            page_count = len(_pages(content))
+        except Exception:
+            page_count = 1
+        sheet = {"sheet": "扫描件对账单", "status": "EXTRACTED", "rows": len(records),
+                 "mapping_origin": "SCANNED", "read_rounds": report.rounds, "pages": page_count,
+                 "verification": report.outcome,
+                 "checks": [check.model_dump() for check in report.checks],
+                 "disputed": [item.model_dump() for item in report.disputed],
+                 "unverified_fields": list(report.unverified_fields)}
+        return {"records": records, "sheets": [sheet], "errors": [],
+                "checks": {"overall": "PASS", "items": []},
+                "statement_totals": statement.totals.model_dump(mode="json")}
+
+    @staticmethod
+    def _carry_statement_totals(data: dict[str, Any], extracted: dict[str, Any]) -> None:
+        """把对账单表头自报的合计留在原件上。
+
+        它是整条链路唯一的外部真值 —— 期末余额来自银行而不是账上，
+        丢掉它就只能用账验账。"""
+        totals = extracted.get("statement_totals")
+        if totals:
+            data["statement_totals"] = totals
+
+    # ---------- 凭证提案 ----------
+
+    def _learn_from_history(self, scope: Scope):
+        """从上传的历史凭证（序时账）里学做账习惯。
+
+        历史凭证是学习来源，不是本期业务事实：把几百张往期凭证灌进事实库
+        既不属于这一期，也会把"本期还有多少待处理"这个数字彻底冲掉。
+        这里按需读取、不落事实，结果用原件哈希缓存。
+        """
+        from app.tabular import read_workbook
+        from app.voucher_history import (account_vocabulary, learn_expense_rules,
+                                         learn_templates, parse_journal)
+
+        artifacts = [a for a in self.store.list_objects(ObjectType.SOURCE_ARTIFACT.value, scope)
+                     if a["data"].get("source_purpose") == "historical_reference"
+                     and a["status"] != "ARCHIVED"]
+        if not artifacts:
+            return None
+        artifact = artifacts[-1]
+        digest_key = artifact["data"].get("sha256") or artifact["object_id"]
+        cached = getattr(self, "_history_cache", {})
+        if digest_key in cached:
+            return cached[digest_key]
+        root = self.store.database.settings.storage_path.resolve()
+        path = (root / artifact["data"]["storage_path"]).resolve()
+        if not path.is_relative_to(root) or not path.is_file():
+            return None
+        try:
+            vouchers = parse_journal(read_workbook(path.read_bytes())[0])
+        except Exception:
+            return None
+        # 只用严格早于本期的凭证学习。用本期自己的凭证学再去生成本期，
+        # 是循环论证，验不出任何东西。
+        history = [v for v in vouchers if v.period < scope.accounting_period_id]
+        learned = {
+            "artifact": {"id": artifact["object_id"], "version": artifact["version"],
+                         "filename": artifact["data"].get("filename", "")},
+            "vouchers": history,
+            "templates": learn_templates(history),
+            "expense_rules": learn_expense_rules(history),
+            "vocabulary": account_vocabulary(history),
+            "periods": sorted({v.period for v in history}),
+        }
+        cached[digest_key] = learned
+        self._history_cache = cached
+        return learned
+
+    def voucher_proposals(self, scope: Scope) -> dict[str, Any]:
+        """为本期每一笔还没做账的银行流水提出凭证。
+
+        提不出来不是失败：新出现的往来对象、没见过的说法本来就该问人。
+        每一条弃权都说明卡在哪里，而不是笼统地报"无法处理"。
+        """
+        from app.account_classifier import (GatewayAccountReader, auto_adoptable,
+                                             classify, party_history)
+        from app.voucher_history import match_account, normalize_party
+        from app.voucher_proposals import propose
+
+        settings = self.store.database.settings
+        # 没启用网关时不调模型：摘要匹配不上就照实弃权，不拿最常用的科目蒙。
+        classifier = (GatewayAccountReader(self.gateway.provider, settings)
+                      if settings.agent_mode == "gateway" else None)
+
+        learned = self._learn_from_history(scope)
+        if learned is None:
+            return {"proposals": [], "abstained": [], "learned": None,
+                    "reason": "尚未上传历史凭证，无法参照既有做法"}
+
+        facts = [f for f in self.store.list_objects(ObjectType.FACT_RECORD.value, scope)
+                 if f["status"] != "SUPERSEDED"
+                 and f["data"].get("record_type") in {"PAYMENT", "RECEIPT", "BANK_TRANSACTION"}]
+        invoices = [f for f in self.store.list_objects(ObjectType.FACT_RECORD.value, scope)
+                    if f["status"] != "SUPERSEDED"
+                    and f["data"].get("record_type") in {"INVOICE", "SALES_INVOICE"}]
+        tax_by_total: dict[str, list[tuple[str, str]]] = {}
+        for invoice in invoices:
+            value = invoice["data"]["normalized_value"]
+            total = value.get("invoice_total")
+            if total:
+                tax_by_total.setdefault(str(total), []).append(
+                    (value.get("seller_name") or value.get("counterparty") or "",
+                     str(value.get("tax") or "0")))
+
+        # 银行科目要具体到账户。基线里 1002 下面挂着各个银行户，
+        # 写成汇总的 1002 会让凭证对不上明细账，也无法与对账单核对。
+        bank_code, bank_name = "1002", "银行存款"
+        try:
+            baseline = self.store.get_object(self._baseline_object_id(scope), scope)
+            entries = (baseline["data"].get("confirmed_inputs") or {}).get("balances") or []
+            bank = next((b for b in entries if b["account_code"].startswith("1002")), None)
+            if bank and bank.get("auxiliary"):
+                detail = bank["auxiliary"][0]
+                bank_name = detail["key"]
+                bank_code = detail.get("account_code") or bank["account_code"]
+        except Exception:
+            pass
+
+        # 同一种说法只问一次模型。真实一个月里"收费"出现 4 次、"扣税"3 次，
+        # 逐笔问既慢又可能得到不一致的答案 —— 同样的摘要必须落到同一个科目。
+        decided: dict[tuple[str, str], tuple[Optional[tuple[str, str]], str]] = {}
+
+        def decide(summary: str, counterparty: str, amount: Decimal, direction: str):
+            rule, why = match_account(summary, learned["expense_rules"], learned["vocabulary"])
+            if rule is not None:
+                return (rule.account_code, rule.account_name), why
+            if classifier is None:
+                return None, why
+            choice = classify(summary=summary, counterparty=counterparty,
+                              amount=format(amount, ".2f"), direction=direction,
+                              vocabulary=learned["vocabulary"], reader=classifier,
+                              party_accounts=party_history(counterparty, learned["vouchers"]))
+            if choice.outcome == "PICK":
+                return ((choice.account_code, choice.account_name),
+                        f"{choice.reason}（模型判断，置信 {choice.confidence}）")
+            return None, choice.reason
+
+        # 各笔判断互不相关，串行等待纯属浪费：真实一个月 27 次判断串行要近两分钟。
+        pending: dict[tuple[str, str], tuple[str, str, Decimal, str]] = {}
+        for fact in facts:
+            value = fact["data"]["normalized_value"]
+            expense, income = Decimal(value.get("expense") or 0), Decimal(value.get("income") or 0)
+            if expense == 0 and income == 0:
+                continue
+            summary = value.get("summary") or ""
+            counterparty = value.get("counterparty") or ""
+            key = (normalize_party(summary), normalize_party(counterparty))
+            pending.setdefault(key, (summary, counterparty,
+                                     expense if expense > 0 else income,
+                                     "PAYMENT" if expense > 0 else "RECEIPT"))
+        if pending:
+            with ThreadPoolExecutor(max_workers=min(8, len(pending))) as pool:
+                futures = {pool.submit(decide, *args): key for key, args in pending.items()}
+                for future in as_completed(futures):
+                    key = futures[future]
+                    try:
+                        decided[key] = future.result()
+                    except Exception as exc:
+                        decided[key] = (None, f"科目判断未完成：{exc}"[:80])
+
+        proposals, abstained = [], []
+        for fact in facts:
+            value = fact["data"]["normalized_value"]
+            expense, income = Decimal(value.get("expense") or 0), Decimal(value.get("income") or 0)
+            if expense == 0 and income == 0:
+                continue
+            direction = "PAYMENT" if expense > 0 else "RECEIPT"
+            amount = expense if expense > 0 else income
+            counterparty = value.get("counterparty") or ""
+            summary = value.get("summary") or ""
+
+            candidates = tax_by_total.get(format(amount, ".2f"), [])
+            tax = next((Decimal(t) for seller, t in candidates
+                        if normalize_party(seller) == normalize_party(counterparty)), None)
+            if tax is None and len(candidates) == 1:
+                tax = Decimal(candidates[0][1])
+
+            chosen, why = decided.get(
+                (normalize_party(summary), normalize_party(counterparty)), (None, "未判断"))
+            proposal = propose(
+                bank_account_code=bank_code, bank_account_name=bank_name,
+                counterparty=counterparty, summary=summary, amount=amount,
+                direction=direction, templates=learned["templates"], input_tax=tax,
+                expense_account=chosen, expense_basis=why)
+            entry = {
+                "fact": {"id": fact["object_id"], "version": fact["version"],
+                         "anchor": fact["data"].get("source_anchor")},
+                "transaction": {"date": value.get("transaction_date"), "summary": summary,
+                                "counterparty": counterparty, "amount": format(amount, ".2f"),
+                                "direction": direction},
+                "account_hint": ({"account_code": chosen[0], "account_name": chosen[1], "why": why}
+                                 if chosen else {"why": why}),
+                "proposal": proposal.model_dump(mode="json"),
+            }
+            (proposals if proposal.outcome == "PROPOSAL" else abstained).append(entry)
+
+        adoptable = [p for p in proposals
+                     if p["proposal"]["confidence"] >= 85 and p["account_hint"].get("account_code")]
+        return {
+            "proposals": proposals, "abstained": abstained,
+            "counts": {"transactions": len(facts), "proposed": len(proposals),
+                       "abstained": len(abstained), "adoptable": len(adoptable)},
+            "classified": len(decided),
+            "learned": {"artifact": learned["artifact"], "periods": learned["periods"],
+                        "vouchers": len(learned["vouchers"]),
+                        "templates": len(learned["templates"]),
+                        "accounts": len(learned["vocabulary"])},
+        }
+
+    def adopt_bank_voucher(self, scope: Scope, *, fact_id: str, expected_version: int,
+                           lines: list[dict[str, Any]], summary: str, basis: list[str],
+                           actor_id: str) -> dict[str, Any]:
+        """采纳一笔流水的凭证提案。
+
+        走的不是采购业务组那条路：那条路要求业务组、RuleInstance 与发票金额
+        全量校验，流水驱动的凭证没有业务组，硬塞进去只会把两边的约束都弄脏。
+        这里有自己的守卫，一条都不能少：
+          * 期间开放、基线已确认 —— 没有期初就没有可核对的终点；
+          * 借贷必须平衡；
+          * 绑定来源事实的 id 与版本 —— 流水重新识别后旧凭证必须失效重做；
+          * 同一笔流水只生成一张，重复采纳返回原件而不是再记一遍账。
+        """
+        self._ensure_period_open(scope)
+        self._require_baseline_confirmed(scope)
+        fact = self.store.get_object(fact_id, scope)
+        if fact["object_type"] != ObjectType.FACT_RECORD.value:
+            raise PreconditionFailed("凭证来源必须是已提取的事实记录")
+        if fact["data"].get("record_type") not in {"PAYMENT", "RECEIPT", "BANK_TRANSACTION"}:
+            raise PreconditionFailed("只有银行流水事实可以按这条路径生成凭证")
+        if fact["version"] != expected_version:
+            raise VersionConflict()
+
+        normalized = []
+        debit = credit = Decimal("0.00")
+        for index, line in enumerate(lines, start=1):
+            code = str(line.get("account_code") or "").strip()
+            name = str(line.get("account_name") or "").strip()
+            if not code or not name:
+                raise PreconditionFailed("凭证分录必须有科目编码与名称")
+            amount_debit = Decimal(str(line.get("debit") or "0")).quantize(Decimal(".01"))
+            amount_credit = Decimal(str(line.get("credit") or "0")).quantize(Decimal(".01"))
+            if (amount_debit > 0) == (amount_credit > 0):
+                raise PreconditionFailed(f"第 {index} 行必须恰好有一个方向的金额")
+            debit += amount_debit
+            credit += amount_credit
+            normalized.append({
+                "line_no": index,
+                "direction": "DEBIT" if amount_debit > 0 else "CREDIT",
+                "account": f"{code} {name}", "account_code": code, "account_name": name,
+                "amount": format(amount_debit or amount_credit, ".2f"),
+                "source_fact_id": fact_id,
+            })
+        if len(normalized) < 2:
+            raise PreconditionFailed("凭证至少需要借贷两行")
+        if debit != credit:
+            raise PreconditionFailed(f"借贷不平：借方 {debit:.2f}，贷方 {credit:.2f}")
+
+        existing = next((v for v in self.store.list_objects(ObjectType.VOUCHER_VERSION.value, scope)
+                         if v["data"].get("source_fact_id") == fact_id and v["status"] != "VOID"), None)
+        if existing is not None:
+            if existing["data"].get("source_fact_version") == fact["version"]:
+                return existing
+            self.store.revise_object(existing["object_id"], existing["version"], scope,
+                                     {**existing["data"], "superseded_reason": "来源流水已重新识别"},
+                                     status="VOID", created_by=actor_id)
+
+        value = fact["data"]["normalized_value"]
+        data = {
+            "source": "BANK_TRANSACTION",
+            "source_fact_id": fact_id, "source_fact_version": fact["version"],
+            "source_anchor": fact["data"].get("source_anchor"),
+            "transaction": {"date": value.get("transaction_date"),
+                            "summary": value.get("summary"),
+                            "counterparty": value.get("counterparty"),
+                            "expense": value.get("expense"), "income": value.get("income")},
+            "summary": summary or value.get("summary") or "",
+            "lines": normalized,
+            "debit_total": format(debit, ".2f"), "credit_total": format(credit, ".2f"),
+            "adoption_basis": list(basis or []),
+            "adopted_by": actor_id, "adopted_at": utcnow(),
+            # 采纳只是记下了做法，不等于账已经正式入库。
+            "formal_balance_impact": False,
+        }
+        voucher = self.store.create_initial_object(ObjectType.VOUCHER_VERSION.value, scope, data,
+                                                   status="DRAFT", created_by=actor_id)
+        self.store.add_audit("BANK_VOUCHER_ADOPTED", actor_id, scope,
+                             object_type=voucher["object_type"], object_id=voucher["object_id"],
+                             object_version=voucher["version"], after=data,
+                             evidence=[fact_id], reason="按历史做法采纳流水凭证提案")
+        return voucher
+
+    def bank_voucher_reconciliation(self, scope: Scope) -> dict[str, Any]:
+        """期初 + 已采纳凭证的银行发生 = 期末？与对账单自报的期末比。
+
+        这是整条链路唯一的外部真值：对账单期末余额来自银行，不是账上的数。
+        对得上说明每一笔流水都入了账且金额正确；对不上说明还有没做的，
+        或者做错了 —— 差额本身就指向哪里。
+        """
+        try:
+            baseline = self.store.get_object(self._baseline_object_id(scope), scope)
+        except KeyError:
+            return {"status": "NO_BASELINE", "reason": "基线尚未确认，没有期初余额"}
+        entries = (baseline["data"].get("confirmed_inputs") or {}).get("balances") or []
+        if not entries:
+            # 基线对象随处理范围一起创建，存在不等于已确认。
+            # 报"没有银行科目"会把人引去查科目表，而真正要做的是确认期初。
+            return {"status": "NO_BASELINE", "reason": "基线尚未确认，没有期初余额"}
+        bank = next((b for b in entries if b["account_code"].startswith("1002")), None)
+        if bank is None:
+            return {"status": "NO_BANK_BASELINE", "reason": "基线里没有银行存款科目"}
+        detail = (bank.get("auxiliary") or [{}])[0]
+        bank_code = detail.get("account_code") or bank["account_code"]
+        opening = (Decimal(str(detail.get("opening_debit") or bank["opening_debit"]))
+                   - Decimal(str(detail.get("opening_credit") or bank["opening_credit"])))
+
+        movement = Decimal("0.00")
+        adopted = 0
+        for voucher in self.store.list_objects(ObjectType.VOUCHER_VERSION.value, scope):
+            if voucher["status"] == "VOID" or voucher["data"].get("source") != "BANK_TRANSACTION":
+                continue
+            adopted += 1
+            for line in voucher["data"].get("lines", []):
+                if not str(line.get("account_code", "")).startswith(bank_code):
+                    continue
+                amount = Decimal(str(line.get("amount") or "0"))
+                movement += amount if line.get("direction") == "DEBIT" else -amount
+
+        facts = [f for f in self.store.list_objects(ObjectType.FACT_RECORD.value, scope)
+                 if f["status"] != "SUPERSEDED"
+                 and f["data"].get("record_type") in {"PAYMENT", "RECEIPT", "BANK_TRANSACTION"}]
+        covered = {v["data"].get("source_fact_id")
+                   for v in self.store.list_objects(ObjectType.VOUCHER_VERSION.value, scope)
+                   if v["status"] != "VOID" and v["data"].get("source") == "BANK_TRANSACTION"}
+        outstanding = [f for f in facts if f["object_id"] not in covered]
+
+        statement_closing = None
+        for artifact in self.store.list_objects(ObjectType.SOURCE_ARTIFACT.value, scope):
+            totals = artifact["data"].get("statement_totals")
+            if totals and totals.get("closing_balance") is not None:
+                statement_closing = Decimal(str(totals["closing_balance"]))
+        computed = opening + movement
+        result = {
+            "status": "OK", "bank_account": {"code": bank_code, "name": detail.get("key") or bank["account_name"]},
+            "opening": format(opening, ".2f"), "movement": format(movement, ".2f"),
+            "computed_closing": format(computed, ".2f"),
+            "adopted_vouchers": adopted, "transactions": len(facts),
+            "outstanding": len(outstanding),
+        }
+        if statement_closing is not None:
+            difference = computed - statement_closing
+            result.update({"statement_closing": format(statement_closing, ".2f"),
+                           "difference": format(difference, ".2f"),
+                           "status": "BALANCED" if difference == 0 and not outstanding else "OPEN"})
+        return result
+
+    # ---------- 来源版式卡片 ----------
+
+    def profile_cards(self, scope: Scope) -> dict[str, Any]:
+        """列出本处理范围内"认不出结构"的原件，每份产出一张待确认卡片。
+
+        已经命中版式的原件不出卡，所以这份清单会随着版式沉淀自然变短。
+        """
+        from app.profile_cards import build_profile_card
+        from app.tabular import read_workbook
+
+        cards: list[dict[str, Any]] = []
+        for artifact in self.store.list_objects(ObjectType.SOURCE_ARTIFACT.value, scope):
+            data = artifact["data"]
+            if artifact["status"] == "ARCHIVED":
+                continue
+            scanned = self._scanned_review_card(artifact)
+            if scanned is not None:
+                cards.append(scanned)
+            unrecognised = [sheet for sheet in data.get("parse_sheets", [])
+                            if sheet.get("status") == "UNRECOGNIZED"]
+            if not unrecognised:
+                continue
+            document_kind = (data.get("parse_options") or {}).get("document_kind")
+            if not document_kind:
+                continue
+            path = self.store.database.settings.storage_path / data["storage_path"]
+            if not path.exists():
+                continue
+            try:
+                sheets = read_workbook(path.read_bytes())
+            except Exception:
+                # 读不出的原件不是版式问题，交给既有的解析失败提示，不在这里出卡。
+                continue
+            wanted = {sheet["sheet"] for sheet in unrecognised}
+            for sheet in sheets:
+                if sheet["name"] not in wanted:
+                    continue
+                card = build_profile_card(
+                    sheet=sheet, document_kind=document_kind,
+                    filename=data.get("filename", ""), store=self.profiles,
+                    tenant_id=scope.tenant_id, legal_entity_id=scope.legal_entity_id,
+                )
+                if card is None:
+                    continue
+                card["artifact"] = {"id": artifact["object_id"], "version": artifact["version"],
+                                    "sha256": data.get("sha256")}
+                card["sheet"] = sheet["name"]
+                card["document_kind"] = document_kind
+                cards.append(card)
+        return {"cards": cards, "count": len(cards)}
+
+    def _scanned_review_card(self, artifact) -> dict[str, Any] | None:
+        """扫描件里多次识别不一致的字段，聚成一张对照卡。
+
+        按字段归并而不是按行：同一列反复读不准（例如对方账号）是一件事，
+        逐行问二十七遍是在消耗人，不是在用人。
+        """
+        data = artifact["data"]
+        sheets = [s for s in data.get("parse_sheets", []) if s.get("mapping_origin") == "SCANNED"]
+        if not sheets:
+            return None
+        sheet = sheets[0]
+        disputed = sheet.get("disputed") or []
+        if not disputed:
+            return None
+
+        labels = {"transaction_date": "交易日期", "debit": "借方发生额", "credit": "贷方发生额",
+                  "balance": "余额", "summary": "摘要", "counterparty_name": "对方户名",
+                  "counterparty_account": "对方账号", "行存在性": "整行"}
+        blocking = {"transaction_date", "debit", "credit", "balance", "行存在性"}
+        grouped: dict[str, list[dict[str, Any]]] = {}
+        for item in disputed:
+            grouped.setdefault(item["field"], []).append(item)
+
+        groups = []
+        for field, items in sorted(grouped.items(), key=lambda kv: (kv[0] not in blocking, kv[0])):
+            groups.append({
+                "field": field, "label": labels.get(field, field),
+                "blocking": field in blocking, "count": len(items),
+                "rows": [{"sequence": i["sequence"], "values": i["values"]} for i in items],
+            })
+        blocking_count = sum(g["count"] for g in groups if g["blocking"])
+        failed = [c["name"] for c in sheet.get("checks", []) if not c.get("passed")]
+
+        return {
+            "version": "scanned-review-v1",
+            "card_type": "SCANNED_STATEMENT_REVIEW",
+            "title": f"核对扫描件识别结果：{data.get('filename', '')}",
+            "why": {
+                "facts": (f"共 {sheet.get('rows', 0)} 行，读取 {sheet.get('read_rounds', 1)} 次，"
+                          f"{len(disputed)} 处识别不一致（其中影响金额或期间的 {blocking_count} 处）"),
+                "rule": ("表头笔数与合计、余额连续性等校验已通过；"
+                         + ("仍有未通过项：" + "、".join(failed) if failed else "未通过项：无")),
+                "recommendation": ("摘要与对方户名没有任何算术约束，任何校验都发现不了读错，"
+                                   "请对照原件逐项确认。"),
+                "origin": "AGENT", "confidence": 0 if blocking_count else 50,
+                "yields": None, "evidence": [],
+            },
+            "options": [{"id": "open_source_scan", "label": "对照原件", "submit_label": "查看扫描件"}],
+            "artifact": {"id": artifact["object_id"], "version": artifact["version"],
+                         "sha256": data.get("sha256")},
+            "pages": sheet.get("pages", 2),
+            "groups": groups,
+            "unverified_fields": sheet.get("unverified_fields", []),
+            "fingerprint": data.get("sha256", ""),
+        }
+
+    def confirm_profile_card(self, scope: Scope, *, card: dict[str, Any], actor_id: str) -> dict[str, Any]:
+        """确认一张识别卡：登记版式，并把原件退回待解析，让操作人重新解析看结果。"""
+        from app.profile_cards import adopt_profile_card
+
+        document_kind = card.get("document_kind")
+        if not document_kind:
+            raise DomainError("卡片缺少资料类型", "VALIDATION_FAILED", 400)
+        try:
+            saved = adopt_profile_card(
+                card=card, store=self.profiles, actor=actor_id, document_kind=document_kind,
+                tenant_id=scope.tenant_id, legal_entity_id=scope.legal_entity_id,
+            )
+        except ValueError as exc:
+            raise DomainError(str(exc), "VALIDATION_FAILED", 400) from exc
+        self.store.add_audit(
+            "SOURCE_PROFILE_CONFIRMED", actor_id, scope,
+            object_type="SourceProfile", object_id=saved.profile_id, object_version=1,
+            after={"fingerprint": saved.fingerprint, "label": saved.label,
+                   "scope_level": saved.scope_level, "confidence": saved.confidence},
+            reason="人工确认来源版式",
+        )
+        return {"profile": saved.model_dump(mode="json"),
+                "artifact": card.get("artifact"),
+                "next_action": "版式已登记，请对该原件重新解析"}
+
     def workbench(self, scope: Scope, *, _problem_review: bool = True, actor_id: str | None = None) -> dict[str, Any]:
         period = self.store.get_object(self._period_object_id(scope), scope)
         baseline = self.store.get_object(self._baseline_object_id(scope), scope)
@@ -2087,6 +2642,9 @@ class OntologyService:
             material_review = self.materials.task_action_projection(scope, material_review)
             material_review = self.material_guidance.project(scope,material_review,actor_id=actor_id)
         material_review['action_metrics'] = self._action_metrics(scope)
+        # 第二步不是"解析完就完了"：系统要把每件事消化到有结论，才轮到人。
+        # 否则界面上「资料分析 ✓」会和第三步里一堆「等待系统检查」同时成立，自相矛盾。
+        progress = _progress_with_digestion(progress, material_review)
         material_review['next_step'] = self._workbench_next_step(
             progress, material_review, current_artifacts, blockers, cards, vouchers, groups, baseline_validation)
         return {

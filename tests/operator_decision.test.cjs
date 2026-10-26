@@ -74,10 +74,11 @@ test('zero-field options never create consent; explicit entry opens existing dia
  for(const id of ['parse','supplement']){const a=app();a.t.descriptor=descriptor(option(id));let writes=0,opened=0;a.c.actions['material-parse']=()=>writes++;a.c.actions['material-supplement']=()=>opened++;a.c.fileById=()=>({});a.c.openParseDialog=()=>opened++;
  const html=a.render();assert.doesNotMatch(html,/decision-summary|data-guide="commit"/);assert.match(html,/data-guide="open"/);assert.equal(a.c.decisionGuide(a.t).reviewed,'');a.c.decisionCommit(a.t);assert.equal(writes,0);assert.equal(opened,0);a.c.decisionOpen(a.t);assert.equal(opened,1);assert.equal(writes,0);assert.equal(a.c.decisionCanSubmit(a.t),false);}
 });
-test('source evidence precedes actions and presentation uses only bound record fields',()=>{
+test('actions precede the collapsed originals, and presentation uses only bound record fields',()=>{
  const a=app(),r=a.c.state.overview.material_review.records[0];r.comparison=[{field:'invoice_status',source_value:'已红冲-全额',value:'已红冲-全额',state:'DIRECT_MATCH',region:'表!O14'}];
  a.t.descriptor.presentation={type_label:'发票状态核对',explanation:'原件状态为“已红冲-全额”，不是读取错误。',records:[{id:'r',focus_fields:['invoice_status']}]};
- const html=a.render();assert.match(html,/已红冲-全额/);assert.match(html,/表!O14/);assert(html.indexOf('decision-evidence')<html.indexOf('<form'));assert.doesNotMatch(html,/责任人：|确认提交摘要/);
+ const html=a.render();assert.match(html,/已红冲-全额/);assert.match(html,/表!O14/);assert(html.indexOf('<form')<html.indexOf('decision-evidence'));
+ assert.match(html,/<details class="decision-originals"><summary>原件详情 · 1 条记录<\/summary>/);assert.doesNotMatch(html,/责任人：|确认提交摘要/);
  a.t.descriptor.presentation.records[0].id='outside';assert.equal(a.c.decisionPresentation(a.t),null);
 });
 test('common amount field uses a business label instead of a generic source placeholder',()=>{
@@ -115,11 +116,18 @@ test('verification selects the whole task across pages and keeps compact page ro
  a.ui.page=1;html=a.render();assert.equal((html.match(/data-material-record=/g)||[]).length,2);assert.equal(a.draft.selected.size,7);assert.match(html,/data-material-record="r6" checked/);assert.doesNotMatch(html,/data-material-record="r"/);
  a.draft.selected.delete('r7');html=a.render();assert.match(html,/已选择 6\/7 条/);assert.match(html,/全选全部 7 条/);assert.equal(a.c.decisionAnswers(a.t,o).records.length,6);
 });
-test('active operation collapses evidence, remembers manual expansion and keeps a compact disclosure before the action',()=>{
- const a=app(),html=a.render();assert.match(html,/decision-evidence-disclosure/);assert.doesNotMatch(html,/decision-evidence-disclosure" open/);assert(html.indexOf('decision-evidence-disclosure')<html.indexOf('decision-handling-active'));
- const details={open:true,matches:s=>s==='.decision-evidence-disclosure',closest:s=>s==='.decision-evidence-disclosure'?details:s==='.decision-chat'?{}:null,querySelector:()=>({setAttribute(){}})};
- a.c.decisionCapture({type:'toggle',target:details});assert.equal(a.c.decisionGuide(a.t).evidenceOpen,true);assert.match(a.render(),/decision-evidence-disclosure" open/);
- const choice=app();choice.t.material_opinions=[];assert.doesNotMatch(choice.render(),/decision-evidence-disclosure/);choice.c.decisionChoose(choice.t,'confirm_invoice_amount');assert.match(choice.render(),/decision-evidence-disclosure/);
+// 006ea80 把原件对照收进一个放在操作区之前的折叠块；本分支的顺序正好相反 ——
+// 先问题与处理方式，原件明细折叠在最后（decisionOriginals）。意图一样：
+// 对照默认折叠、不挡在处理动作前面，所以这里断言的是本分支的方向。
+test('originals stay collapsed and sit after the action area, on every card shape',()=>{
+ const a=app(),html=a.render();
+ assert.match(html,/<details class="decision-originals">/);
+ assert.doesNotMatch(html,/class="decision-originals" open/);
+ assert(html.indexOf('decision-handling')<html.indexOf('decision-originals'),'处理动作必须排在原件详情之前');
+ const choice=app();choice.t.material_opinions=[];
+ assert.match(choice.render(),/decision-originals/);
+ choice.c.decisionChoose(choice.t,'confirm_invoice_amount');
+ assert.match(choice.render(),/decision-originals/);
 });
 test('guide option clicks select the requested option and source buttons are not intercepted',()=>{
  const a=app(),o=option('defer_material_issue');o.fields=[{name:'reason',component:'textarea',label:'原因',required:true,placeholder:'',max_length:2000}];o.steps=[{id:'reason',prompt:'为什么暂缓',fields:['reason']}];a.t.descriptor.options.push(o);const card={querySelector:()=>null};let stopped=0;const event=b=>({type:'click',target:{closest:s=>s==='.decision-chat'?card:b},preventDefault(){stopped++;},stopImmediatePropagation(){}});a.c.decisionCapture(event({dataset:{guide:'option',option:'defer_material_issue'}}));assert.equal(a.c.decisionOption(a.t).id,'defer_material_issue');assert.equal(stopped,1);a.c.decisionCapture(event({dataset:{object:'r'}}));assert.equal(stopped,1);assert.equal(a.c.decisionGuide(a.t).step,0);
@@ -230,6 +238,22 @@ test('five fallback actions satisfy decision-v2 and keep one primary action in e
  for(const id of ids){const a=app();a.t.descriptor=descriptor(fallbackOption(id));assert.equal(a.c.decisionValid(a.t.descriptor),true,id);const html=a.render();assert.equal((html.match(/class="primary"/g)||[]).length,1,id);assert.match(html,/业务判断/);assert.match(html,/data-task-action-field/);}
  const choice=app();choice.t.descriptor=descriptor(fallbackOption());choice.t.descriptor.options=ids.map(fallbackOption);choice.t.material_opinions=[];const choiceHtml=choice.render();assert.equal((choiceHtml.match(/class="primary"/g)||[]).length,1);assert.equal((choiceHtml.match(/data-guide="option"/g)||[]).length,5);
 });
+// 通用兜底动作每张卡片都一样，和这张卡的具体问题无关。七个按钮平铺出来，
+// 真正针对本问题的那一两个就被淹没了 —— 实测界面上根本看不出该点哪个。
+test('generic fallback actions are grouped away, unless they are all there is',()=>{
+ const ids=['record_judgement','suspend','request_supplement','mark_out_of_scope','escalate'];
+ const a=app(),primary=option();a.t.descriptor=descriptor(primary);a.t.descriptor.options=[primary,...ids.map(fallbackOption)];a.t.material_opinions=[];
+ const html=a.render();
+ assert.match(html,/其他处理方式 · 5 项/);
+ const groupStart=html.indexOf('decision-more-options');
+ for(const id of ids)assert(html.indexOf('data-option="'+id+'"')>groupStart,id);
+ assert(html.indexOf('data-option="confirm_invoice_amount"')<groupStart);
+ assert.doesNotMatch(html,/<details class="decision-more-options" open/);
+ const only=app();only.t.descriptor=descriptor(fallbackOption());only.t.descriptor.options=ids.map(fallbackOption);only.t.material_opinions=[];
+ const onlyHtml=only.render();
+ assert.doesNotMatch(onlyHtml,/decision-more-options/);
+ assert.equal((onlyHtml.match(/data-guide="option"/g)||[]).length,5);
+});
 test('role permissions disable escalation when there is no higher role',()=>{
  const a=app(),ids=['record_judgement','suspend','request_supplement','mark_out_of_scope','escalate'];a.c.state.role='admin';a.t.descriptor=descriptor(fallbackOption());a.t.descriptor.options=ids.map(fallbackOption);a.t.descriptor.options.find(o=>o.id==='escalate').permissions=['operator','accountant'];a.t.material_opinions=[];
  const html=a.render();assert.match(html,/data-option="escalate"[^>]*disabled/);const original=a.c.decisionGuide(a.t).option;a.c.decisionChoose(a.t,'escalate');assert.equal(a.c.decisionGuide(a.t).option,original);
@@ -244,4 +268,37 @@ test('fallback commit sends an explicit execute_task_action payload and follows 
 });
 test('decision-v1 remains visible but read only',()=>{
  const a=app(),legacy=descriptor();legacy.version='decision-v1';delete legacy.stage;delete legacy.why_now;legacy.options[0].effects=['历史影响'];a.t.descriptor=legacy;const html=a.render();assert.match(html,/历史办理契约（只读）/);assert.match(html,/历史影响/);assert.doesNotMatch(html,/<form|class="primary"|data-guide="commit"/);assert.equal(a.c.decisionReady(a.t),false);
+});
+
+function withComparison(comparison){
+ const a=app();
+ a.c.state.overview.material_review.records=[{object_id:'r',version:1,
+   source_anchor:{region:'A1'},values:{invoice_no:'2635',invoice_total:'156.00'},comparison}];
+ // 焦点字段由契约的 presentation 声明，没有它就只显示"请展开记录查看"。
+ a.t.descriptor.presentation={type_label:'采购发票',explanation:'请核对读取结果',
+   records:[{id:'r',focus_fields:comparison.map(c=>c.field)}]};
+ return a;
+}
+
+test('derived fields say what they were computed from, not "原值尚未定位"',()=>{
+ // 税局的进项清单没有"价税合计"这一列，系统由金额加税额算出。
+ // 笼统说"原值尚未定位"会让人去找一个根本不存在的列。
+ const html=withComparison([
+   {field:'invoice_total',source_value:null,value:'156.00',state:'DERIVED',
+    region:'发票!K4:L4',derivation:'net_amount + tax'}]).render();
+ assert.equal(/原值尚未定位/.test(html),false);
+ assert.match(html,/原件无此列，由.*算出/);
+});
+
+test('a genuinely unlocated field still says so',()=>{
+ const html=withComparison([
+   {field:'invoice_no',source_value:null,value:'2635',state:'UNLOCATED',region:''}]).render();
+ assert.match(html,/原值尚未定位/);
+});
+
+test('an empty source field is distinguished from a derived one',()=>{
+ const html=withComparison([
+   {field:'invoice_no',source_value:null,value:null,state:'MISSING',region:'发票!E4'}]).render();
+ assert.match(html,/原件此字段为空/);
+ assert.equal(/原件无此列/.test(html),false);
 });
