@@ -16,7 +16,7 @@ python3 -m pytest -q
 python3 -m uvicorn app.main:app --reload --port 8766
 ```
 
-服务地址为 <http://127.0.0.1:8766/>。正式企业总览位于 `/static/portfolio.html`，期间工作台位于 `/static/operator.html`，两者都只读取当前登录人被授权的 Scope；已确认的交互原型位于 `/static/operator-workbench-demo.html`，仍使用独立模拟数据，不应把原型的凭证和进度当作真实账务。
+服务地址为 <http://127.0.0.1:8766/>，根路径直接跳到期间工作台。期间工作台位于 `/static/operator.html`，企业总览位于 `/static/portfolio.html`，两者都只读取当前登录人被授权的 Scope。这是唯一的一套界面；早先的第一代单企业页面、交互原型和月度实验页已删除，不要再按旧路径找入口。
 
 默认开启认证：身份、角色和六段 Scope 授权由服务端管理，不能通过 `X-Actor-Id` / `X-Role` 自行赋权。无默认账号或默认密码。只在隔离的合成测试环境中使用 `FINWISE_REQUIRE_AUTH=false`；不要对真实资料或公网服务关闭认证。
 
@@ -31,20 +31,19 @@ python3 scripts/manage_access.py grant-scope accountant --scope-file /absolute/p
 
 登录接口 `POST /api/v1/auth/login` 接收 `username/password`，返回 `HttpOnly` 会话 Cookie 和 CSRF 令牌；后续 POST 请求必须携带 `X-CSRF-Token`，`GET /api/v1/auth/me` 可恢复登录上下文，`POST /api/v1/auth/logout` 撤销会话。`/static/operator.html` 提供正式认证后的企业选择、原件接收、解析、基线核对和命令操作界面；原来的单企业页面所写死的角色头不再授予权限。
 
-不要直接双击 `static/index.html` 作为完整应用入口；文件模式现在可以正常显示样式，但演示和查询仍需要后端服务。若直接打开 `static/operator.html`，页面会自动切换到本机 `8767` Staging 服务。未登录时只显示账号密码表单，登录成功后才显示该账号获权的处理范围。
+若以 `file://` 直接打开 `static/operator.html`，页面会自动切换到本机 `8767` 服务；查询和演示仍需要后端。未登录时只显示账号密码表单，登录成功后才显示该账号获权的处理范围。
 
-### Staging 真实 Gateway
+### 真实 Gateway 与部署
 
-本地 fixture 测试默认保持 `FINWISE_AGENT_MODE=disabled`。Staging 才启用服务端真实 Gateway；Harness 可加 `--replay` 验证固定输入回放：
+本地 fixture 测试默认保持 `FINWISE_AGENT_MODE=disabled`。启用服务端真实 Gateway 后，Harness 可加 `--replay` 验证固定输入回放：
 
 ```bash
-cp deploy/staging.env.example deploy/staging.env
-# 仅在本机密钥文件中填写 FINWISE_DEEPSEEK_API_KEY 和 Staging 测试账号
-docker compose -f deploy/docker-compose.staging.yml up -d --build
 python3 scripts/run_real_agent_harness.py --preflight
 ```
 
-Staging 使用独立 SQLite 和原始资料卷，必须开启认证；没有 API Key、Scope、业务组或 Harness 账号时应保持阻断。Harness 不接受 `model_output`，会通过登录、CSRF 和 `/api/v1/agent/*` 真实链路执行，并在报告中记录 `mock=false`、模型、Prompt 版本、输入/输出哈希和 Run ID。当前不连接生产数据，也不执行生产部署。
+Harness 不接受 `model_output`，会通过登录、CSRF 和 `/api/v1/agent/*` 真实链路执行，并在报告中记录 `mock=false`、模型、Prompt 版本、输入/输出哈希和 Run ID。
+
+容器部署只剩一套：`deploy/docker-compose.autonomous.yml` 负责构建应用与 Agent 任务镜像，`deploy/docker-compose.production.yml` 用构建好的镜像运行，步骤见 [docs/CLAUDE_CODE_DEPLOYMENT.md](docs/CLAUDE_CODE_DEPLOYMENT.md)。必须开启认证；没有 API Key、Scope 或账号时应保持阻断。
 
 ### 易代账文件适配
 

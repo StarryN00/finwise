@@ -6,7 +6,7 @@ from contextlib import asynccontextmanager
 
 from fastapi import FastAPI, Request
 from fastapi.exceptions import RequestValidationError
-from fastapi.responses import FileResponse, JSONResponse, Response
+from fastapi.responses import JSONResponse, RedirectResponse, Response
 from fastapi.staticfiles import StaticFiles
 from fastapi.middleware.cors import CORSMiddleware
 
@@ -84,17 +84,11 @@ def create_app(settings: Optional[Settings] = None, *, initialize: bool = True) 
 
     app.mount("/static", RevalidatingStatic(directory=static_dir), name="static")
 
-    @app.get("/styles.css", include_in_schema=False)
-    def root_stylesheet() -> FileResponse:
-        return FileResponse(static_dir / "styles.css", media_type="text/css")
-
-    @app.get("/app.js", include_in_schema=False)
-    def root_script() -> FileResponse:
-        return FileResponse(static_dir / "app.js", media_type="application/javascript")
-
+    # 根路径只负责把人送到期间工作台。早先的 index.html / app.js / styles.css
+    # 是第一代单企业页面，已删除，不要再在这里挂第二个入口。
     @app.get("/", include_in_schema=False)
-    def index() -> FileResponse:
-        return FileResponse(static_dir / "index.html")
+    def index() -> RedirectResponse:
+        return RedirectResponse(url="/static/operator.html", status_code=307)
 
     @app.get("/favicon.ico", include_in_schema=False)
     def favicon() -> Response:

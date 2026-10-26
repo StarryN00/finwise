@@ -2,66 +2,18 @@ from pathlib import Path
 from html.parser import HTMLParser
 
 
-def test_static_entry_uses_relative_assets_and_file_mode_has_api_fallback():
-    root = Path(__file__).resolve().parents[1]
-    html = (root / "static" / "index.html").read_text(encoding="utf-8")
-    script = (root / "static" / "app.js").read_text(encoding="utf-8")
-    assert 'href="styles.css"' in html
-    assert 'src="app.js"' in html
-    assert "window.location.protocol === 'file:'" in script
-    assert "http://127.0.0.1:8766" in script
+def test_http_root_redirects_to_operator_workbench(client):
+    """第一代 index.html / app.js / styles.css 已删除，根路径只剩一个入口。"""
+    response = client.get("/", follow_redirects=False)
+
+    assert response.status_code == 307
+    assert response.headers["location"] == "/static/operator.html"
+    assert client.get("/app.js").status_code == 404
+    assert client.get("/styles.css").status_code == 404
 
 
-def test_http_root_serves_relative_assets(client):
-    stylesheet = client.get("/styles.css")
-    script = client.get("/app.js")
-
-    assert stylesheet.status_code == 200
-    assert "--paper" in stylesheet.text
-    assert script.status_code == 200
-    assert "API_BASE" in script.text
-
-
-def test_operator_workbench_demo_is_standalone_and_covers_attention_flows():
-    root = Path(__file__).resolve().parents[1]
-    demo = (root / "static" / "operator-workbench-demo.html").read_text(encoding="utf-8")
-
-    assert "FinWise · 多企业待办驾驶舱 Demo" in demo
-    assert "昆山聚贤达信息科技有限公司" in demo
-    assert "苏州新启源科技有限公司" in demo
-    assert "新建企业" in demo
-    assert "等待上传" in demo
-    assert "localStorage" in demo
-    assert "模拟新异常" in demo
-    assert "确认已与客户核实" in demo
-    assert "其他企业不会被自动切换" not in demo
-    assert "当前只聚焦一个任务" not in demo
-    assert "营业执照号（演示）" in demo
-    assert '<span class="company-license">营业执照号' not in demo
-    assert "PROCESSING RESULT" not in demo
-    assert "SOURCE PACK" not in demo
-    assert "companySearch" in demo
-    assert "data-tag-company" in demo
-    assert "finwise.operator-workbench.company-tags" in demo
-    assert "finwise.operator-workbench.task-state" in demo
-    assert "finwise.operator-workbench.v5" in demo
-    assert "company-tools" in demo
-    assert "当前任务" in demo
-    assert "查看处理详情" in demo
-    assert 'aria-label="阶段工作区"' in demo
-    assert 'class="detail-tabs"' not in demo
-    assert 'data-action="detail"' not in demo
-    assert "renderStageInspection" not in demo
-    assert "整体阶段完成度" in demo
-    assert "已核实" in demo
-    assert "往期数据" in demo and "已归档凭证" in demo
-    assert "confirmationNote" in demo
-    assert "资料接收" in demo and "资料分析" in demo and "待确认与校验" in demo
-    assert "prefers-reduced-motion" in demo
-    assert "@media(max-width:760px)" in demo
-
-class DemoHTMLParser(HTMLParser):
-    """Validate explicit nesting and dependency-free static document chrome."""
+class PageHTMLParser(HTMLParser):
+    """Validate explicit nesting and the declared external-asset list of a page."""
     void_tags = {"area", "base", "br", "col", "embed", "hr", "img", "input",
                  "link", "meta", "param", "source", "track", "wbr"}
 
@@ -86,23 +38,6 @@ class DemoHTMLParser(HTMLParser):
 
     def handle_endtag(self, tag):
         assert self.stack and self.stack.pop() == tag
-
-
-def test_demo_html_structure_and_no_external_assets():
-    root = Path(__file__).resolve().parents[1]
-    parser = DemoHTMLParser()
-    parser.feed((root / "static" / "operator-workbench-demo.html").read_text(encoding="utf-8"))
-    parser.close()
-    assert parser.stack == []
-    assert parser.external_assets == []
-    assert {"companySearch", "main", "dialog", "sidebar"} <= parser.ids
-
-
-def test_http_serves_standalone_operator_demo(client):
-    response = client.get("/static/operator-workbench-demo.html")
-    assert response.status_code == 200
-    assert "text/html" in response.headers["content-type"]
-    assert "FinWise · 多企业待办驾驶舱 Demo" in response.text
 
 
 def test_http_serves_formal_portfolio_page_and_its_api_entry(client):
@@ -149,7 +84,7 @@ def test_formal_operator_page_connects_real_write_workflows_without_external_ass
     assert 'scrollIntoView' not in script and 'DEMO-IMPORT-' not in script
     assert '.problem-review-detail>.row{padding-bottom:12px;margin-bottom:12px}' in css
     assert '.problem-review-job>details,.problem-review-job>button{margin-top:12px}' in css
-    parser = DemoHTMLParser()
+    parser = PageHTMLParser()
     parser.feed(page)
     parser.close()
     assert parser.stack == []
