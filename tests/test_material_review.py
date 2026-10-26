@@ -1,5 +1,8 @@
 from copy import deepcopy
+import pytest
+from pydantic import ValidationError
 from app.ontology.contracts import Scope
+from app.materials import VerifyInput,VERIFY_TASK_RECORD_LIMIT
 from conftest import command
 from test_tabular_ingestion import uploaded,parse,xlsx_fixture,INVOICE_HEADERS
 
@@ -126,6 +129,40 @@ def test_one_file_is_one_check_and_only_its_own_records_can_be_submitted(client,
     response=command(client,scope,'verify_source_values',a['object_id'],a['version'],'foreign-record',
         {'task_id':checks[0]['id'],'records':[{'object_id':item['object_id'],'version':item['version']} for item in [f[0],other]]})
     assert response.status_code==409 and view(client,scope)['material_review']['counts']['source_verified']==0
+    # 不分页的意义就在这里：这条事项的 6 条能一次提交完，不用分两次。
+    records=[{'object_id':item['object_id'],'version':item['version']} for item in f]
+    response=command(client,scope,'verify_source_values',a['object_id'],a['version'],'whole-file',
+        {'task_id':checks[0]['id'],'records':records})
+    assert response.status_code==200,response.text
+    assert response.json()['effect']['verified_count']==6
+    assert view(client,scope)['material_review']['counts']['source_verified']==6
+
+
+def test_submit_limit_still_applies_although_one_file_is_one_task(client,scope):
+    """一份原件一条事项，所以 101 条记录也只有一条事项，不再切成 [100, 1]。
+
+    但提交上限仍然是 VERIFY_TASK_RECORD_LIMIT —— 事项比上限大时，
+    一次提交不完整个文件。
+    """
+    a=uploaded(client,scope,xlsx_fixture([('发票',[INVOICE_HEADERS]+[[f'I-{i}','2026-03-01','100','13','13%','甲'] for i in range(101)])]))
+    result=parse(client,scope,a).json()['effect']
+    tasks=[t for t in view(client,scope)['material_review']['tasks'] if t['kind']=='VERIFY']
+    assert len(tasks)==1 and len(tasks[0]['record_ids'])==101
+    refs=[{'object_id':item['object_id'],'version':item['version']} for item in result['facts']]
+    VerifyInput.model_validate({'task_id':tasks[0]['id'],'records':refs[:VERIFY_TASK_RECORD_LIMIT]})
+    with pytest.raises(ValidationError):
+        VerifyInput.model_validate({'task_id':tasks[0]['id'],'records':refs})
+
+
+def test_one_stale_version_rolls_back_every_record_in_the_task(client,scope):
+    a=uploaded(client,scope,xlsx_fixture([('发票',[INVOICE_HEADERS]+[[f'I-{i}','2026-03-01','100','13','13%','甲'] for i in range(6)])]))
+    result=parse(client,scope,a).json()['effect'];a=result['artifact'];facts=result['facts']
+    task=next(t for t in view(client,scope)['material_review']['tasks'] if t['kind']=='VERIFY')
+    records=[{'object_id':item['object_id'],'version':item['version']} for item in facts]
+    records[-1]['version']+=1
+    response=command(client,scope,'verify_source_values',a['object_id'],a['version'],'stale-one-of-many',{'task_id':task['id'],'records':records})
+    assert response.status_code==409
+    assert view(client,scope)['material_review']['counts']['source_verified']==0
 
 
 def test_missing_rate_is_not_a_material_error_or_financial_permission(client,scope):

@@ -85,7 +85,7 @@ ACTION_TYPES = (
             [effect('START_EXISTING_FLOW', 'SourceArtifact', '进入现有识别流程')], scope_kind='ARTIFACT'),
     _action('supplement', '补充资料', '沿用现有只追加上传入口。', 'SOURCE_REVIEW', ['当前问题'],
             [effect('NAVIGATE', 'SourceArtifact', '打开补充资料入口')]),
-    _action('verify_source_values', '确认原件与提取值一致', '核对当前页已查看的来源记录。', 'SOURCE_REVIEW',
+    _action('verify_source_values', '确认原件与提取值一致', '核对当前事项中已查看的来源记录。', 'SOURCE_REVIEW',
             ['原件有效', '来源定位完整', '提取重放一致'],
             [effect('CREATE', 'SourceVerification', '保存资料核实结果')],
             fields=[FieldDescriptor(name='records', label='已核对记录', component='slot', slot='record_selection', required=True),

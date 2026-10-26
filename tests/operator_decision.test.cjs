@@ -106,11 +106,28 @@ test('old descriptor can locate translated issue labels without inventing a new 
  const a=app(),r=a.c.state.overview.material_review.records[0];r.issues=['发票状态：须人工核对'];r.comparison=[{field:'invoice_status',source_label:'发票状态',source_value:'已红冲-全额',state:'DIRECT_MATCH'}];
  const html=a.render();assert.match(html,/已红冲-全额/);assert.match(html,/当前尚未提供具体问题解释/);assert.doesNotMatch(html,/确认提交摘要/);
 });
-test('verification uses compact current-page choices instead of duplicating full comparisons',()=>{
+test('verification selects the whole task across pages and keeps compact page rows',()=>{
  const a=app(),o=option('verify_source_values');o.fields=[{name:'records',label:'逐条核实',component:'slot',slot:'record_selection',required:true,properties:[]},{name:'note',label:'备注',component:'textarea',required:false,placeholder:'',max_length:2000}];a.t.descriptor=descriptor(o);
  for(let i=2;i<=7;i++){const id='r'+i;a.t.record_ids.push(id);a.c.state.overview.material_review.records.push({object_id:id,version:1,values:{invoice_no:'INV-'+i},source_anchor:{region:'A'+i}});a.t.descriptor.scope.records.push({id,version:1,source_anchor:{region:'A'+i}});}
  a.t.descriptor.why.evidence=structuredClone(a.t.descriptor.scope.records);let html=a.render();assert.equal((html.match(/data-material-record=/g)||[]).length,5);assert.equal((html.match(/SOURCE/g)||[]).length,1);assert.match(html,/decision-selection/);assert.equal(a.draft.selected.size,0);
- a.draft.selected.add('r');a.ui.page=1;html=a.render();assert.equal((html.match(/data-material-record=/g)||[]).length,2);assert.equal(a.draft.selected.size,0);assert.doesNotMatch(html,/data-material-record="r"/);assert.equal(a.c.decisionCanSubmit(a.t),false);
+ const card={querySelector:()=>null},button={dataset:{guide:'select-all-records'}};
+ a.c.decisionCapture({type:'click',target:{closest:s=>s==='button'?button:s==='.decision-chat'?card:null},preventDefault(){},stopImmediatePropagation(){}});
+ assert.equal(a.draft.selected.size,7);html=a.render();assert.match(html,/已选择 7\/7 条/);assert.match(html,/取消全选/);
+ a.ui.page=1;html=a.render();assert.equal((html.match(/data-material-record=/g)||[]).length,2);assert.equal(a.draft.selected.size,7);assert.match(html,/data-material-record="r6" checked/);assert.doesNotMatch(html,/data-material-record="r"/);
+ a.draft.selected.delete('r7');html=a.render();assert.match(html,/已选择 6\/7 条/);assert.match(html,/全选全部 7 条/);assert.equal(a.c.decisionAnswers(a.t,o).records.length,6);
+});
+// 006ea80 把原件对照收进一个放在操作区之前的折叠块；本分支的顺序正好相反 ——
+// 先问题与处理方式，原件明细折叠在最后（decisionOriginals）。意图一样：
+// 对照默认折叠、不挡在处理动作前面，所以这里断言的是本分支的方向。
+test('originals stay collapsed and sit after the action area, on every card shape',()=>{
+ const a=app(),html=a.render();
+ assert.match(html,/<details class="decision-originals">/);
+ assert.doesNotMatch(html,/class="decision-originals" open/);
+ assert(html.indexOf('decision-handling')<html.indexOf('decision-originals'),'处理动作必须排在原件详情之前');
+ const choice=app();choice.t.material_opinions=[];
+ assert.match(choice.render(),/decision-originals/);
+ choice.c.decisionChoose(choice.t,'confirm_invoice_amount');
+ assert.match(choice.render(),/decision-originals/);
 });
 test('guide option clicks select the requested option and source buttons are not intercepted',()=>{
  const a=app(),o=option('defer_material_issue');o.fields=[{name:'reason',component:'textarea',label:'原因',required:true,placeholder:'',max_length:2000}];o.steps=[{id:'reason',prompt:'为什么暂缓',fields:['reason']}];a.t.descriptor.options.push(o);const card={querySelector:()=>null};let stopped=0;const event=b=>({type:'click',target:{closest:s=>s==='.decision-chat'?card:b},preventDefault(){stopped++;},stopImmediatePropagation(){}});a.c.decisionCapture(event({dataset:{guide:'option',option:'defer_material_issue'}}));assert.equal(a.c.decisionOption(a.t).id,'defer_material_issue');assert.equal(stopped,1);a.c.decisionCapture(event({dataset:{object:'r'}}));assert.equal(stopped,1);assert.equal(a.c.decisionGuide(a.t).step,0);

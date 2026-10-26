@@ -14,10 +14,11 @@ function app(saved=new Map()){
  vm.runInContext(source+';installMaterialActions();installBankActions();globalThis.api={actions,materialState,openMaterialDetail,currentMaterialTask,materialDraft,materialSaveDraft,materialEntryStatus,materialAdvance,materialReturnList,bankDraft,bankState,resetBankState,openMapping};',context);
  return {...context.api,state,context,history,listeners,messages,saved};
 }
-test('a new runtime restores the scoped text draft and detail, but never saved record selections',()=>{
+test('a new runtime restores version-bound selections and drops them when the task fingerprint changes',()=>{
  const a=app();a.openMaterialDetail('a');const d=a.materialDraft(a.currentMaterialTask());d.reason='银行正在核对';d.defer=true;d.selected.add('r0');a.materialSaveDraft(a.currentMaterialTask());
  const b=app(a.saved),ui=b.materialState();assert.equal(ui.screen,'detail');assert.equal(b.currentMaterialTask().id,'a');
- const restored=b.materialDraft(b.currentMaterialTask());assert.equal(restored.reason,'银行正在核对');assert.equal(restored.defer,true);assert.equal(restored.selected.size,0);
+ const restored=b.materialDraft(b.currentMaterialTask());assert.equal(restored.reason,'银行正在核对');assert.equal(restored.defer,true);assert.equal(restored.selected.size,1);
+ const changed=app(a.saved);changed.state.overview.material_review.records[0].version=2;assert.equal(changed.materialDraft(changed.state.overview.material_review.tasks[0]).selected.size,0);
  b.state.user.user_id='another-operator';assert.equal(b.materialState().screen,'list');assert.equal(b.materialDraft(b.state.overview.material_review.tasks[0]).reason,'');
 });
 test('page navigation updates history and popstate preserves the target snapshot filter',()=>{

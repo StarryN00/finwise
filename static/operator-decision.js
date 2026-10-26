@@ -58,9 +58,16 @@ function decisionTriage(t){
 }
 function decisionSystemTask(t){return !!t.triage&&decisionTriage(t)?.route!=='HUMAN';}
 function decisionSource(t,selectable=false){
-  const {rows}=decisionEvidenceRows(t),d=materialDraft(t);
-  d.selected=new Set([...d.selected].filter(id=>rows.some(r=>r.object_id===id)));
-  return '<div class="decision-selection"><p class="small muted">完整对照在上方；只勾选本页已逐条核对的记录，切换查看不会自动勾选。</p>'+rows.map((r,i)=>'<div class="decision-select-row"><label class="mat-checkbox"><input type="checkbox" data-material-record="'+esc(r.object_id)+'" '+(d.selected.has(r.object_id)?'checked':'')+' '+(selectable?'':'disabled')+'>已核对 '+esc(r.values?.invoice_no||r.values?.person_name||r.values?.acceptance_no||'本页记录 '+(i+1))+' · '+esc(r.source_anchor?.region||'来源定位未提供')+'</label><button type="button" class="text" data-guide="record" data-record="'+esc(r.object_id)+'" data-source-jump="true">查看对照</button></div>').join('')+'</div>';
+  const {all,rows}=decisionEvidenceRows(t),d=materialDraft(t),valid=new Set(all.map(r=>r.object_id));
+  d.selected=new Set([...d.selected].filter(id=>valid.has(id)));
+  const count=d.selected.size,complete=all.length>0&&count===all.length;
+  return '<div class="decision-selection"><div class="decision-selection-tools"><button type="button" class="secondary" data-guide="select-all-records" aria-pressed="'+complete+'" '+(selectable?'':'disabled')+'>'+(complete?'取消全选':'全选全部 '+all.length+' 条')+'</button><span class="small muted" data-selection-status tabindex="-1" role="status" aria-live="polite">已选择 '+count+'/'+all.length+' 条</span></div><p class="small muted">需要复查时可展开核对依据；可逐条选择，或一次选择当前事项的全部记录。</p>'+rows.map((r,i)=>'<div class="decision-select-row"><label class="mat-checkbox"><input type="checkbox" data-material-record="'+esc(r.object_id)+'" '+(d.selected.has(r.object_id)?'checked':'')+' '+(selectable?'':'disabled')+'>已核对 '+esc(r.values?.invoice_no||r.values?.person_name||r.values?.acceptance_no||'记录 '+(all.indexOf(r)+1))+' · '+esc(r.source_anchor?.region||'来源定位未提供')+'</label><button type="button" class="text" data-guide="record" data-record="'+esc(r.object_id)+'" data-source-jump="true">查看对照</button></div>').join('')+'</div>';
+}
+function decisionRefreshSelectionStatus(t){
+  const {all}=decisionEvidenceRows(t),d=materialDraft(t),valid=new Set(all.map(r=>r.object_id));d.selected=new Set([...d.selected].filter(id=>valid.has(id)));
+  const count=d.selected.size,complete=all.length>0&&count===all.length,status=document.querySelector?.('[data-selection-status]'),button=document.querySelector?.('[data-guide="select-all-records"]');
+  if(status)status.textContent='已选择 '+count+'/'+all.length+' 条';
+  if(button){button.textContent=complete?'取消全选':'全选全部 '+all.length+' 条';button.setAttribute?.('aria-pressed',String(complete));}
 }
 function decisionPresentation(t){
   const p=t.descriptor.presentation;
@@ -233,7 +240,7 @@ function decisionValidateStep(t,o,index,form){
   return true;
 }
 function decisionReady(t){const h=decisionHandling(t);return !!t&&t.descriptor?.version==='decision-v2'&&!decisionSystemTask(t)&&(!h||h.owner==='USER')&&decisionValid(t.descriptor)&&decisionBound(t)&&materialTaskIsCurrent(t)&&materialCanWrite();}
-function decisionShowStep(){render();document.querySelector?.('.decision-chat [data-current-question]')?.focus({preventScroll:true});}
+function decisionShowStep(){render();const current=document.querySelector?.('.decision-chat [data-current-question]');current?.scrollIntoView?.({block:'start',behavior:'auto'});current?.focus({preventScroll:true});}
 function decisionChoose(t,id,preserveSuggestion=false){
   if(!decisionReady(t))return;
   const o=t.descriptor.options.find(o=>o.id===id);if(!decisionOptionAvailable(o))return;
@@ -435,6 +442,11 @@ function decisionCapture(event){
   if(b.dataset.guide==='task-action-revoke')return decisionOpenTaskActionRevoke(t);
   if(!decisionReady(t))return;
   const g=decisionGuide(t),form=card.querySelector('form'),act=b.dataset.guide;
+  if(act==='select-all-records'){
+    const {all}=decisionEvidenceRows(t),d=materialDraft(t),complete=all.length>0&&all.every(r=>d.selected.has(r.object_id));
+    for(const r of all)complete?d.selected.delete(r.object_id):d.selected.add(r.object_id);
+    g.reviewed='';materialSaveDraft(t);decisionRemember(t);render();document.querySelector?.('[data-selection-status]')?.focus({preventScroll:true});return;
+  }
   if(op){if(op.id===g.option)decisionNext(t,form);else decisionChoose(t,op.id);return;}
   if(act==='option')return decisionChoose(t,b.dataset.option);
   if(act==='suggestion')return decisionUseSuggestion(t,b.dataset.option);

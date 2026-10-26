@@ -207,7 +207,7 @@ def _render(outcome, result, task, rows, checks, context):
     elif outcome == 'verify':
         explanation = presentation.get('explanation') or '请逐条核对当前记录的原件字段与提取值是否一致。'
         return _human(result, descriptor, explanation,
-                      ['逐条查看原件与提取值；一致后，仅勾选当前页已核对的记录。此次确认不代表业务真实或账务可用。'])
+                      ['逐条查看原件与提取值；一致后，仅勾选当前事项中已核对的记录。此次确认不代表业务真实或账务可用。'])
     elif outcome == 'safe_unknown':
         result['fallback_eligible'] = True
         explanation = ('当前问题已绑定到可核验的原件和记录，但没有匹配到专用业务动作；'

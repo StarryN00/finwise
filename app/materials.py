@@ -9,6 +9,8 @@ from app.ontology.errors import PermissionDenied, PreconditionFailed, VersionCon
 from app.ontology.store import digest
 from app.action_types import ACTION_TYPE_BY_ID, FALLBACK_IDS
 
+VERIFY_TASK_RECORD_LIMIT = 100
+
 
 def arithmetic_ok(artifact):
     """这份原件是否通过了可验证的算术核对。
@@ -161,7 +163,7 @@ class RecordRef(BaseModel):
 class VerifyInput(BaseModel):
     model_config=ConfigDict(extra='forbid',str_strip_whitespace=True)
     task_id: StrictStr
-    records: list[RecordRef] = Field(min_length=1,max_length=5)
+    records: list[RecordRef] = Field(min_length=1,max_length=VERIFY_TASK_RECORD_LIMIT)
     note: StrictStr = Field(default='',max_length=2000)
 
 
@@ -400,7 +402,7 @@ class MaterialReview:
         try:
             value=(ReasonInput if action=='defer_material_issue' else VerifyInput).model_validate(payload)
         except ValidationError as exc:
-            raise PreconditionFailed('请填写有效原因或选择当前页记录；不允许提交修改值或责任人') from exc
+            raise PreconditionFailed('请填写有效原因或选择当前事项记录；不允许提交修改值或责任人') from exc
         if action=='defer_material_issue':
             overview=self.service.workbench(scope)['material_review']
             task=next((t for t in overview['tasks'] if t['id']==value.task_id and t['artifact_id']==target),None)
@@ -419,7 +421,7 @@ class MaterialReview:
         refs=value.records
         task=next((t for t in self.service.workbench(scope)['material_review']['tasks'] if t['id']==value.task_id and t['kind']=='VERIFY' and t['artifact_id']==target),None)
         if not task or not {r.object_id for r in refs}.issubset(task['record_ids']):
-            raise PreconditionFailed('核实页面已变化或包含未展示的记录，请刷新后选择当前事项')
+            raise PreconditionFailed('核实事项已变化或包含事项外记录，请刷新后重新选择')
         if len({r.object_id for r in refs})!=len(refs):
             raise PreconditionFailed('不可重复选择同一条记录')
         from app.tabular import extract_workbook, ParseOptions, ExtractionError
