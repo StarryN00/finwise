@@ -85,17 +85,22 @@ def test_workbench_progress_is_server_derived_from_actual_stage_state(client, sc
     typed = Scope(**scope)
     service.create_scope(typed, actor_id="fixture")
     empty = client.post("/api/v1/workbench", json={"scope": scope}).json()
-    assert empty["progress"]["overall_percent"] == 0
-    assert empty["progress"]["completed_count"] == 0
-    assert empty["progress"]["current_stage"] == "source"
-    assert [item["name"] for item in empty["progress"]["stages"]] == ["资料接收", "资料分析", "待确认与校验", "凭证复核", "交付归档"]
+    assert empty["progress"]["completed_count"] == 1, "能读到这个工作台就说明第一步「创建企业」已经做完"
+    assert empty["progress"]["total_count"] == 6, "主线只数六步；交付归档不在主线内"
+    assert empty["progress"]["overall_percent"] == 16
+    assert empty["progress"]["current_stage"] == "history", "全新企业的下一步是导入历史资料，不是直接传当月"
+    assert [item["name"] for item in empty["progress"]["stages"]] == [
+        "创建企业", "导入历史资料", "导入当月资料", "AI 处理", "人工确认", "凭证生成与复核", "交付归档"]
+    assert [item["id"] for item in empty["progress"]["stages"] if not item["main_line"]] == ["delivery"], \
+        "交付归档在当前实现里永远 WAITING，算进百分比会让人以为本月还差一步"
 
     populated = client.post("/api/v1/demo/procurement", json={"scope": scope, "variant": "normal"})
     assert populated.status_code == 200, populated.text
     overview = client.post("/api/v1/workbench", json={"scope": scope}).json()
     assert overview["progress"]["overall_percent"] > 0
-    assert overview["progress"]["stages"][0]["status"] == "COMPLETED"
-    assert overview["progress"]["overall_percent"] == round(overview["progress"]["completed_count"] / 5 * 100)
+    assert next(i for i in overview["progress"]["stages"] if i["id"] == "source")["status"] == "COMPLETED"
+    assert overview["progress"]["overall_percent"] == int(
+        overview["progress"]["completed_count"] / overview["progress"]["total_count"] * 100)
 
 
 def test_full_procurement_vertical_slice_and_delivery(client, scope):
