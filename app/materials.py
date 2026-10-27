@@ -8,6 +8,7 @@ from app.db import utcnow
 from app.ontology.errors import PermissionDenied, PreconditionFailed, VersionConflict
 from app.ontology.store import digest
 from app.action_types import ACTION_TYPE_BY_ID, FALLBACK_IDS
+from app.task_descriptors import VERIFY_FIELD_LABELS
 
 VERIFY_TASK_RECORD_LIMIT = 100
 
@@ -41,6 +42,31 @@ def problem_kind(kind, action, rows):
     if kind == 'PARSE':
         return 'UNREADABLE' if action == 'parse' or not rows else 'UNVERIFIED'
     return 'JUDGEMENT'
+
+
+
+def short_title(reason):
+    """事项标题：不带原始值，字段名用中文。
+
+    issue 的 `reason` 是事项身份 —— 去重按它、`dismissed` 也按它索引 —— 不能改；
+    能改的是显示出来的标题。两件事：
+
+    **括号里是原始值。** 扫描件多次识别不一致时，会把读到的几个值都拼进 reason，
+    其中包括银行账号。实测右侧事项列表上出现过
+    「counterparty_account：识别结果不稳定（<一串银行账号>、<另一串>…」 ——
+    列表上不该出现账号。所以标题一律截到「（」为止；完整 reason 仍在事项里，
+    原值在卡片折叠的原件详情里看得到，排查时一条都不少。
+
+    **前缀是英文字段名**（`counterparty_account` 这种），对代账会计没有意义。
+    换成和核对卡同一套中文名（`VERIFY_FIELD_LABELS`），不另造一套词汇。
+    """
+    text = reason.split('（', 1)[0].split('(', 1)[0].strip().rstrip('，,、')
+    field, separator, rest = text.partition('：')
+    if not separator or not rest:
+        return text
+    if field.startswith('unmapped_'):
+        return f"未识别列 {field[len('unmapped_'):]}：{rest}"
+    return f"{VERIFY_FIELD_LABELS[field]}：{rest}" if field in VERIFY_FIELD_LABELS else text
 
 
 def problem_buckets(tasks):
@@ -294,7 +320,11 @@ class MaterialReview:
                 'verification':verified.get(f['object_id'])})
         tasks=[]
         def task(kind,artifact,title,rows,reason,action,optional=False,problem=None):
+            # 「确认流水所属银行」比通用短标题更说得清这件事要干嘛，留着。
             if reason.startswith('bank_account_ref：'):title='确认流水所属银行'
+            # 调用方没给更好的标题时（ISSUE 类直接把 reason 当标题），
+            # 才做这一步 —— 其余 kind 的标题是写死的好标题，不要碰。
+            elif title==reason:title=short_title(reason)
             binding={'artifact_id':artifact['object_id'],'version':artifact['version'],'sha256':artifact['data'].get('sha256'),
                      'records':[(r['object_id'],r['version']) for r in rows],'kind':kind,'reason':reason}
             key='material-'+digest(binding)
