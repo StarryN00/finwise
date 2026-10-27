@@ -442,6 +442,8 @@ class HistoricalPreparation:
         with self.store.database.transaction():
             for item in self.store.list_scope_objects():
                 scope = Scope(**item["data"]["scope"])
+                if hasattr(self.service, 'autonomous') and self.service.autonomous.owns(scope):
+                    continue
                 job = self.get(scope)
                 if not job or job["status"] not in {"QUEUED", "RUNNING"}:
                     continue
@@ -534,6 +536,8 @@ class HistoricalPreparation:
         # Reconcile only explicit historical uploads. Also repairs upload/queue crash gaps.
         for item in self.store.list_scope_objects():
             scope = Scope(**item["data"]["scope"])
+            if hasattr(self.service, 'autonomous') and self.service.autonomous.owns(scope):
+                continue
             sources, job = self.sources(scope), self.get(scope)
             if sources and (not job or job["data"].get("cohort_hash") != digest([self.binding(s) for s in sources])):
                 try:

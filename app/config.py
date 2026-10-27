@@ -4,6 +4,11 @@ import os
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Optional
+from urllib.parse import urlsplit
+
+
+def deepseek_claude_endpoint(url: str) -> bool:
+    return url.rstrip('/') == 'https://api.deepseek.com/anthropic'
 
 
 @dataclass(frozen=True)
@@ -14,6 +19,26 @@ class Settings:
     require_auth: bool = True
     environment: str = "development"
     agent_mode: str = "disabled"
+    agent_loop_enabled: bool = False
+    agent_loop_max_steps: int = 12
+    monthly_agent_enabled: bool = False
+    autonomous_enabled: bool = False
+    autonomous_codex_path: str = "/Applications/ChatGPT.app/Contents/Resources/codex-cli/bin/codex"
+    autonomous_model: str = "gpt-6-astra"
+    autonomous_backend: str = "codex"
+    autonomous_claude_path: str = "claude"
+    autonomous_claude_model: str = "sonnet"
+    autonomous_claude_api_key: str = ""
+    autonomous_claude_base_url: str = "https://api.anthropic.com"
+    autonomous_claude_budget_usd: float = 0.0
+    autonomous_resume_from: Optional[Path] = None
+    autonomous_codex_api_key: str = ""
+    autonomous_execution_mode: str = "local"
+    autonomous_container_image: str = "finwise-agent:20260925"
+    autonomous_host_run_root: str = ""
+    autonomous_docker_path: str = "docker"
+    autonomous_max_rounds: int = 3
+    autonomous_timeout: int = 1500
     agent_provider: str = "deepseek"
     agent_model: str = "deepseek-chat"
     # 按任务分级：结构与判断类用推理档，图像类只能用带视觉的那一档，高频轻任务用快档。
@@ -87,6 +112,11 @@ class Settings:
             except ValueError as exc:
                 raise ValueError(f"{name} 必须是数字") from exc
 
+        claude_base_url = os.getenv('FINWISE_CLAUDE_BASE_URL', 'https://api.anthropic.com')
+        claude_api_key = os.getenv('FINWISE_CLAUDE_API_KEY', '') or (
+            os.getenv('FINWISE_DEEPSEEK_API_KEY', '') if deepseek_claude_endpoint(claude_base_url)
+            else os.getenv('ANTHROPIC_API_KEY', ''))
+
         return cls(
             root=project_root,
             database_path=database_path,
@@ -94,6 +124,25 @@ class Settings:
             require_auth=os.getenv("FINWISE_REQUIRE_AUTH", "true").lower() not in {"0", "false", "no"},
             environment=os.getenv("FINWISE_ENVIRONMENT", "development").lower(),
             agent_mode=os.getenv("FINWISE_AGENT_MODE", "disabled").lower(),
+            agent_loop_enabled=os.getenv("FINWISE_AGENT_LOOP_ENABLED", "true").lower() in {"1", "true", "yes"},
+            agent_loop_max_steps=max(4, min(30, env_int("FINWISE_AGENT_LOOP_MAX_STEPS", 12))),
+            monthly_agent_enabled=os.getenv("FINWISE_MONTHLY_AGENT_ENABLED", "false").lower() in {"1", "true", "yes"},
+            autonomous_enabled=os.getenv("FINWISE_AUTONOMOUS_ENABLED", "false").lower() in {"1", "true", "yes"},
+            autonomous_codex_path=os.getenv("FINWISE_AUTONOMOUS_CODEX_PATH", "/Applications/ChatGPT.app/Contents/Resources/codex-cli/bin/codex"),
+            autonomous_model=os.getenv("FINWISE_AUTONOMOUS_MODEL", "gpt-6-astra"),
+            autonomous_backend=os.getenv("FINWISE_AUTONOMOUS_BACKEND", "codex"),
+            autonomous_claude_path=os.getenv("FINWISE_AUTONOMOUS_CLAUDE_PATH", "claude"),
+            autonomous_claude_model=os.getenv("FINWISE_AUTONOMOUS_CLAUDE_MODEL", "sonnet"),
+            autonomous_claude_api_key=claude_api_key,
+            autonomous_claude_base_url=claude_base_url,
+            autonomous_claude_budget_usd=env_float("FINWISE_CLAUDE_BUDGET_USD", 0.0),
+            autonomous_codex_api_key=os.getenv("FINWISE_CODEX_API_KEY", ""),
+            autonomous_execution_mode=os.getenv("FINWISE_AUTONOMOUS_EXECUTION_MODE", "local"),
+            autonomous_container_image=os.getenv("FINWISE_AUTONOMOUS_CONTAINER_IMAGE", "finwise-agent:20260925"),
+            autonomous_host_run_root=os.getenv("FINWISE_AUTONOMOUS_HOST_RUN_ROOT", ""),
+            autonomous_docker_path=os.getenv("FINWISE_AUTONOMOUS_DOCKER_PATH", "docker"),
+            autonomous_max_rounds=max(1, min(3, env_int("FINWISE_AUTONOMOUS_MAX_ROUNDS", 3))),
+            autonomous_timeout=max(60, min(2400, env_int("FINWISE_AUTONOMOUS_TIMEOUT", 1500))),
             agent_provider=os.getenv("FINWISE_AGENT_PROVIDER", "deepseek").lower(),
             agent_model=os.getenv("FINWISE_AGENT_MODEL", "deepseek-chat"),
             agent_model_reasoning=os.getenv("FINWISE_AGENT_MODEL_REASONING", ""),
@@ -159,9 +208,27 @@ class Settings:
         return self.agent_model
 
     def validate_runtime(self) -> None:
+        if self.autonomous_backend not in {'codex', 'claude_code'}:
+            raise ValueError('自主执行器只能是 codex 或 claude_code')
+        if self.autonomous_execution_mode not in {'local', 'docker'}:
+            raise ValueError('自主执行方式只能是 local 或 docker')
+        if not 0 <= self.autonomous_claude_budget_usd <= 100:
+            raise ValueError('Claude 单次执行预算须为0（不设费用上限）或不超过100美元的正数')
+        if self.autonomous_enabled and self.environment != 'development' and self.autonomous_execution_mode != 'docker':
+            raise ValueError("本机执行器仅用于 development；服务器须配置 docker 任务隔离以提供进程读取隔离")
+        if self.autonomous_enabled and self.autonomous_execution_mode == 'docker':
+            if not self.autonomous_host_run_root or not Path(self.autonomous_host_run_root).is_absolute():
+                raise ValueError('容器执行须配置宿主机绝对任务目录')
+            if not self.autonomous_container_image or self.autonomous_container_image.startswith('-'):
+                raise ValueError('须配置有效的受控任务镜像')
+        if self.environment == 'production' and not self.autonomous_claude_base_url.startswith('https://'):
+            raise ValueError('生产环境 Claude Base URL 必须使用 HTTPS')
+        endpoint = urlsplit(self.autonomous_claude_base_url)
+        if endpoint.username or endpoint.password or endpoint.query or endpoint.fragment:
+            raise ValueError('模型接口 URL 不得包含凭据或查询参数；密钥须使用专用配置项')
         if self.environment in {"staging", "production"} and not self.require_auth:
             raise ValueError("Staging/生产环境必须开启认证")
-        if self.environment in {"staging", "production"} and self.agent_mode != "gateway":
+        if self.environment in {"staging", "production"} and self.agent_mode != "gateway" and not self.autonomous_enabled:
             raise ValueError("Staging/生产环境必须启用真实 Agent Gateway")
         if self.agent_mode not in {"disabled", "gateway"}:
             raise ValueError("FINWISE_AGENT_MODE 只能是 disabled 或 gateway")

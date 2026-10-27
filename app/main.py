@@ -17,6 +17,9 @@ from app.db import Database
 from app.ontology.errors import DomainError
 from app.ontology.store import ObjectStore
 from app.ontology.service import OntologyService
+from app.monthly_agent import MonthlyAgent
+from app.monthly_api import router as monthly_router
+from app.autonomous_api import router as autonomous_router
 
 
 def create_app(settings: Optional[Settings] = None, *, initialize: bool = True) -> FastAPI:
@@ -28,6 +31,7 @@ def create_app(settings: Optional[Settings] = None, *, initialize: bool = True) 
         app.state.database = database
         app.state.store = ObjectStore(database)
         app.state.service = OntologyService(app.state.store)
+        app.state.monthly_agent = MonthlyAgent(app.state.service)
 
     @asynccontextmanager
     async def lifespan(app: FastAPI):
@@ -36,12 +40,18 @@ def create_app(settings: Optional[Settings] = None, *, initialize: bool = True) 
         app.state.service.historical.start()
         app.state.service.payroll_mapping.start()
         app.state.service.problem_review.start()
+        app.state.service.material_agent.start()
+        app.state.monthly_agent.start()
+        app.state.service.autonomous.start()
         try:
             yield
         finally:
             app.state.service.historical.stop()
             app.state.service.payroll_mapping.stop()
             app.state.service.problem_review.stop()
+            app.state.service.material_agent.stop()
+            app.state.monthly_agent.stop()
+            app.state.service.autonomous.stop()
 
     app = FastAPI(title="FinWise Ontology Finance System", version="0.1.0", lifespan=lifespan)
     app.add_middleware(CORSMiddleware, allow_origins=["null", "http://127.0.0.1:8766", "http://localhost:8766"], allow_methods=["*"], allow_headers=["*"])
@@ -50,6 +60,8 @@ def create_app(settings: Optional[Settings] = None, *, initialize: bool = True) 
         initialize_runtime(app)
     app.include_router(router)
     app.include_router(auth_router)
+    app.include_router(monthly_router)
+    app.include_router(autonomous_router)
 
     @app.exception_handler(DomainError)
     async def domain_error_handler(_: Request, exc: DomainError) -> JSONResponse:

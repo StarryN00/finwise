@@ -192,6 +192,10 @@ class OntologyService:
         self.bank_periods = BankPeriods(self)
         from app.material_guidance import MaterialGuidance
         self.material_guidance = MaterialGuidance(self)
+        from app.material_agent import MaterialAgent
+        self.material_agent = MaterialAgent(self)
+        from app.autonomous_workflow import AutonomousWorkflow
+        self.autonomous = AutonomousWorkflow(self)
 
     # ---------- scope, time and immutable source ----------
 
@@ -345,8 +349,12 @@ class OntologyService:
             created_by=actor_id,
         )
         self.store.add_audit("ARTIFACT_RECEIVED", actor_id, value.scope, object_type=artifact["object_type"], object_id=artifact["object_id"], object_version=1, after=artifact, reason="原始资料只追加保存")
-        if value.source_purpose == "historical_reference":
+        if self.store.database.settings.autonomous_enabled:
+            self.autonomous.signal(value.scope, actor_id)
+        elif value.source_purpose == "historical_reference":
             self.historical.enqueue(value.scope, actor_id)
+        elif self.material_agent.enabled:
+            self.material_agent.signal(value.scope, actor_id)
         return artifact
 
     def archive_artifact(self, scope: Scope, *, artifact_id: str, actor_id: str, expected_version: int) -> dict[str, Any]:
@@ -1396,6 +1404,8 @@ class OntologyService:
     def validate_draft(self, scope: Scope, *, voucher_id: str, actor_id: str, expected_version: int) -> dict[str, Any]:
         self._ensure_period_open(scope)
         voucher = self.store.get_object(voucher_id, scope)
+        if voucher["data"].get("origin") == "autonomous-monthly-v1":
+            return self.autonomous.validate_voucher(scope, voucher, actor_id, expected_version)
         if voucher["version"] != expected_version:
             raise VersionConflict()
         if voucher["status"] not in {"DRAFT", "REVISED"}:
@@ -1427,6 +1437,8 @@ class OntologyService:
     def revise_voucher(self, scope: Scope, *, voucher_id: str, actor_id: str, expected_version: int, lines: list[dict[str, Any]]) -> dict[str, Any]:
         self._ensure_period_open(scope)
         voucher = self.store.get_object(voucher_id, scope)
+        if voucher["data"].get("origin") == "autonomous-monthly-v1":
+            raise PreconditionFailed("自主候选不能通过旧修订入口直接改分录；请补充业务依据后重新处理")
         if voucher["version"] != expected_version:
             raise VersionConflict()
         if any(p["data"].get("voucher_version_id") == voucher_id and p["status"] != "VOID" for p in self.store.list_objects(ObjectType.DELIVERY_PACKAGE.value, scope)):
@@ -1563,6 +1575,8 @@ class OntologyService:
         return {"receipt": receipt_object, "package": imported, "deduplicated": False}
 
     def close_period(self, scope: Scope, *, actor_id: str, expected_version: int) -> dict[str, Any]:
+        if self.autonomous.owns(scope) or any(v["data"].get("origin") == "autonomous-monthly-v1" for v in self.store.list_objects("VoucherVersion", scope)):
+            raise PreconditionFailed("月度自主处理只形成复核候选，尚未正式交付，不能关账")
         self._ensure_period_open(scope)
         period = self.store.get_object(self._period_object_id(scope), scope)
         if period["version"] != expected_version:
@@ -2546,6 +2560,8 @@ class OntologyService:
                 "next_action": "版式已登记，请对该原件重新解析"}
 
     def workbench(self, scope: Scope, *, _problem_review: bool = True, actor_id: str | None = None) -> dict[str, Any]:
+        if self.store.database.settings.autonomous_enabled:
+            return self.autonomous.project(scope)
         period = self.store.get_object(self._period_object_id(scope), scope)
         baseline = self.store.get_object(self._baseline_object_id(scope), scope)
         try:
@@ -2682,16 +2698,35 @@ class OntologyService:
         material_review = self.materials.view(scope,readiness,artifacts,facts,bill_review,invoice_review)
         review = {'jobs':[], 'counts':{}, 'system_tasks':[], 'fingerprint':''}
         if _problem_review:
+            if self.material_agent.enabled:
+                material_review = self.material_agent.prepare_issues(scope, material_review)
             material_review, review = self.problem_review.project(scope, material_review, artifacts, facts)
             material_review = self.materials.task_action_projection(scope, material_review)
             material_review = self.material_guidance.project(scope,material_review,actor_id=actor_id)
+            if self.material_agent.enabled:
+                material_review = self.material_agent.project(scope, material_review)
         material_review['action_metrics'] = self._action_metrics(scope)
         # 第二步不是"解析完就完了"：系统要把每件事消化到有结论，才轮到人。
         # 否则界面上「资料分析 ✓」会和第三步里一堆「等待系统检查」同时成立，自相矛盾。
         progress = _progress_with_digestion(progress, material_review)
+        agent_processing = material_review.get('agent_processing')
+        if agent_processing and agent_processing['jobs']:
+            for stage in progress['stages']:
+                if stage['id'] == 'analysis':
+                    stage['status'] = 'PARTIAL' if agent_processing['active'] or agent_processing['not_started'] or agent_processing['blocked'] else 'COMPLETED'
+                    stage['summary'] = f"已核验 {agent_processing['verified']} 份，处理中 {agent_processing['active']} 份，受阻 {agent_processing['blocked']} 份"
+            progress['completed_count'] = sum(s['status'] == 'COMPLETED' for s in progress['stages'])
+            progress['overall_percent'] = int(progress['completed_count'] / len(progress['stages']) * 100)
+            progress['current_stage'] = next((s['id'] for s in progress['stages'] if s['status'] != 'COMPLETED'), 'delivery')
         material_review['next_step'] = self._workbench_next_step(
             progress, material_review, current_artifacts, blockers, cards, vouchers, groups, baseline_validation)
+        if agent_processing and (agent_processing['active'] or agent_processing['not_started'] or
+                                 agent_processing['blocked'] and not material_review.get('flow', {}).get('next_step')):
+            material_review['next_step'] = {'owner': 'SYSTEM', 'state': 'RUNNING' if agent_processing['active'] else 'BLOCKED',
+                'title': '系统先处理原件', 'explanation': '自动核验和查证后再交接具体问题；受阻事项保留原因。',
+                'task_id': None, 'action': None}
         return {
+            "autonomous_available": self.store.database.settings.autonomous_enabled,
             "scope": scope.model_dump(), "display_context": self.display_context(scope), "period": period, "baseline": baseline,
             "baseline_validation": baseline_validation, "current_run": current_run, "latest_run_only": True,
             "historical_preparation": historical_preparation,
@@ -2730,6 +2765,35 @@ class OntologyService:
                 next_action = "接收原始资料"
             else:
                 next_action = "查看期间工作台"
+            workflow = overview.get("autonomous_workflow")
+            progress = overview.get("progress", {})
+            stage = next((s for s in progress.get("stages", [])
+                          if s["id"] == progress.get("current_stage")), {})
+            if workflow:
+                todo_count = sum(bool(f.get("needs_user")) for f in workflow["findings"])
+                job_data = (workflow.get("job") or {}).get("data", {})
+                summary = {
+                    "mode": "AUTONOMOUS", "status": workflow["status"],
+                    "label": workflow["label"], "message": job_data.get("message", ""),
+                    "todo_count": todo_count,
+                    "review_count": max(0, workflow["ready_count"] - workflow["confirmed_count"]),
+                    "confirmed_count": workflow["confirmed_count"],
+                    "pending_voucher_count": workflow["pending_count"],
+                    "blocked_count": workflow["blocked_count"],
+                    "source_count": workflow["source_count"], "revision": job_data.get("revision"),
+                }
+                next_action = overview["material_review"]["next_step"]["title"]
+            else:
+                todo_count = len(overview["pending_confirmation_cards"])
+                summary = {
+                    "mode": "LEGACY", "status": stage.get("status", "WAITING"),
+                    "label": stage.get("name", "等待处理"), "message": next_action,
+                    "todo_count": todo_count,
+                    "review_count": sum(v["status"] in {"DRAFT", "REVISED"} for v in overview["vouchers"]),
+                    "confirmed_count": sum(v["status"] == "LOCALLY_CONFIRMED" for v in overview["vouchers"]),
+                    "pending_voucher_count": 0, "blocked_count": len(overview["blockers"]),
+                    "source_count": counts["source_artifacts"], "revision": None,
+                }
             items.append({
                 "scope": overview["scope"],
                 "display_context": overview["display_context"],
@@ -2745,10 +2809,13 @@ class OntologyService:
                 },
                 "counts": counts,
                 "blockers": overview["blockers"],
-                "pending_confirmation_cards": len(overview["pending_confirmation_cards"]),
+                "pending_confirmation_cards": todo_count,
                 "deliverable_groups": len(overview["deliverable_groups"]),
                 "current_run": overview["current_run"],
                 "next_action": next_action,
+                "progress": progress,
+                "work_summary": summary,
+                "autonomous_workflow": {"status": workflow["status"], "label": workflow["label"]} if workflow else None,
             })
         return {"scope_count": len(items), "scopes": items}
 
