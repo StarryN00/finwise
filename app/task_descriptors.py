@@ -179,6 +179,10 @@ VERIFY_FIELD_LABELS = {
     'account': '个人公积金账号', 'account_code': '科目编码', 'account_name': '科目名称',
     'opening_debit': '期初借方余额', 'opening_credit': '期初贷方余额',
     'supplier': '供应商', 'item': '存货名称',
+    # 扫描件对账单的字段。事项标题也用这套名字，不另造一套词汇。
+    'counterparty_account': '对方账号', 'counterparty_name': '对方名称',
+    'summary': '摘要', 'currency': '币种', 'direction': '收支方向',
+    'maturity_date': '到期日', 'row': '行存在性',
 }
 VERIFY_BANK_TYPES = {'PAYMENT', 'RECEIPT', 'BANK_TRANSACTION'}
 VERIFY_INVOICE_TYPES = {'INVOICE', 'SALES_INVOICE'}
