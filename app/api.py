@@ -173,6 +173,18 @@ def workbench(body: ScopeQuery, request: Request) -> dict[str, Any]:
     return service(request).workbench(body.scope,actor_id=actor(request)[0])
 
 
+@router.post('/materials/process')
+def process_materials(body: ScopeQuery, request: Request, context: tuple[str, str] = Depends(actor)):
+    jobs = service(request).material_agent.enqueue(body.scope, *context)
+    return {'queued': sum(j['status'] in {'QUEUED', 'RUNNING'} for j in jobs), 'message': '自动处理已启动，进度会持续保存。'}
+
+
+@router.post('/materials/process/{job_id}/resume')
+def resume_materials(job_id: str, body: ScopeQuery, request: Request, context: tuple[str, str] = Depends(actor)):
+    service(request).material_agent.enqueue(body.scope, *context, retry_id=job_id)
+    return {'message': '已保留此前进度，继续自动处理。'}
+
+
 @router.get("/portfolio")
 def portfolio(request: Request) -> dict[str, Any]:
     return service(request).portfolio(authorized_scopes(request))

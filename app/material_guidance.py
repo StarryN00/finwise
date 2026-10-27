@@ -294,7 +294,10 @@ def safe_packet(task, records):
 
 
 def current_task(service, request):
-    overview = service.workbench(request.scope)
+    overview = service.workbench(request.scope, _problem_review=not service.material_agent.enabled)
+    if service.material_agent.enabled:
+        # Withheld UI cards must remain addressable by already authorized jobs.
+        overview['material_review'] = service.material_agent.issue_view(request.scope)
     task = next((t for t in overview['material_review']['tasks'] if t['id'] == request.task_id), None)
     if not task or task['descriptor']['fingerprint'] != request.descriptor_hash:
         raise VersionConflict('事项或依据已变化，请刷新后重新分析')
@@ -313,7 +316,7 @@ def guidance(service, request: GuidanceRequest, actor_id: str, role: str):
         raise PreconditionFailed('本项已暂缓；先查看已记录原因，不重复调用模型')
     records = {r['object_id']: r for r in overview['material_review']['records']}
     bound = [records[r] for r in task['record_ids']]
-    full = service.store.database.settings.agent_send_full_records
+    full = service.store.database.settings.agent_send_full_records and not service.material_agent.enabled
     packet = full_packet(task, bound) if full else safe_packet(task, bound)
     if full:
         # 全量模式下意见也原样送过去：把整条记录都给了模型，再把用户自己写的
@@ -573,7 +576,7 @@ class MaterialGuidance:
         # Watch only scopes explicitly enqueued/signalled. Guidance's own writes
         # and ModelRun receipts must not cause an automatic feedback loop.
         objects = [o for o in self.store.list_objects(None, scope)
-                   if not o['object_type'].startswith('MaterialGuidance') and o['object_type'] != 'ModelRun']
+                   if not o['object_type'].startswith(('MaterialGuidance', 'MaterialAgent')) and o['object_type'] != 'ModelRun']
         return digest([model_binding(self.service), [(o['object_id'], o['version'], o['status'],
             self.service.materials.source_valid(o) if o['object_type'] == 'SourceArtifact' else None)
             for o in objects]])

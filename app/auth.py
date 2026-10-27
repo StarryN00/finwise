@@ -5,6 +5,8 @@ No default password, implicit administrator or wildcard scope is provisioned.
 """
 from __future__ import annotations
 
+import base64
+import binascii
 import hashlib
 import hmac
 import json
@@ -30,6 +32,26 @@ def password_hash(password: str, salt: str | None = None) -> str:
     salt = salt or secrets.token_hex(16)
     value = hashlib.pbkdf2_hmac("sha256", password.encode(), bytes.fromhex(salt), 600_000).hex()
     return salt + ":" + value
+
+
+
+def verify_password(password: str, encoded: str) -> bool:
+    """Accept explicitly migrated legacy hashes; new accounts use the current format."""
+    try:
+        if encoded.startswith("pbkdf2_sha256$"):
+            algorithm, rounds, salt_text, expected_text = encoded.split("$")
+            if rounds != "260000":
+                return False
+            def decode(value):
+                return base64.b64decode(value + "=" * (-len(value) % 4), altchars=b"-_", validate=True)
+            salt, expected = decode(salt_text), decode(expected_text)
+            if len(salt) != 16 or len(expected) != 32:
+                return False
+            actual = hashlib.pbkdf2_hmac("sha256", password.encode(), salt, 260_000)
+            return hmac.compare_digest(actual, expected)
+        return hmac.compare_digest(password_hash(password, encoded.split(":")[0]), encoded)
+    except (ValueError, TypeError, binascii.Error):
+        return False
 
 
 def create_user(database: Database, user_id: str, password: str, role: str) -> None:
@@ -128,7 +150,7 @@ async def authorize_api(request: Request) -> None:
     provisioning = path == "/scopes/provision"
     if not provisioning:
         authorize_scope(request, scope)
-    read_only = path in {"/workbench", "/query", "/objects/detail", "/history", "/baseline/candidate"} or request.method == "GET"
+    read_only = path in {"/workbench", "/query", "/objects/detail", "/history", "/baseline/candidate", "/autonomous/process"} or request.method == "GET"
     if read_only:
         return
     if principal["role"] not in ROLES - {"viewer"}:
@@ -163,11 +185,13 @@ def login(body: LoginInput, request: Request, response: Response) -> dict[str, A
             raise HTTPException(429, "登录尝试过于频繁，请稍后重试")
         row = connection.execute("SELECT * FROM auth_users WHERE user_id=? AND enabled=1", (body.username,)).fetchone()
         encoded = row["password_hash"] if row else "00" * 16 + ":" + "00" * 32
-        valid = hmac.compare_digest(password_hash(body.password, encoded.split(":")[0]), encoded) and row is not None
+        valid = verify_password(body.password, encoded) and row is not None
         if not valid:
             connection.execute("INSERT OR REPLACE INTO auth_login_attempts VALUES (?,?,?)", (attempt_key, failures + 1, started))
             connection.commit()
             raise HTTPException(401, "用户名或密码不正确")
+        if encoded.startswith("pbkdf2_sha256$"):
+            connection.execute("UPDATE auth_users SET password_hash=? WHERE user_id=?", (password_hash(body.password), row["user_id"]))
         connection.execute("DELETE FROM auth_login_attempts WHERE attempt_key=?", (attempt_key,))
         token, csrf = secrets.token_urlsafe(32), secrets.token_urlsafe(32)
         connection.execute("DELETE FROM auth_sessions WHERE expires_at<=?", (now,))

@@ -12,6 +12,7 @@ __pycache__/
 .venv/
 node_modules/
 deploy/staging.env
+deploy/autonomous.env
 deploy/staging-reports/
 *.egg-info/
 

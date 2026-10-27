@@ -88,9 +88,11 @@ def _context(task, rows, checks, source_valid):
         if 'confirm_statement_account' in options else set()
     binding_complete = bool(rows) and len(rows) == len(set(task.get('record_ids', []))) \
         and all(row.get('source_anchor', {}).get('region') for row in rows)
+    verified_period_context = bool(task.get('source_reading_verified') and task.get('reason', '').startswith('业务期间：'))
     comparison_safe = not any(
         cell.get('state') in {'DIFFERENT', 'AMBIGUOUS'} or
         cell.get('state') == 'UNLOCATED' and cell.get('field') not in ownership_fields
+        and not (verified_period_context and cell.get('field') == 'period')
         for cell in comparisons
     )
     reason = task.get('reason', '')

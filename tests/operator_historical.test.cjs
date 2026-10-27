@@ -265,7 +265,7 @@ test('saved text and raw references are escaped rather than interpreted as marku
 function integratedApp() {
   const listeners={},nodes=new Map(),requests=[];
   const element=id=>({id,value:'',innerHTML:'',textContent:'',dataset:{},isConnected:true,disabled:false,open:false,
-    classList:{add(){},remove(){},contains(){return false;}},addEventListener(){},focus(){},replaceChildren(){},close(){this.open=false;},removeAttribute(){}});
+    classList:{add(){},remove(){},contains(){return false;}},addEventListener(){},focus(){},replaceChildren(){},close(){this.open=false;},setAttribute(){},removeAttribute(){}});
   const context=vm.createContext({location:{protocol:'file:'},crypto:{randomUUID:()=>String(requests.length)},clearTimeout(){},setTimeout(){},
     localStorage:{getItem(){return null;},setItem(){}},window:{scrollY:120,scrollTo(){}},
     document:{activeElement:null,addEventListener:(type,fn)=>(listeners[type]??=[]).push(fn),

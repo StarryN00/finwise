@@ -63,6 +63,8 @@ class ProblemReview:
 
     def signal(self, scope, actor):
         """Commit a queue marker with parsing; worker observes it after commit."""
+        if self.service.material_agent.enabled:
+            return self.service.material_agent.signal(scope, actor)
         if self.store.database.settings.agent_mode != 'gateway':return None
         self.service.material_guidance.signal(scope,actor)
         identity = 'problem-trigger-' + digest(scope.model_dump())
@@ -75,6 +77,8 @@ class ProblemReview:
         return self.store.revise_object(identity, old['version'], scope, data, status='QUEUED', created_by=actor)
 
     def enqueue(self, scope, actor):
+        if hasattr(self.service, 'autonomous') and self.service.autonomous.owns(scope):
+            return []
         self.service._ensure_period_open(scope)
         wb, _, fingerprint = self.snapshot(scope)
         watch_id='problem-watch-'+digest(scope.model_dump())
@@ -236,6 +240,8 @@ class ProblemReview:
         selected = None
         for owner in self.store.list_scope_objects():
             scope = Scope(**owner['data']['scope'])
+            if hasattr(self.service, 'autonomous') and self.service.autonomous.owns(scope):
+                continue
             with self.store.database.transaction():
                 # Only previously requested scopes are watched. Never initiate a
                 # first model call for an unrelated scope at service startup.
@@ -436,7 +442,7 @@ class ProblemReview:
         def loop():
             while not self.stop_event.is_set():
                 try:
-                    if self.run_once():continue
+                    if not self.service.material_agent.enabled and self.run_once():continue
                     if self.service.material_guidance.process_one():continue
                 except Exception:log.exception('problem_review_worker_failed')
                 self.stop_event.wait(2)

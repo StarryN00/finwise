@@ -33,7 +33,8 @@ function currentMaterialTask(){
   if(ui.screen==='summary')return undefined;
   const tasks=state.overview.material_review?.tasks||[];
   const chosen=tasks.find(t=>t.id===ui.selected);
-  if(chosen||ui.screen==='detail')return chosen;
+  const completedSelection=state.overview.material_review?.agent_processing&&chosen?.optional&&chosen.kind==='VERIFY'&&ui.bucket!=='VERIFIED'&&ui.filter!=='VERIFY';
+  if((chosen&&!completedSelection)||(ui.screen==='detail'&&!completedSelection))return chosen;
   // 没有明确选中时，落在当前那一栏的第一件；没选栏就跳过"已自洽"，
   // 那一栏本来就不需要人处理。
   const queue=materialQueue();
@@ -151,7 +152,10 @@ function renderProblemQueue(){
         `<li><button type="button" class="text${x.id===t?.id?' current':''}" data-action="material-pick" data-task="${esc(x.id)}" ${x.id===t?.id?'aria-current="true"':''}>${esc(materialProblemHeadline(x))}</button></li>`).join('')}</ul>`:'')+
       `<p class="small muted">${esc(b.explanation)}</p></section>`;}).join('')}</aside>`;
   const empty=`<section class="panel pad"><h3 id="materialTaskTitle" tabindex="-1">本期没有需要你处理的问题</h3><p>系统已核对的结果保留在右侧「已识别并自洽」；需要时可展开抽查。</p></section>`;
-  return `<div class="triage"><div class="triage-main">${t?renderDecisionTask(t):empty}</div>${side}</div>`;
+  const agent=typeof materialAgentData==='function'?materialAgentData():null;
+  const processing=typeof renderMaterialAgent==='function'?renderMaterialAgent():'';
+  if(agent&&(agent.active||agent.not_started))return processing;
+  return processing+`<div class="triage"><div class="triage-main">${t?renderDecisionTask(t):agent?.blocked?'<section class="panel pad"><h3>受阻原件尚未完成检查</h3><p>请查看上方具体原因，系统没有要求你确认整份数据。</p></section>':empty}</div>${side}</div>`;
 }
 function renderMaterialMore(){
   const m=state.overview.material_review,c=m.counts,month=Number(scope().accounting_period_id.slice(-2));
