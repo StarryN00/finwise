@@ -976,6 +976,32 @@ class MaterialGuidance:
             if review.get('status') == 'FAILED':
                 return {**base, 'state': 'FAILED', 'owner': 'SYSTEM', 'label': '系统复核失败',
                         'explanation': '系统复核未完成，原问题继续保留；可在管理入口重试。', 'action_label': ''}
+            # 复核出了结论，这件事就不再是"等待系统检查"了。系统消化不动的要带着
+            # 结论交给人 —— 停在这里有两个后果：_progress_with_digestion 会让
+            # 「AI 处理」那一步永远完不成（事项还归系统），而人在待办里根本看不到
+            # 这件事，也不知道系统已经查过什么、查出了什么。
+            #
+            # 三种结论都是"系统做完了、自己解决不了"，只是下一步谁来做不一样：
+            # SYSTEM_REVIEW 是系统怀疑自己读错了（明确不能据此要人去要材料），
+            # BUSINESS_REVIEW 是原件里本来就没有这个信息，INSUFFICIENT 是查过但
+            # 证据不够。PASSED 的事项在 project() 里已经整条丢掉，到不了这里。
+            concluded = {
+                'SYSTEM_REVIEW': ('系统读取存疑，待你核对识别结果',
+                                  '系统怀疑自己读错或解析有疑点，请核对识别结果；不要据此要求客户补材料。'),
+                'BUSINESS_REVIEW': ('待你做业务判断',
+                                    '原件里本来就没有这个信息，系统查过也定不了，需要你按实际业务判断。'),
+                'INSUFFICIENT': ('系统证据不足，待你核对依据',
+                                 '系统查过但证据不足以自己下结论，请核对它列出的依据。'),
+            }.get(review.get('status'))
+            if concluded:
+                label, fallback = concluded
+                # 复核自己那句话优先 —— 它是服务端按本地证据生成的，不是模型原话，
+                # 比模板具体。和建议卡同一条规则：超长或缺失才退回模板，完整结论
+                # 在折叠的复核详情里一直看得到。
+                own = (((review.get('data') or {}).get('result') or {}).get('message') or '').strip()
+                return {**base, 'state': 'NEEDS_DECISION', 'owner': 'USER', 'label': label,
+                        'explanation': own if 0 < len(own) <= 80 else fallback,
+                        'action_label': '选择处理方式'}
             return {**base, 'state': 'WAITING_SYSTEM', 'owner': 'SYSTEM', 'label': '等待系统检查',
                     'explanation': triage.get('next_action') or '该事项先由系统检查，不要求你盲目补充资料。',
                     'action_label': ''}
