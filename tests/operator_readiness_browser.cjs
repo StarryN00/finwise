@@ -101,7 +101,7 @@ async function main(){
       await page.setViewportSize({width:1440,height:900});
       await page.locator('.secondary-nav [data-action="upload"]').click();await page.locator('#uploadFile').setInputFiles(path.join(temp,'broken.xlsx'));await page.locator('#uploadForm button').click();
       await page.locator('#notice.error').waitFor();assert.match(await page.locator('#notice').innerText(),/原件已保留.*提取失败/);
-      await page.locator('#closeDialog').click();await page.locator('.secondary-nav [data-action="artifacts"]').click();assert.match(await page.locator('#receivedFiles').innerText(),/broken.xlsx/);assert.match(await page.locator('#receivedFiles').innerText(),/处理失败/);await page.locator('[data-action="return-files"]').click();
+      await page.locator('#closeDialog').click();await page.locator('.decision-more-options > summary:has-text("本期详情")').click();await page.locator('.detail-nav [data-action="artifacts"]').click();assert.match(await page.locator('#receivedFiles').innerText(),/broken.xlsx/);assert.match(await page.locator('#receivedFiles').innerText(),/处理失败/);await page.locator('[data-action="return-files"]').click();
     });
     await check('incomplete response retries idempotently; candidate approval, voucher review and source proof',async()=>{
       await page.locator('[data-scope]').filter({hasText:'规则测试企业'}).click();await page.locator('#currentTask [data-action="cards"]').click();await page.locator('[data-card]').click();

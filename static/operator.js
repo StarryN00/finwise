@@ -178,6 +178,26 @@ async function loadWorkbench() {
   if(typeof scheduleMappingPoll==='function')scheduleMappingPoll();
 }
 function renderContext() {const d=state.overview;return `<section class="context row"><div><h1>${esc(companyName(d))}</h1><p class="small muted">账套 <span>${esc(ledgerName(d))}</span> · <button class="text" data-action="accounts-open">对公账户 ${d.bank_accounts?.accounts.length||0}</button></p></div><div><div class="period">${esc(d.scope.accounting_period_id)}</div>${statusBadge(d.period.status)}</div></section>`;}
+function workbenchNav(){
+  // 原来 8–9 个文字按钮平铺成一行，动作和查看入口混在一起，
+  // 「业务对象与处理工具」这种名字对新手是黑话，真正该点的那个被淹没在里面。
+  // 规则和问题卡的「其他处理方式 · N 项」一致：动作留在外面，查看入口收起来。
+  //
+  // 「全部资料」在进度条上已经有入口（「导入当月资料」那一格可点），窄屏还有
+  // 「已接收资料 N 份」—— 同一个地方三条路。收起这一条不会少一条路。
+  //
+  // 外面这个 nav 必须仍叫 .secondary-nav 且排在前面：installHistoricalActions
+  // 用 querySelector('.secondary-nav') 往里追加「补充历史账表」，那是个动作，
+  // 本来就该和补充资料、刷新状态在一起。
+  const badge=typeof profileCardBadgeCount==='function'&&profileCardBadgeCount()||0;
+  const details=[['artifacts','全部资料'],['groups','业务对象与处理工具'],['vouchers','本期凭证'],
+                 ['voucher-proposals-open','凭证提案'],
+                 ['profile-cards-open','待确认事项'+(badge?' '+badge:'')],
+                 ['history','往期与归档']];
+  // 折叠里有待办时默认展开。收起来不等于藏起来 —— 否则待确认的件数就看不见了。
+  return `<nav class="secondary-nav" aria-label="本期操作"><button class="text" data-action="upload" ${readonly()?'disabled':''}>补充资料</button><button class="text" data-action="refresh">刷新状态</button></nav>`
+    +`<details class="decision-more-options"${badge?' open':''}><summary>本期详情 · ${details.length} 项${badge?' · 待确认 '+badge:''}</summary><nav class="detail-nav" aria-label="本期详情">${details.map(([a,l])=>`<button class="text" data-action="${a}">${esc(l)}</button>`).join('')}</nav></details>`;
+}
 function renderProgress() {
   const p=state.overview.progress;
   // 序号只给主线那六步。交付归档在当前实现里永远 WAITING，编成第 7 步会让人
@@ -364,7 +384,7 @@ function render() {
   // 有事要你处理时，首页直接就是那个问题和它的选项卡 —— 不再先给一张
   // "去处理这个问题"的卡片，点进去才看到真正要做的事。
   const inline=!state.category&&state.overview?.material_review?.next_step?.action?.kind==='MATERIAL_TASK'&&typeof renderProblemQueue==='function';
-  html+=renderProgress()+renderPrerequisite()+renderStructure()+(inline?renderProblemQueue():`<div class="work-grid">${state.category?renderCategory():renderTask()}${renderResults()}</div>`)+`<nav class="secondary-nav" aria-label="本期详情"><button class="text" data-action="artifacts">全部资料</button><button class="text" data-action="groups">业务对象与处理工具</button><button class="text" data-action="vouchers">本期凭证</button><button class="text" data-action="voucher-proposals-open">凭证提案</button><button class="text" data-action="profile-cards-open">待确认事项${typeof profileCardBadgeCount==='function'&&profileCardBadgeCount()?` ${profileCardBadgeCount()}`:''}</button><button class="text" data-action="history">往期与归档</button><button class="text" data-action="upload" ${readonly()?'disabled':''}>补充资料</button><button class="text" data-action="refresh">刷新状态</button></nav>`;
+  html+=renderProgress()+renderPrerequisite()+renderStructure()+(inline?renderProblemQueue():`<div class="work-grid">${state.category?renderCategory():renderTask()}${renderResults()}</div>`)+workbenchNav();
   }
   $('workspace').innerHTML=html;
   if(typeof installProfileCardActions==='function')installProfileCardActions();
