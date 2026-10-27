@@ -96,6 +96,11 @@ function renderMaterialGuidanceRecords(){
 function notify(message,error=false) {$('notice').className=`notice${error?' error':''}`;$('notice').textContent=message;}
 function clearNotice() {$('notice').className='notice hidden';$('notice').textContent='';}
 function clearSession() {
+  if(typeof autonomousSettingsDrafts!=='undefined')autonomousSettingsDrafts.clear();
+  if(typeof autonomousDrafts!=='undefined')autonomousDrafts.clear();
+  if(typeof autonomousChoices!=='undefined')autonomousChoices.clear();
+  if(typeof autonomousMatchingDrafts!=='undefined')autonomousMatchingDrafts.clear();
+  if(typeof autonomousTimer!=='undefined')clearTimeout(autonomousTimer);
   clearNotice();
   if(typeof resetParsePlanState==='function')resetParsePlanState();
   if(typeof resetBankState==='function')resetBankState();
@@ -107,7 +112,7 @@ function clearSession() {
   state.filesFilter='all';state.filesReturn=null;
   $('baselineFile').value='';closeDialog();$('dialogBody').replaceChildren();
   $('workspace').innerHTML='<div class="empty">请登录后查看授权企业。</div>';
-  $('loginForm').classList.remove('hidden');$('scopeChooser').classList.add('hidden');$('logout').classList.add('hidden');$('authState').textContent='需要登录';renderScopes();
+  $('loginForm').classList.remove('hidden');$('scopeChooser').classList.add('hidden');$('globalNav')?.classList.add('hidden');$('logout').classList.add('hidden');$('authState').textContent='需要登录';renderScopes();
 }
 async function request(path,body,method) {
   const sessionEpoch=state.sessionEpoch;
@@ -123,7 +128,7 @@ async function request(path,body,method) {
         clearSession();loadPortfolio().catch(()=>{});
       }
     }
-    const error=new Error(data.error?.message||`请求未完成（${response.status}），请检查资料或登录状态`);error.status=response.status;throw error;
+    const error=new Error(data.error?.message||`请求未完成（${response.status}），请检查资料或登录状态`);error.status=response.status;error.code=data.error?.code;throw error;
   }
   return data;
 }
@@ -136,27 +141,36 @@ async function exclusive(fn) {
 function renderScopes() {
   const term=$('search').value.trim().toLowerCase();
   $('scopeList').innerHTML=state.scopes.map((item,i)=>({item,i})).filter(({item})=>[companyName(item),licenseNumber(item),ledgerName(item),...Object.values(item.scope)].join(' ').toLowerCase().includes(term)).map(({item,i})=>
-    `<button class="scope ${state.selected===i?'selected':''}" data-scope="${i}" ${state.busy?'disabled':''} aria-pressed="${state.selected===i}"><span class="scope-main"><strong>${esc(companyName(item))}</strong><span class="scope-license" title="营业执照编号：${esc(licenseNumber(item))}">${esc(licenseNumber(item))}</span><span>${esc(item.scope.accounting_period_id)}</span></span><span class="scope-tools">${badge(item.blockers.length?'已阻断':item.baseline.validation.status!=='VALID'?'待核实':'处理中',item.blockers.length?'red':'yellow')}<br>${item.blockers.length?`${item.blockers.length} 组阻断`:`${item.pending_confirmation_cards} 项待审阅`}</span></button>`).join('')||'<p class="muted small">没有匹配的授权范围。点上方「新建企业」开设第一个处理范围。</p>';
+    `<button class="scope ${state.selected===i?'selected':''}" data-scope="${i}" ${state.busy?'disabled':''} aria-pressed="${state.selected===i}"><span class="scope-main"><strong title="${esc(companyName(item))}">${esc(companyName(item))}</strong><span class="scope-license" title="营业执照编号：${esc(licenseNumber(item))}">${esc(licenseNumber(item))}</span><span>${esc(item.scope.accounting_period_id)}</span></span><span class="scope-tools">${item.autonomous_workflow?badge(item.autonomous_workflow.label,'blue'):badge(item.blockers.length?'已阻断':item.baseline.validation.status!=='VALID'?'待核实':'处理中',item.blockers.length?'red':'yellow')}<br>${item.autonomous_workflow?`${item.pending_confirmation_cards} 项待补充`:item.blockers.length?`${item.blockers.length} 组阻断`:`${item.pending_confirmation_cards} 项待审阅`}</span></button>`).join('')||'<p class="muted small">没有匹配的授权范围。点上方「新建企业」开设第一个处理范围。</p>';
 }
 async function loadPortfolio() {
   const sessionEpoch=state.sessionEpoch,sequence=++state.portfolioSequence;
   const current=()=>sessionEpoch===state.sessionEpoch&&sequence===state.portfolioSequence;
   const session=await request('/api/v1/auth/me');if(!current())return;state.csrf=session.csrf_token||'';state.role=session.role;state.user={user_id:session.user_id};
   const result=await request('/api/v1/portfolio');if(!current())return;state.scopes=result.scopes||[];
-  $('authState').textContent=state.role==='viewer'?'只读账号':'已登录';$('loginForm').classList.add('hidden');$('scopeChooser').classList.remove('hidden');$('logout').classList.remove('hidden');
-  const saved=storage('finwise.operator.scope');let index=state.scopes.findIndex(i=>scopeKey(i.scope)===saved);
+  $('authState').textContent=state.role==='viewer'?'只读账号':'已登录';$('loginForm').classList.add('hidden');$('scopeChooser').classList.remove('hidden');$('globalNav')?.classList.remove('hidden');$('logout').classList.remove('hidden');
+  if(location.hash==='#settings')state.view='settings';
+  const requested=typeof URLSearchParams!=='undefined'?new URLSearchParams(location.search||'').get('scope'):null;
+  const saved=requested||storage('finwise.operator.scope');let index=state.scopes.findIndex(i=>scopeKey(i.scope)===saved);
+  if(requested&&index<0){state.selected=null;state.overview=null;renderScopes();render();notify('该企业范围当前不可访问，请从左侧选择已授权企业。',true);return;}
   if(index<0)index=state.scopes.findIndex(i=>[i.scope.legal_entity_id,i.scope.ledger_id,i.scope.accounting_period_id].join('|')===saved);
-  if(state.scopes.length)await selectScope(index<0?0:index);else renderScopes();
+  if(state.scopes.length)await selectScope(index<0?0:index);else {renderScopes();render();}
 }
 async function selectScope(index) {
+  const settingsView=state.view==='settings';
   clearNotice();
   if(typeof resetBankState==='function')resetBankState();
   if(typeof resetMaterialState==='function')resetMaterialState();
   if(typeof resetHistoricalPlans==='function')resetHistoricalPlans();
   if(typeof resetParsePlanState==='function')resetParsePlanState();
   state.epoch++;state.selected=index;state.overview=null;state.category=null;state.view='current';
-  if(typeof materialState==='function'&&storage('finwise.material.view.'+materialState().key)==='materials')state.view='materials';
-  if(typeof mappingState==='function'){const ui=mappingState(),saved=storage('finwise.mapping.view.'+ui.key);ui.draft=null;ui.confirmed=false;if(saved){ui.id=saved;state.view='mapping';}}
+  if(!settingsView&&typeof materialState==='function'&&storage('finwise.material.view.'+materialState().key)==='materials')state.view='materials';
+  if(typeof mappingState==='function'){const ui=mappingState(),saved=storage('finwise.mapping.view.'+ui.key);ui.draft=null;ui.confirmed=false;if(saved&&!settingsView){ui.id=saved;state.view='mapping';}}
+  if(settingsView)state.view='settings';
+  if(typeof history!=='undefined'&&typeof URLSearchParams!=='undefined'&&location.protocol!=='file:'){
+    const params=new URLSearchParams(location.search||'');
+    if(params.has('scope')){params.set('scope',scopeKey(scope()));history.replaceState(null,'',location.pathname+'?'+params+location.hash);}
+  }
   state.filesFilter='all';state.filesReturn=null;
   state.candidate=null;state.sources={balance:'',close:''};state.uploadRole=null;$('baselineFile').value='';
   closeDialog();$('dialogBody').replaceChildren();closeSidebar();storage('finwise.operator.scope',scopeKey(scope()));
@@ -168,16 +182,22 @@ async function loadWorkbench() {
   const data=await request('/api/v1/workbench',{scope:selected});
   if(epoch!==state.epoch||sequence!==state.loadSequence)return;
   state.overview=data;
+  if(data.autonomous_workflow&&state.scopes[state.selected]){
+    const item=state.scopes[state.selected];item.autonomous_workflow=data.autonomous_workflow;
+    item.blockers=data.blockers;item.pending_confirmation_cards=data.autonomous_workflow.findings.filter(f=>f.needs_user).length;
+    renderScopes();
+  }
   if(!data.data_readiness)throw new Error('工作台服务尚未更新，请重新启动当前服务后刷新。');
   for(const role of ['balance','close']) {
     if(state.sources[role]&&!data.artifacts.some(a=>a.object_id===state.sources[role]&&a.status!=='ARCHIVED'))state.sources[role]='';
     if(!state.sources[role]&&data.data_readiness.baseline_sources[role].length===1)state.sources[role]=data.data_readiness.baseline_sources[role][0];
   }
   render();
+  if(state.overview?.autonomous_workflow)return;
   if(typeof scheduleHistoricalPoll==='function')scheduleHistoricalPoll();
   if(typeof scheduleMappingPoll==='function')scheduleMappingPoll();
 }
-function renderContext() {const d=state.overview;return `<section class="context row"><div><h1>${esc(companyName(d))}</h1><p class="small muted">账套 <span>${esc(ledgerName(d))}</span> · <button class="text" data-action="accounts-open">对公账户 ${d.bank_accounts?.accounts.length||0}</button></p></div><div><div class="period">${esc(d.scope.accounting_period_id)}</div>${statusBadge(d.period.status)}</div></section>`;}
+function renderContext() {const d=state.overview;return `<section class="context row"><div><h1 tabindex="-1">${esc(companyName(d))}</h1><p class="small muted">账套 <span>${esc(ledgerName(d))}</span> · <button class="text" data-action="accounts-open">对公账户 ${d.bank_accounts?.accounts.length||0}</button></p></div><div><div class="period">${esc(d.scope.accounting_period_id)}</div>${statusBadge(d.period.status)}</div></section>`;}
 function workbenchNav(){
   // 原来 8–9 个文字按钮平铺成一行，动作和查看入口混在一起，
   // 「业务对象与处理工具」这种名字对新手是黑话，真正该点的那个被淹没在里面。
@@ -307,6 +327,13 @@ function renderComparison(c) {
     ${c.status==='READY_FOR_CONFIRMATION'?'<label class="check-label"><input id="baselineConfirmed" type="checkbox">我已核对来源、科目及辅助核算明细的完整性，确认本期期初与上期末一致。</label>':'<p class="small muted">请补充或更换原始资料，再重新核对。当前不能确认。</p>'}</div>`;
 }
 function renderTask() {
+  const processing=typeof materialAgentData==='function'?materialAgentData():null;
+  if(!processing?.jobs.length)return renderTaskContent();
+  const panel=renderMaterialAgent();
+  if(processing.active||processing.not_started)return panel;
+  return `<div>${panel}${renderTaskContent()}</div>`;
+}
+function renderTaskContent() {
   const task=currentTask(),d=state.overview,r=readiness();
   const next=d.material_review?.next_step;
   // 首页直接写这个问题是什么，按钮直接进这张卡 —— 不再套一层"待选择处理方式"。
@@ -366,11 +393,18 @@ function renderCategory() {
   return `<section class="panel category-detail">${body}</section>`;
 }
 function render() {
-  if(!state.overview)return;
+  renderNavigation();
+  if(state.view==='settings'){
+    $('workspace').innerHTML=renderSettings();
+    if(typeof installAutonomousActions==='function')installAutonomousActions();
+    return;
+  }
+  if(!state.overview){$('workspace').innerHTML=`<div class="empty">${state.user?'请从左侧选择企业与期间，或新建企业开始办理。':'请先登录工作台。'}</div>`;return;}
   const materialFocus=typeof materialCaptureFocus==='function'?materialCaptureFocus():null;
   const historicalFocus=typeof historicalPlanFocus==='function'?historicalPlanFocus():null;
   let html=renderContext();
-  if(state.view==='artifacts')html+=renderArtifactsPage();
+  if(state.overview.autonomous_workflow && ['current','materials','artifacts','historical'].includes(state.view))html+=renderAutonomous();
+  else if(state.view==='artifacts')html+=renderArtifactsPage();
   else if(state.view==='accounts')html+=renderAccounts();
   else if(state.view==='mapping')html+=renderMapping();
   else if(state.view==='parse-plans')html+=renderParsePlans();
@@ -384,9 +418,12 @@ function render() {
   // 有事要你处理时，首页直接就是那个问题和它的选项卡 —— 不再先给一张
   // "去处理这个问题"的卡片，点进去才看到真正要做的事。
   const inline=!state.category&&state.overview?.material_review?.next_step?.action?.kind==='MATERIAL_TASK'&&typeof renderProblemQueue==='function';
-  html+=renderProgress()+renderPrerequisite()+renderStructure()+(inline?renderProblemQueue():`<div class="work-grid">${state.category?renderCategory():renderTask()}${renderResults()}</div>`)+workbenchNav();
+  html+=(state.overview.autonomous_available?'<section class="panel pad"><h2>月度自主处理</h2><p>系统可基于原件完成分析、查证与独立审查。</p><button class="primary" data-action="autonomous-start">启动月度自主处理</button></section>':'')+renderProgress()+renderPrerequisite()+renderStructure()+(inline?renderProblemQueue():`<div class="work-grid">${state.category?renderCategory():renderTask()}${renderResults()}</div>`)+workbenchNav();
   }
   $('workspace').innerHTML=html;
+  if(typeof installAutonomousActions==='function')installAutonomousActions();
+  if(state.overview?.autonomous_workflow)return;
+  if(typeof scheduleMaterialAgentPoll==='function')scheduleMaterialAgentPoll();
   if(typeof installProfileCardActions==='function')installProfileCardActions();
   if(typeof installNewScopeActions==='function')installNewScopeActions();
   if(typeof installVoucherProposalActions==='function')installVoucherProposalActions();
@@ -403,7 +440,7 @@ function openDialog(title,html) {
   $('dialogTitle').textContent=title;$('dialogBody').innerHTML=html;
   if(!$('dialog').open)$('dialog').showModal();
 }
-function closeDialog() {state.dialogSequence++;if($('dialog').open)$('dialog').close();if(state.returnFocus?.isConnected)state.returnFocus.focus({preventScroll:true});}
+function closeDialog() {if(typeof currentAutonomousUpload==='function'&&currentAutonomousUpload()&&autonomousUpload.busy){notify('正在保存资料，请等待上传结束后关闭。');return;}state.dialogSequence++;if($('dialog').open)$('dialog').close();if(state.returnFocus?.isConnected)state.returnFocus.focus({preventScroll:true});}
 function recordTable(records) {
   return records.length?table(['事实 / 主要值','核实状态','来源与定位','问题','操作'],records.map(r=>`<tr><td>${esc(label(r.record_type))}<p class="mono small">${Object.entries(r.values).filter(([k])=>['invoice_no','transaction_date','payment_total','invoice_total','amount'].includes(k)).map(([k,v])=>`${esc(fieldLabels[k])} ${esc(v??'未提供')}`).join('<br>')||'详见提取值'}</p></td><td>${statusBadge(r.state)}</td><td class="filename">${esc(r.filename)}<p class="small mono">${esc(r.source_anchor?.region||`第 ${r.source_anchor?.row||'—'} 行`)}</p></td><td>${r.issues.map(esc).join('<br>')||'未发现提取字段问题；业务仍须核实'}</td><td>${objectButton(r.object_id,'核对原始值')}</td></tr>`)):'<p class="empty">当前没有此类记录。</p>';
 }
@@ -420,7 +457,7 @@ async function showObject(id,version) {
   const o=result.object,d=o.data;let body=`<div class="row"><h3>${esc(d.filename||d.business_identity||'对象与来源')}</h3>${statusBadge(o.status)}</div><p class="small muted">版本 ${o.version} · ${esc(o.created_at)} · ${esc(o.created_by)}</p>`;
   if(o.object_type==='SourceArtifact') {
     const historical=state.overview.historical_preparation?.data.sources.some(s=>s.artifact_id===id&&s.version===o.version);
-    body+=`<div class="goal"><b>资料期间与用途</b>${esc(d.observed_period)} · ${esc(purposeLabel(d))}</div><p class="small">原件哈希 <span class="mono">${esc(d.sha256)}</span></p><a class="button secondary" href="/api/v1/artifacts/${encodeURIComponent(id)}/content?${new URLSearchParams(scope())}" download>下载原始文件</a>${historical?'<button class="text" data-action="historical-details">查看历史提取结果</button>':`<button class="text" data-file-records="${esc(id)}">查看提取记录</button>`}`;
+    body+=`<div class="goal"><b>资料期间与用途</b>${esc(d.observed_period)} · ${esc(purposeLabel(d))}</div><p class="small">原件哈希 <span class="mono">${esc(d.sha256)}</span></p><a class="button secondary" href="/api/v1/artifacts/${encodeURIComponent(id)}/content?${new URLSearchParams(scope())}" download>下载原始文件</a>${state.overview.autonomous_workflow?'<p class="small muted">分析结果与来源定位请查看本期处理报告及凭证依据。</p>':historical?'<button class="text" data-action="historical-details">查看历史提取结果</button>':`<button class="text" data-file-records="${esc(id)}">查看提取记录</button>`}`;
   }
   if(o.object_type==='FactRecord') {
     const values=d.normalized_value||{};
@@ -436,10 +473,11 @@ async function uploadFile(file,purpose,observed,kind) {
   if(!file)throw new Error('请选择文件');if(file.size>16*1024*1024)throw new Error('文件超过 16MB，请拆分后上传');
   const selected=scope(),epoch=state.epoch,bytes=new Uint8Array(await file.arrayBuffer());let binary='';
   for(let i=0;i<bytes.length;i+=0x8000)binary+=String.fromCharCode(...bytes.subarray(i,i+0x8000));
+  if(epoch!==state.epoch)return;
   const artifact=await request('/api/v1/artifacts',{scope:selected,filename:file.name,content_base64:btoa(binary),observed_period:observed,source_purpose:purpose,mime_type:file.type||'application/octet-stream'});
   if(epoch!==state.epoch)return;
   notify('原件已保存（同内容复用既有原件），尚未完成核实。');
-  if(kind&&!(Array.isArray(state.overview?.parse_plans)&&typeof parsePlanSupported==='function'&&parsePlanSupported(artifact,kind))&&observed===selected.accounting_period_id&&['RECEIVED','FAILED'].includes(artifact.data.parse_status||'RECEIVED')) {
+  if(!state.overview?.autonomous_available&&!state.overview?.autonomous_workflow&&kind&&!(Array.isArray(state.overview?.parse_plans)&&typeof parsePlanSupported==='function'&&parsePlanSupported(artifact,kind))&&observed===selected.accounting_period_id&&['RECEIVED','FAILED'].includes(artifact.data.parse_status||'RECEIVED')) {
     try{if(kind==='payroll'){await command('request_payroll_mapping',artifact.object_id,artifact.version,{},false);}else await command('parse_artifact',artifact.object_id,artifact.version,{document_kind:kind},false);}
     catch(error){await loadWorkbench();throw new Error(`原件已保留，但提取未完成：${error.message}`);}
   }
@@ -452,6 +490,7 @@ function openParseDialog(artifact){
   openDialog('选择资料类型并提取',`<form id="parseForm" class="stack" data-artifact="${esc(artifact.object_id)}"><p>${esc(artifact.data.filename)}</p><label>资料类型<select id="parseKind" ${selected?'disabled':''}>${Object.entries(kindLabels).map(([k,v])=>`<option value="${k}" ${k===selected?'selected':''}>${v}</option>`).join('')}</select></label><button class="primary" type="submit" ${readonly()?'disabled':''}>按所选类型提取</button></form>`);
 }
 function uploadDialog() {
+  if(state.overview?.autonomous_available||state.overview?.autonomous_workflow)return actions['autonomous-upload']();
   openDialog('补充原始资料',`<form id="uploadForm" class="stack"><p>原件只追加保存，资料不足不会自动消除。此操作写入当前测试账套，不是模拟上传。</p><label>文件<input id="uploadFile" type="file" required></label><div class="form-grid"><label>资料类型<select id="uploadKind">${Object.entries(kindLabels).map(([k,v])=>`<option value="${k}">${v}</option>`).join('')}</select></label><label>原件资料期间<input id="uploadPeriod" type="month" value="${esc(scope().accounting_period_id)}" required></label></div><p class="small muted">跨期资料单独保留，不能自动计入本期。期初余额请从当前期初核对任务添加。</p><button class="primary" type="submit" ${readonly()?'disabled':''}>保存并提取资料</button></form>`);
 }
 async function command(action,id,version,payload={},reload=true) {
@@ -508,11 +547,12 @@ async function showCard(id) {
 }
 function voucherLines(voucher) {
   const lines=voucher.data.lines||[];
-  return table(['会计科目','方向','金额'],lines.map(l=>`<tr><td>${esc(l.account_code||'')} ${esc(l.account_name||l.account||'科目缺失，不能确认')}</td><td>${esc(label(l.direction))}</td><td class="amount mono">${amount(l.amount)}</td></tr>`))+`<p class="record-note">借方合计 ${amount(voucher.data.debit_total)} · 贷方合计 ${amount(voucher.data.credit_total)}</p>`;
+  return (typeof autonomousVoucherEvidence==='function'?autonomousVoucherEvidence(voucher):'')+table(['会计科目','方向','金额'],lines.map(l=>`<tr><td>${esc(l.account_code||'')} ${esc(l.account_name||l.account||'科目缺失，不能确认')}</td><td>${esc(label(l.direction))}</td><td class="amount mono">${amount(l.amount)}</td></tr>`))+`<p class="record-note">借方合计 ${amount(voucher.data.debit_total)} · 贷方合计 ${amount(voucher.data.credit_total)}</p>`;
 }
 function renderVoucherPage() {
   const d=state.overview;
-  return `<button class="text return-link" data-action="return-current">← 返回本期办理</button><section class="panel pad"><h2>本期全部凭证</h2><p class="small muted">${d.vouchers.length} 个版本 · 本地复核不等于外部入账</p>${d.vouchers.length?table(['版本','状态','借 / 贷合计','操作'],d.vouchers.map(v=>`<tr><td class="filename mono">${esc(v.object_id)} · v${v.version}</td><td>${statusBadge(v.status)}</td><td class="amount">${amount(v.data.debit_total)} / ${amount(v.data.credit_total)}</td><td>${objectButton(v.object_id,'查看分录')}${['DRAFT','REVISED'].includes(v.status)?'<br>'+commandButton('validate_draft',v,'复核凭证'):''}${v.status==='LOCALLY_CONFIRMED'&&d.groups.some(g=>g.object_id===v.data.group_id)?'<br>'+commandButton('release_delivery',d.groups.find(g=>g.object_id===v.data.group_id),'建立交付包'):''}</td></tr>`)):'<p class="empty">尚无凭证。未满足证据与校验条件时，不会生成正式凭证。</p>'}<h3 style="margin-top:20px">交付与外部回执</h3>${d.deliveries.length?table(['交付包','状态','操作'],d.deliveries.map(p=>`<tr><td class="filename mono">${esc(p.object_id)}</td><td>${statusBadge(p.status)}</td><td>${objectButton(p.object_id,'查看记录')}${p.status==='DELIVERABLE'?'<br>'+commandButton('export_package',p,'生成导出包'):''}</td></tr>`)):'<p class="empty">尚无交付包。</p>'}<p class="small muted">外部回执须以实际导入结果为依据，此页不提供模拟成功回执按钮。</p></section>`;
+  if(d.autonomous_workflow)return renderAutonomousVoucherPage();
+  return `<button class="text return-link" data-action="return-current">← 返回本期办理</button><section class="panel pad"><h2>本期全部凭证</h2><p class="small muted">${d.vouchers.length} 个版本 · 本地复核不等于外部入账</p>${d.vouchers.length?table(['版本','状态','借 / 贷合计','操作'],d.vouchers.map(v=>`<tr><td class="filename mono">${esc(v.data.voucher_number||v.object_id)} · v${v.version}${v.data.date?`<br><span class="small muted">${esc(v.data.date)}</span>`:''}</td><td>${statusBadge(v.status)}</td><td class="amount">${amount(v.data.debit_total)} / ${amount(v.data.credit_total)}</td><td>${objectButton(v.object_id,'查看分录')}${['DRAFT','REVISED'].includes(v.status)?'<br>'+commandButton('validate_draft',v,'复核凭证'):''}${v.status==='LOCALLY_CONFIRMED'&&d.groups.some(g=>g.object_id===v.data.group_id)?'<br>'+commandButton('release_delivery',d.groups.find(g=>g.object_id===v.data.group_id),'建立交付包'):''}</td></tr>`)):'<p class="empty">尚无凭证。未满足证据与校验条件时，不会生成正式凭证。</p>'}<h3 style="margin-top:20px">交付与外部回执</h3>${d.deliveries.length?table(['交付包','状态','操作'],d.deliveries.map(p=>`<tr><td class="filename mono">${esc(p.object_id)}</td><td>${statusBadge(p.status)}</td><td>${objectButton(p.object_id,'查看记录')}${p.status==='DELIVERABLE'?'<br>'+commandButton('export_package',p,'生成导出包'):''}</td></tr>`)):'<p class="empty">尚无交付包。</p>'}<p class="small muted">外部回执须以实际导入结果为依据，此页不提供模拟成功回执按钮。</p></section>`;
 }
 async function showHistory() {
   state.view='history';render();const epoch=state.epoch,sequence=++state.historySequence,selected=scopeKey(scope());
@@ -524,10 +564,39 @@ function showModelRecords() {
   const m=readiness().model_coverage||{},maps=state.overview.payroll_mappings||[],mapStatus=j=>j.data?.reused_from?'复用已确认格式':({QUEUED:'等待识别',RUNNING:'识别中',REVIEW:'候选待核对',APPLIED:'已应用',FAILED:'识别失败',STALE:'原件已变化'}[j.status]||'状态待核对');
   openDialog('处理记录',`<p>业务建议调用、工资表格式识别和已确认格式复用分开记录；成功识别不等于人工核实或账务可用。</p><div class="goal"><b>业务建议调用</b>${m.real_successful_calls||0} 次真实成功调用，历史输入涉及 ${m.historical_fact_count||0} 条事实。${esc(m.note||'仅表示调用时的输入覆盖，不代表当前版本已核实')}。</div>${m.calls?.length?table(['调用任务','模型','结果','当次输入','依据'],m.calls.map(c=>`<tr><td>${esc(label(c.stage))}</td><td>${esc(c.model||'未记录')}</td><td>${statusBadge(c.status)}<p class="small">${c.mock===false?'真实调用':c.mock===true?'模拟调用':'调用方式未记录'}</p></td><td>${c.input_count} 条事实</td><td>${objectButton(c.object_id,'查看调用记录')}</td></tr>`)):'<p class="empty-proof">暂无业务建议调用记录。</p>'}${renderMaterialGuidanceRecords()}<h3>工资表格式识别</h3>${maps.length?table(['原件','处理方式','状态','记录'],maps.map(j=>`<tr><td class="filename">${esc(j.data?.filename||j.data?.artifact_id||'工资表')}</td><td>${esc(j.data?.reused_from?'复用已确认格式':j.data?.gateway?.model_version||'本地格式任务')}</td><td>${badge(mapStatus(j),j.status==='FAILED'||j.status==='STALE'?'red':j.status==='APPLIED'?'green':'yellow')}</td><td class="small">${j.data?.gateway?`${j.data.gateway.mock===false?'真实调用':'模拟调用'} · ${esc(j.data.gateway.prompt_version||'版本未记录')}`:'复用，不新增调用'}</td></tr>`)):'<p class="empty-proof">暂无工资表格式识别记录。</p>'}`);
 }
-function openSidebar() {$('sidebar').classList.add('open');$('scrim').classList.remove('hidden');$('main').inert=true;document.querySelector('.topbar').inert=true;$('sidebar').setAttribute('role','dialog');$('sidebar').setAttribute('aria-modal','true');$('search').focus();}
-function closeSidebar() {const opened=$('sidebar').classList.contains('open');$('sidebar').classList.remove('open');$('scrim').classList.add('hidden');$('main').inert=false;document.querySelector('.topbar').inert=false;$('sidebar').removeAttribute('role');$('sidebar').removeAttribute('aria-modal');if(opened)$('openSidebar').focus({preventScroll:true});}
+function sidebarFocusables(){return [...$('sidebar').querySelectorAll('button,input,a[href],select,textarea,[tabindex="0"]')].filter(e=>!e.disabled&&e.getClientRects().length);}
+function openSidebar() {$('sidebar').classList.add('open');$('scrim').classList.remove('hidden');$('main').inert=true;document.querySelector('.topbar').inert=true;$('sidebar').setAttribute('role','dialog');$('sidebar').setAttribute('aria-modal','true');$('openSidebar').setAttribute('aria-expanded','true');sidebarFocusables()[0]?.focus();}
+function closeSidebar() {const opened=$('sidebar').classList.contains('open');$('sidebar').classList.remove('open');$('scrim').classList.add('hidden');$('main').inert=false;document.querySelector('.topbar').inert=false;$('sidebar').removeAttribute('role');$('sidebar').removeAttribute('aria-modal');$('openSidebar').setAttribute('aria-expanded','false');if(opened)$('openSidebar').focus({preventScroll:true});}
+
+function renderNavigation(){
+  for(const item of $('globalNav')?.querySelectorAll?.('button[data-action]')||[]){
+    const active=item.dataset.action===(state.view==='settings'?'settings':'workbench');
+    if(active)item.setAttribute('aria-current','page');else item.removeAttribute('aria-current');
+  }
+}
+function renderSettings(){
+  const heading='<header class="settings-heading"><div><h1 id="settingsTitle" tabindex="-1">设置</h1><p class="muted">统一管理处理 Agent 和记账方式。</p></div><button class="secondary" data-action="workbench">返回工作台</button></header>';
+  const page=body=>`<section class="settings-page" aria-labelledby="settingsTitle">${heading}${body}</section>`;
+  if(!state.user)return page('<div class="panel pad empty">请先登录，再查看设置。</div>');
+  if(!state.overview)return page('<div class="panel pad empty">请先从左侧选择企业与期间；还没有企业时，可点击“新建企业”。</div>');
+  const d=state.overview,w=d.autonomous_workflow;
+  const context=`<section class="settings-context" aria-label="当前配置范围"><div><span class="small muted">当前企业</span><strong>${esc(companyName(d))}</strong><p class="small muted">账套：${esc(ledgerName(d))} · 期间：${esc(d.scope.accounting_period_id)}</p></div><span class="badge blue">仅当前范围</span></section>`;
+  if(!w)return page(context+'<div class="panel pad empty">当前账套尚未启用自主处理，暂无 Agent 和记账方式设置。</div>');
+  const busy=['QUEUED','ANALYZING','REVIEWING'].includes(w.status);
+  const draft=typeof currentSettingsDraft==='function'?currentSettingsDraft():null;
+  return page(`${context}<p class="settings-scope-note small muted">从左侧切换企业或期间，可查看对应设置。记账方式供本账套各月使用，Agent 用于所选期间。</p>${readonly()?`<div class="settings-notice" role="status">${state.role==='viewer'?'当前账号为只读账号，可查看设置，不能修改。':'当前期间已关闭或锁定，可查看设置，不能修改。'}</div>`:busy?'<div class="settings-notice" role="status"><span>本期正在处理。暂停后才能修改设置，已有资料和处理记录会保留。</span><button class="secondary" data-action="autonomous-cancel">暂停自动处理</button></div>':''}<div class="settings-sections">${renderAutonomousExecutor(w,busy)}${renderBookkeepingProfile(w,busy)}</div><div class="settings-footer actions"><button class="text" data-action="refresh">刷新设置与处理状态</button><span class="small muted ${draft?.executor||draft?.bookkeeping?'':'hidden'}" data-settings-dirty role="status">有未保存的修改</span><button class="text ${draft?.executor||draft?.bookkeeping?'':'hidden'}" data-settings-dirty data-action="settings-reset">恢复已保存设置</button></div>`);
+}
+function showWorkspaceView(view){
+  if(!state.user)return;
+  closeDialog();closeSidebar();clearNotice();state.view=view;
+  if(typeof history!=='undefined'&&location.protocol!=='file:')history.replaceState(null,'',location.pathname+location.search+(view==='settings'?'#settings':''));
+  render();window.scrollTo(0,0);
+  document.querySelector(view==='settings'?'#settingsTitle':'#workspace h1')?.focus({preventScroll:true});
+}
 
 const actions = {
+  settings:()=>showWorkspaceView('settings'),workbench:()=>showWorkspaceView('current'),
+  'settings-reset':()=>{if(typeof autonomousSettingsDrafts!=='undefined')autonomousSettingsDrafts.delete(settingsDraftKey());render();notify('已恢复服务器上保存的设置，未提交的修改已取消。');},
   stages:button=>{const expanded=$('stages').classList.toggle('expanded');button.setAttribute('aria-expanded',String(expanded));button.textContent=expanded?'收起阶段总览':'阶段总览';},
   'return-task':()=>{state.category=null;render();},'return-current':()=>{state.view='current';render();},
   'upload-baseline':()=>chooseBaselineFile(!state.sources.balance?'balance':'close'),
@@ -540,7 +609,7 @@ const actions = {
   issues:()=>{if(typeof openMaterialWorkbench==='function'){openMaterialWorkbench();return;}const c=readiness().categories.find(c=>c.issues.length);if(c){state.category=c.id;closeDialog();render();}},
   blockers:()=>openDialog('补证清单',state.overview.blockers.map(b=>`<div class="issue-banner red"><strong>${esc(b.reason)}</strong><p>缺少 ${(b.missing_evidence||[]).map(label).map(esc).join('、')||'有效校验依据'}</p>${objectButton(b.group_id,'查看受影响业务')}</div>`).join('')+'<p class="small muted">请核实业务归属后补充相应资料。补证后须重新校验。</p><button class="secondary" data-action="upload">补充资料</button>'),
   cards:()=>openDialog('待审阅规则',state.overview.pending_confirmation_cards.map(c=>`<div class="source-slot">${statusBadge(c.status)} <button class="text" data-card="${esc(c.object_id)}">审阅建议、来源及影响范围</button></div>`).join('')),
-  vouchers:()=>{state.view='vouchers';closeDialog();render();},history:showHistory,
+  vouchers:()=>{state.view='vouchers';closeDialog();render();if(state.overview?.autonomous_workflow)window.scrollTo(0,0);},history:showHistory,
   refresh:async()=>{state.candidate=null;await loadWorkbench();notify('状态已刷新 · '+new Date().toLocaleTimeString('zh-CN'));},
   'create-group':async()=>{const ids=[...document.querySelectorAll('[data-fact]:checked')].map(i=>i.dataset.fact),identity=$('businessIdentity').value.trim();if(!ids.length||!identity)throw new Error('请填写业务标识并选择对应事实');await request('/api/v1/business/procurement',{scope:scope(),fact_ids:ids,business_identity:identity,idempotency_key:`readiness-group-${identity}`});closeDialog();await loadWorkbench();notify('候选业务组已建立，请核对来源与校验结果。');}
 };
@@ -570,7 +639,7 @@ document.addEventListener('click',event=>{
     }
     if(d.action)return actions[d.action]?.(button);
   };
-  const writing=d.execute||['compare-baseline','confirm-baseline','confirm-historical','retry-historical','select-historical','create-group','refresh','save-history-plan','review-history-plan'].includes(d.action);
+  const writing=d.execute||['compare-baseline','confirm-baseline','confirm-historical','retry-historical','select-historical','create-group','refresh','save-history-plan','review-history-plan','autonomous-start','autonomous-retry','autonomous-history-recheck','autonomous-cancel','autonomous-answer','autonomous-materials-submit','autonomous-decision','bookkeeping-save','autonomous-executor'].includes(d.action);
   if(writing)exclusive(perform);else perform().catch(error=>notify(error.message,true));
 });
 document.addEventListener('change',event=>{
@@ -592,23 +661,25 @@ $('baselineFile').addEventListener('change',()=>exclusive(async()=>{
 }));
 document.addEventListener('submit',event=>{
   if(!['loginForm','uploadForm','parseForm','newScopeForm'].includes(event.target.id))return;
+  if(event.target.id==='autonomousUploadForm')return;
   event.preventDefault();const form=event.target;
   exclusive(async()=>{
     if(form.id==='newScopeForm')return submitNewScope();
     if(form.id==='loginForm') {state.sessionEpoch++;state.portfolioSequence++;await request('/api/v1/auth/login',{username:$('username').value,password:$('password').value});$('password').value='';await loadPortfolio();closeSidebar();return;}
-    if(form.id==='uploadForm'){const materialTask=state.view==='materials'&&materialState().screen==='detail'?currentMaterialTask():null,materialGroup=materialState().group,uploadOriginView=state.view;const kind=$('uploadKind').value,artifact=await uploadFile($('uploadFile').files[0],'business',$('uploadPeriod').value,kind);if(artifact){closeDialog();await loadWorkbench();if(materialTask&&materialDetailStillOpen(materialGroup,materialTask.id))materialSupplementReceived(materialTask.id,artifact);if(Array.isArray(state.overview?.parse_plans)&&typeof parsePlanSupported==='function'&&parsePlanSupported(fileById(artifact.object_id),kind)&&artifact.data.observed_period===scope().accounting_period_id){if(state.view===uploadOriginView&&(!materialTask||materialDetailStillOpen(materialGroup,materialTask.id)))await openParsePlan(fileById(artifact.object_id),kind);return;}if(kind==='payroll'){if(state.view!==uploadOriginView||(materialTask&&!materialDetailStillOpen(materialGroup,materialTask.id))){notify('补充原件和格式识别任务已保存，可从资料入口查看。');return;}await openMapping(fileById(artifact.object_id));}}return;}
+    if(form.id==='uploadForm'){const materialTask=state.view==='materials'&&materialState().screen==='detail'?currentMaterialTask():null,materialGroup=materialState().group,uploadOriginView=state.view;const kind=$('uploadKind').value,artifact=await uploadFile($('uploadFile').files[0],'business',$('uploadPeriod').value,kind);if(artifact){closeDialog();await loadWorkbench();if(state.overview?.autonomous_workflow){state.view='current';render();notify('资料已保存，系统正在接续处理。');return;}if(materialTask&&materialDetailStillOpen(materialGroup,materialTask.id))materialSupplementReceived(materialTask.id,artifact);if(Array.isArray(state.overview?.parse_plans)&&typeof parsePlanSupported==='function'&&parsePlanSupported(fileById(artifact.object_id),kind)&&artifact.data.observed_period===scope().accounting_period_id){if(state.view===uploadOriginView&&(!materialTask||materialDetailStillOpen(materialGroup,materialTask.id)))await openParsePlan(fileById(artifact.object_id),kind);return;}if(kind==='payroll'){if(state.view!==uploadOriginView||(materialTask&&!materialDetailStillOpen(materialGroup,materialTask.id))){notify('补充原件和格式识别任务已保存，可从资料入口查看。');return;}await openMapping(fileById(artifact.object_id));}}return;}
     const artifact=fileById(form.dataset.artifact),kind=$('parseKind').value;if(Array.isArray(state.overview?.parse_plans)&&typeof parsePlanSupported==='function'&&parsePlanSupported(artifact,kind)){await openParsePlan(artifact,kind);return;}if(kind==='payroll'){await openMapping(artifact);return;}await command('parse_artifact',artifact.object_id,artifact.version,artifact.data.parse_options||{document_kind:kind});
   });
 });
 $('search').addEventListener('input',renderScopes);
 $('logout').addEventListener('click',()=>exclusive(async()=>{state.sessionEpoch++;state.portfolioSequence++;await request('/api/v1/auth/logout',null,'POST');clearSession();notify('已退出，页面中的企业资料已清除。');}));
 $('closeDialog').addEventListener('click',closeDialog);
-$('dialog').addEventListener('cancel',()=>{state.dialogSequence++;});
+$('dialog').addEventListener('cancel',event=>{if(typeof currentAutonomousUpload==='function'&&currentAutonomousUpload()&&autonomousUpload.busy){event.preventDefault();notify('正在保存资料，请等待上传结束后关闭。');return;}state.dialogSequence++;});
+$('dialog').addEventListener('close',()=>{if(typeof autonomousUpload!=='undefined'&&!$('dialog').open)autonomousUpload=null;});
 $('openSidebar').addEventListener('click',openSidebar);$('closeSidebar').addEventListener('click',closeSidebar);$('scrim').addEventListener('click',closeSidebar);
 document.addEventListener('keydown',event=>{
   if(!$('sidebar').classList.contains('open'))return;
   if(event.key==='Escape')closeSidebar();
-  if(event.key==='Tab') {const nodes=[...$('sidebar').querySelectorAll('button,input')].filter(e=>!e.disabled&&e.getClientRects().length),first=nodes[0],last=nodes.at(-1);if(event.shiftKey&&document.activeElement===first){event.preventDefault();last.focus();}else if(!event.shiftKey&&document.activeElement===last){event.preventDefault();first.focus();}}
+  if(event.key==='Tab') {const nodes=sidebarFocusables(),first=nodes[0],last=nodes.at(-1);if(event.shiftKey&&document.activeElement===first){event.preventDefault();last.focus();}else if(!event.shiftKey&&document.activeElement===last){event.preventDefault();first.focus();}}
 });
 if(typeof installHistoricalActions==='function')installHistoricalActions();
 if(typeof installMaterialActions==='function')installMaterialActions();
@@ -620,6 +691,7 @@ if(typeof installParsePlanActions==='function')installParsePlanActions();
 if(typeof installNewScopeActions==='function')installNewScopeActions();
 if(typeof installProfileCardActions==='function')installProfileCardActions();
 if(typeof installVoucherProposalActions==='function')installVoucherProposalActions();
+if(typeof installMaterialAgentActions==='function')installMaterialAgentActions();
 if(location.protocol==='file:'){
   if(typeof location.replace==='function')location.replace(OPERATOR_HTTP_ENTRY);
   else notify('真实工作台需要登录服务，请通过当前 Staging 服务地址打开。',true);

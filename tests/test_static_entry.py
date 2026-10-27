@@ -44,13 +44,25 @@ def test_http_serves_formal_portfolio_page_and_its_api_entry(client):
     root = Path(__file__).resolve().parents[1]
     page = (root / "static" / "portfolio.html").read_text(encoding="utf-8")
     assert "FinWise · 企业总览" in page
-    assert "/api/v1/portfolio" in page
-    assert "/api/v1/auth/me" in page
-    assert "state.csrf=session.csrf_token||''" in page
+    script = (root / "static" / "portfolio.js").read_text(encoding="utf-8")
+    assert "/api/v1/portfolio" in script
+    assert "/api/v1/auth/me" in script
+    assert "work_summary" in script
+    assert "/api/v1/workbench" not in script
+    assert "/api/v1/history" not in script
     assert "授权范围" in page
     response = client.get("/static/portfolio.html")
     assert response.status_code == 200
-    assert "企业列表" in response.text
+    assert "企业办理进度" in response.text
+    assert "table-wrap" in page
+    assert "待办与复核" in page
+    assert "periodLabels" in script
+    assert client.get("/static/portfolio.js?v=progress-1").status_code == 200
+    assert client.get("/static/portfolio.css?v=progress-1").status_code == 200
+    assert 'aria-label="主导航"' in page
+    assert 'href="operator.html#settings"' in page
+    assert 'href="portfolio.html" aria-current="page"' in page
+    assert 'operator-navigation.css?v=navigation-2' in page
 
 
 def test_formal_operator_page_connects_real_write_workflows_without_external_assets(client):
@@ -90,8 +102,10 @@ def test_formal_operator_page_connects_real_write_workflows_without_external_ass
     assert parser.stack == []
     assert parser.external_assets == [
             'operator.css?v=one-entry-1',
+        'operator-navigation.css?v=navigation-2',
         'operator-historical.js?v=guided-decision-2',
             'operator-materials.js?v=verify-bulk-2',
+            'operator-material-agent.js?v=agent-loop-1',
         'operator-problem-review.js?v=triage-1',
             'operator-material-navigation.js?v=verify-bulk-2',
         'operator-bank-periods.js?v=bank-period-1',
@@ -103,6 +117,7 @@ def test_formal_operator_page_connects_real_write_workflows_without_external_ass
         'operator-mapping.js?v=guided-decision-2',
         'operator-parse-plans.js?v=structure-plan-1', 'operator-profile-cards.js?v=profile-cards-1', 'operator-new-scope.js?v=new-scope-1',
         'operator-voucher-proposals.js?v=voucher-proposals-1',
+        'operator-autonomous.js?v=one-entry-1',
         'operator.js?v=one-entry-1']
     for asset in parser.external_assets:
         assert client.get('/static/' + asset).status_code == 200

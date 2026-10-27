@@ -1,0 +1,9 @@
+/* Shared navigation for the workbench and enterprise overview. */
+.global-nav{display:grid;gap:4px;padding-bottom:20px;margin-bottom:20px;border-bottom:1px solid var(--line)}
+.global-nav .nav-item{display:flex;align-items:center;justify-content:flex-start;gap:10px;width:100%;min-height:40px;padding:8px 12px;border:1px solid transparent;border-radius:6px;color:var(--muted);font-size:14px;font-weight:500;text-align:left;text-decoration:none;line-height:1.5}
+.global-nav .nav-item:hover{background:#edf1f7;color:var(--ink);filter:none}
+.global-nav .nav-item[aria-current=page]{background:var(--blue-pale);color:var(--blue);font-weight:650}
+.global-nav .nav-icon{display:inline-flex;align-items:center;justify-content:center;width:18px;height:18px;flex:0 0 18px}
+.global-nav .nav-icon svg{display:block;width:18px;height:18px}
+.global-nav .nav-item:focus-visible{outline:3px solid #77a1ff;outline-offset:2px}
+@media(max-width:760px){.global-nav .nav-item{min-height:44px}}
